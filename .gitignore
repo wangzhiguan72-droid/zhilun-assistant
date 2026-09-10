@@ -1,0 +1,52 @@
+# ===== Python 环境 =====
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ===== 敏感信息：绝不能入库 =====
+# 环境变量文件，含真实 API Key（注意：# 只能在行首当注释，别写行内注释）
+.env
+.env.local
+.env.*.local
+
+# ===== 运行时产物 =====
+uploads/*
+!uploads/.gitkeep
+*.log
+*.tmp
+_ck.txt
+_up*.json
+_chk.json
+
+# ===== 打包产物 =====
+build/
+dist/
+*.exe
+
+# ===== 编辑器 / 系统 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ===== 第三方源码：本地免费 LLM 网关（上游可 pull，不入库）=====
+freellmapi/
+
+# ===== 本地语料：第三方论文 PDF / 提取文本（涉版权，不入库）=====
+模板论文/
+
+# ===== AI 协作笔记 / 个人工作记录（含内部信息，不入库）=====
+.workbuddy/
+.workbuddy-ai/
+
+# ===== 内部文档：营销 / 产品规划 / 私人创作（不入公开仓库）=====
+MARKETING.md
+ROADMAP.md
+P0补齐规划.md
+PONYTAIL_V0.5.1.md
+回归分析实装计划.md
+freellmapi_catalog.md
+小红书-*.md
+全息边界*.md

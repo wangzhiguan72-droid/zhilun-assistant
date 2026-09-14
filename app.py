@@ -39,7 +39,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import (Flask, jsonify, make_response, redirect, render_template,
+                   request, send_from_directory, url_for)
 from scipy import stats
 from werkzeug.utils import secure_filename
 
@@ -66,6 +67,8 @@ from multimodal_agent import (  # v2.9 ④多模态图表核查（LLM 只读图�
 import security_guard  # v1.7 P2 应用层限流与防御（独立可测）
 import cross_platform  # v2.8 跨端适配：CORS / 预检 / 小程序接入辅助（默认关闭）
 import access_guard  # v2.13 访问门禁：ACCESS_CODE 环境变量一句话加密码（默认关闭）
+import review_share  # v2.15 ⑨协作审阅：报告 → 分享链接 + 批注（本地落盘）
+import simulate  # v2.17 ⑥模拟数据生成器：纯 numpy，不 import app（无循环依赖）
 # v0.5.1 BYOK：用户自带 Key 注入 Router（/api/analyze 与 /api/check_paper 用）
 from agents import get_router
 # v1.2 论文副驾驶：流水线编排 + 证据约束写作引擎
@@ -2338,7 +2341,10 @@ def method_label(method: str) -> str:
 # -----------------------------------------------------------------------------
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # v2.22：版本角标改由 version.py 单一真源注入（以前页面写死 v1.1，
+    # 启动器写死 v0.9.0，三处各说各话）
+    import version
+    return render_template("index.html", version=version.badge_text())
 
 
 @app.route("/favicon.ico")
@@ -2475,6 +2481,112 @@ def api_upload():
     })
 
 
+# ---------------------------------------------------------------------------
+# ⑥ 模拟数据生成器（v2.17）—— 备课 / 答辩预演零成本
+# ---------------------------------------------------------------------------
+def _clamp_num(raw: Any, default: float, lo: float, hi: float, kind: str) -> tuple[Any, bool]:
+    """把入参钳到合法区间，返回 `(值, 是否被改动过)`。
+
+    非法值一律回落默认值，不抛异常（接口不 500）—— 但**改动必须如实回报**：
+    静默把用户填的 `n=1` 变成 3 行数据，用户只会以为生成器出了 bug。
+    """
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return (int(default) if kind == "int" else float(default)), True
+    if not np.isfinite(v):
+        return (int(default) if kind == "int" else float(default)), True
+    clamped = max(lo, min(hi, v))
+    changed = abs(clamped - v) > 1e-12
+    return (int(clamped) if kind == "int" else float(clamped)), changed
+
+
+@app.route("/api/simulate", methods=["GET", "POST"])
+def api_simulate():
+    """生成可复现的模拟数据 + 真值（纯 numpy，零 LLM）。
+
+    `GET` 只返回支持的方法清单 —— 前端下拉据此生成，
+    免得把 12 个方法名硬编码在 HTML 里（"加了方法忘了同步前端"是本项目踩过的坑）。
+
+    入参 JSON：
+        {"method": "independent_t", "effect_size": 0.5,
+         "n_per_group": 30, "seed": 42, "noise": 0.1}
+    出参：与 `/api/upload` 同构（file_id / columns / recommendation），
+    另附 `csv`（可直接下载）与 `truth`（应得的统计量，用来验证工具算得对不对）。
+
+    **数据与真实上传同池**：放进 `_SESSION` 后可直接走分析流程，不必二次上传。
+    """
+    if request.method == "GET":
+        return jsonify({"ok": True, "methods": simulate.available_methods()})
+
+    payload = request.get_json(silent=True) or {}
+    method = str(payload.get("method") or "").strip()
+
+    es, es_adj = _clamp_num(payload.get("effect_size"), 0.5, -1.0, 1.0, "float")
+    npg, npg_adj = _clamp_num(payload.get("n_per_group"), 30, 3, 5000, "int")
+    sd, sd_adj = _clamp_num(payload.get("seed"), 42, 0, 2 ** 31 - 1, "int")
+    nz, nz_adj = _clamp_num(payload.get("noise"), 0.1, 0.0, 2.0, "float")
+
+    # 如实回报被改动的入参（静默改数是最难排查的一类 bug）
+    adjusted = {}
+    if es_adj:
+        adjusted["effect_size"] = es
+    if npg_adj:
+        adjusted["n_per_group"] = npg
+    if sd_adj:
+        adjusted["seed"] = sd
+    if nz_adj:
+        adjusted["noise"] = nz
+
+    try:
+        df, truth = simulate.generate(
+            method=method,
+            effect_size=es,
+            n_per_group=npg,
+            seed=sd,
+            noise=nz,
+        )
+    except ValueError as e:
+        # 未知方法：把可用清单一起回出去，前端省一次请求
+        return jsonify({
+            "ok": False, "error": str(e),
+            "available_methods": simulate.available_methods(),
+        }), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"生成失败：{e}"}), 400
+
+    if df is None or df.empty or len(df.columns) == 0:
+        return jsonify({"ok": False, "error": "生成结果为空。"}), 400
+
+    columns = [_summarize_column(df[c]) for c in df.columns]
+    recommendation = _recommend_method(columns)
+    file_id = uuid.uuid4().hex[:12]
+    _SESSION[file_id] = df
+
+    try:
+        csv_text = df.to_csv(index=False)
+    except Exception:  # noqa: BLE001
+        csv_text = ""
+
+    return jsonify({
+        "ok": True,
+        "file_id": file_id,
+        # 文件名带"模拟"字样：下载落盘后也不会被误当成真实数据
+        "filename": f"模拟数据_{method}_seed{sd}.csv",
+        "rows": int(len(df)),
+        "adjusted": adjusted,
+        "columns": columns,
+        "recommendation": recommendation,
+        "available_methods": _registry_available_methods(),
+        "csv": csv_text,
+        "truth": truth,
+        "simulated": True,
+        "note": ("这是**模拟数据**，只用于演示 / 备课 / 验证算法，"
+                 "**不能当真实研究数据使用或写进论文**。"
+                 "`truth` 是这份数据应得的统计量，可用来核对工具算得对不对。"),
+    })
+
+
 @app.route("/api/datacheck", methods=["POST"])
 def api_datacheck():
     """数据体检（v2.0 产品入口）—— 「数据里有没有错」的第一站。
@@ -2495,7 +2607,16 @@ def api_datacheck():
     except Exception as e:  # noqa: BLE001 - 体检失败不阻断主流程
         return jsonify({"ok": False, "error": f"数据体检失败：{e}"}), 500
 
-    return jsonify({"ok": True, **report})
+    # v2.16：协作审阅要分享体检报告，正文用**同一份** `datacheck.render_markdown`，
+    # 绝不在前端另写一个渲染器 —— datacheck.py 已明确要求「三处渲染一种说法」，
+    # 前端再写一遍就会变成第四种说法。
+    # 渲染失败只丢正文，不能让体检结果本身消失（体检是锦上添花，渲染更是）。
+    try:
+        md = data_doctor.render_markdown(report)
+    except Exception:  # noqa: BLE001
+        md = ""
+
+    return jsonify({"ok": True, **report, "markdown": md})
 
 
 @app.route("/api/datacheck/fix", methods=["POST"])
@@ -3263,6 +3384,38 @@ def api_audit_image():
     })
 
 
+@app.route("/api/ai_audit", methods=["POST"])
+def api_ai_audit():
+    """🧼 AI 痕迹自查（v2.15，纯规则零 LLM，无需上传数据）。
+
+    入参（二选一）：
+        multipart: paper = 论文文件（.docx / .txt / .md / .pdf）
+        JSON:      {"text": "论文文本"}
+    出参：audit_ai_traces 的报告（风险分 / 等级 / 各项命中 / 修改建议 /
+          人工自查清单）。口径：只评估「AI 风格风险」，绝不判定作者身份。
+    """
+    if request.files.get("paper"):
+        paper = request.files["paper"]
+        try:
+            paper.seek(0)
+            text = read_paper_text(paper)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": f"论文解析失败：{e}"}), 400
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"论文读取异常：{e}"}), 400
+    else:
+        payload = request.get_json(silent=True) or {}
+        text = str(payload.get("text") or "")
+
+    if not text.strip():
+        return jsonify({"ok": False, "error": "请上传论文文件或粘贴论文文本。"}), 400
+
+    from ai_audit import audit_ai_traces
+    report = audit_ai_traces(text)
+    report["text_length"] = len(text)
+    return jsonify(report)
+
+
 @app.route("/api/check_paper", methods=["POST"])
 def api_check_paper():
     """同时接收论文 + 数据，跑出核查报告。
@@ -3715,6 +3868,177 @@ def _cors_headers(resp):
         # 加头失败绝不能把正常请求变成 500
         return resp
 
+
+
+# ==========================================================================
+# v2.15 · ⑨ 协作审阅：核查报告 → 分享链接 + 批注
+#
+# 设计取舍（改动前请读，别顺手改成"云端分享"）：
+#   1. 分享内容以 JSON 落在项目内 .review_share/，**不依赖任何云服务**；
+#   2. token 是 96bit 随机串，不是自增 ID —— 自增等于把所有报告按顺序公开；
+#   3. **报告只读、批注另存**：批注只追加/删除，永远不改报告正文。
+#      报告是证据，意见是意见，物理分开才不会变成新的造假通道；
+#   4. /s/ 前缀对访问门禁放行（分享的初衷就是给没口令的人看），
+#      但批注走页面表单提交，不开放成免门禁的写接口。
+# ==========================================================================
+def _review_payload() -> dict:
+    """取分享内容：JSON 与表单都收（前端 fetch 用 JSON，未来脚本用表单）。"""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = request.form.to_dict() if request.form else {}
+    return data
+
+
+def _share_response(body: str, status: int = 200, **headers: str):
+    """分享页统一出口：加安全响应头。
+
+    页面**故意不含任何 JS**，所以 CSP 可以收到 `default-src 'none'`
+    —— 即便批注里被塞进 <script>，也只会以纯文字呈现（渲染层已转义）。
+    """
+    resp = make_response(body, status)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+        "form-action 'self'; base-uri 'none'")
+    for k, v in headers.items():
+        resp.headers[k] = v
+    return resp
+
+
+@app.route("/api/review/share", methods=["POST"])
+def api_review_share():
+    """把一份核查报告变成分享链接。
+
+    入参 JSON：{title, markdown, comparisons?, suggestions?, kind?, ttl_days?}
+    出参 JSON：{ok, token, url, title, created_at, expires_at}
+    """
+    if not review_share.enabled():
+        return jsonify({"ok": False,
+                        "error": "协作审阅已关闭（REVIEW_SHARE_DIR=off）。"}), 503
+    d = _review_payload()
+    markdown = d.get("markdown") or ""
+    if not markdown and not d.get("comparisons"):
+        return jsonify({"ok": False, "error": "报告内容为空，无法生成分享。"}), 400
+    try:
+        info = review_share.create_share(
+            (d.get("title") or "").strip() or "核查报告",
+            markdown,
+            comparisons=d.get("comparisons"),
+            suggestions=d.get("suggestions"),
+            kind=d.get("kind") or "audit",
+            ttl_days=d.get("ttl_days") or review_share.DEFAULT_TTL_DAYS,
+        )
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except OSError as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"分享目录写入失败：{e}"}), 500
+    return jsonify(info)
+
+
+@app.route("/s/<token>", methods=["GET", "POST"])
+def share_page(token):
+    """协作审阅页。GET 阅读，POST 提交批注（PRG：提交后重定向回本页）。"""
+    doc = review_share.load_share(token)
+    if doc is None:
+        return _share_response(
+            review_share.render_error_html("分享链接不存在或已过期。"), 404)
+    if request.method == "POST":
+        try:
+            review_share.add_annotation(
+                token,
+                text=request.form.get("text") or "",
+                author=request.form.get("author") or "",
+                anchor=request.form.get("anchor") or "",
+            )
+        except ValueError as e:
+            return _share_response(review_share.render_error_html(str(e)), 400)
+        return redirect(url_for("share_page", token=token, _anchor="ann"))
+    return _share_response(
+        review_share.render_share_html(doc, form_action=f"/s/{token}"))
+
+
+@app.route("/s/<token>/export")
+def share_export(token):
+    """导出离线快照（无表单），便于邮件 / U 盘传阅。"""
+    doc = review_share.load_share(token)
+    if doc is None:
+        return _share_response(
+            review_share.render_error_html("分享链接不存在或已过期。"), 404)
+    return _share_response(
+        review_share.render_share_html(doc, interactive=False),
+        **{"Content-Disposition": f'attachment; filename="review-{token}.html"'})
+
+
+@app.route("/api/review/list", methods=["GET"])
+def api_review_list():
+    """列出本机已创建的分享（**只有元信息**：标题 / 时间 / 批注数，不含正文）。
+
+    ⚠️ 与 `/s/<token>` 不同，这个接口**在访问门禁内**（见 `access_guard._EXEMPT_PREFIXES`）。
+    原因：单个链接要靠 token 才打得开，而这个接口一次列出**所有**分享的标题，
+    泄露面大得多 —— 它是报告所有者的管理视图，不该给拿到某个链接的人。
+    """
+    if not review_share.enabled():
+        return jsonify({"ok": False,
+                        "error": "协作审阅已关闭（REVIEW_SHARE_DIR=off）。"}), 503
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    return jsonify({"ok": True,
+                    "items": review_share.list_shares(max(1, min(200, limit)))})
+
+
+@app.route("/api/review/gc", methods=["POST"])
+def api_review_gc():
+    """手动清理过期分享（正常情况它们会在被访问时自动失效，这是兜底）。
+
+    返回 `{"ok": True, "removed": n}`。删掉的是**已过期**的文件，未过期的绝不动。
+    """
+    if not review_share.enabled():
+        return jsonify({"ok": False,
+                        "error": "协作审阅已关闭（REVIEW_SHARE_DIR=off）。"}), 503
+    try:
+        n = review_share.gc_expired()
+    except OSError as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"清理失败：{e}"}), 500
+    return jsonify({"ok": True, "removed": n})
+
+
+@app.route("/api/review/<token>", methods=["GET"])
+def api_review_get(token):
+    """取分享原文（JSON）。"""
+    doc = review_share.load_share(token)
+    if doc is None:
+        return jsonify({"ok": False, "error": "链接不存在或已过期。"}), 404
+    return jsonify({"ok": True, "doc": doc})
+
+
+@app.route("/api/review/<token>/annotate", methods=["POST"])
+def api_review_annotate(token):
+    """追加批注（JSON 版；页面表单走 /s/<token> 的 POST）。"""
+    d = _review_payload()
+    try:
+        ann = review_share.add_annotation(
+            token, text=d.get("text") or "",
+            author=d.get("author") or "", anchor=d.get("anchor") or "")
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except OSError as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"批注写入失败：{e}"}), 500
+    return jsonify({"ok": True, "annotation": ann})
+
+
+@app.route("/api/review/<token>/annotate/delete", methods=["POST"])
+def api_review_annotate_delete(token):
+    """删除一条批注。"""
+    d = _review_payload()
+    try:
+        gone = review_share.delete_annotation(token, d.get("id") or "")
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "deleted": bool(gone)})
 
 
 if __name__ == "__main__":

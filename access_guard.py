@@ -58,7 +58,11 @@ _SALT = b"zhilun-access-v1"
 
 #: 门禁放行的路径（不设门禁也放行）
 _EXEMPT_PATHS = ("/unlock", "/health", "/favicon.ico")
-_EXEMPT_PREFIXES = ("/static/",)
+#: v2.15：/s/<token> 是协作审阅的分享页，token 本身是 96bit 不可猜凭据，
+#: 分享的初衷就是给没口令的导师/同门看 —— 门禁拦它等于功能自废。
+#: 注意：只有**页面**放行，写批注走 /s/<token> 的 POST（同一前缀），
+#: 而 /api/review/* 仍在门禁内（那是报告所有者自己的管理接口）。
+_EXEMPT_PREFIXES = ("/static/", "/s/")
 
 
 def access_code() -> str:

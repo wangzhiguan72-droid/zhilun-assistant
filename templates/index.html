@@ -915,6 +915,48 @@
     text-align: center; color: var(--c-muted);
     font-size: 13px; padding: 24px; margin-top: 24px;
   }
+
+  /* v2.17 · ⑥ 模拟数据生成器 */
+  .sim-panel {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 14px 16px; margin: 12px auto 0; max-width: 560px; text-align: left;
+  }
+  .sim-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px;
+  }
+  .sim-field { display: flex; flex-direction: column; gap: 4px; }
+  .sim-field label { font-size: 12px; color: var(--c-muted); }
+  .sim-field select, .sim-field input {
+    padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;
+  }
+  .sim-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .sim-btn {
+    background: var(--c-primary, #4f46e5); color: #fff; border: 0;
+    padding: 7px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  }
+  .sim-btn:disabled { opacity: .6; cursor: not-allowed; }
+  .sim-btn.ghost { background: #fff; color: #475569; border: 1px solid #cbd5e1; }
+  .sim-warn {
+    font-size: 12px; color: #92400e; background: #fffbeb;
+    border: 1px solid #fde68a; border-radius: 6px; padding: 6px 10px; margin-top: 10px;
+  }
+  .sim-truth {
+    font-size: 12px; color: #334155; background: #f1f5f9; border-radius: 6px;
+    padding: 8px 10px; margin-top: 10px; white-space: pre-wrap; word-break: break-all;
+  }
+
+  /* v2.15 · ⑨ 协作审阅：分享链接卡片 */
+  .rs-box {
+    background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  .rs-title { font-size: 14px; font-weight: 600; color: #4338ca; margin-bottom: 8px; }
+  .rs-url {
+    width: 100%; padding: 7px 10px; border: 1px solid #c7d2fe; border-radius: 6px;
+    background: #fff; font: 13px/1.5 ui-monospace, Consolas, monospace; color: #312e81;
+  }
+  .rs-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .rs-hint { margin-top: 8px; font-size: 12px; color: var(--c-muted); line-height: 1.6; }
 </style>
 </head>
 <body data-page-node-id="VD6WstSSxEwbuiCH9OMLPh">
@@ -922,7 +964,7 @@
 <header class="site" data-page-node-id="5FML9vQpLlZG2pqjG9dx8V">
   <div class="brand" data-page-node-id="VwSloBM3OjHrfkOZeb8Pz6"><span class="dot" data-page-node-id="Hw08cUN957JufppTqfTWOq"></span>智论助手</div>
   <div class="slogan" data-page-node-id="d4uuT0lMomMnApoLzw41ig">不仅是数据分析，更是你的学术副驾驶。</div>
-  <div class="badge" data-page-node-id="zHlFTVcmprdF62kUDFnbif">内测版 v1.1</div>
+  <div class="badge" data-page-node-id="zHlFTVcmprdF62kUDFnbif">{{ version | default('内测版') }}</div>
   <!-- v1.8：新手引导 / 帮助 / 模型设置（BYOK）三个全局入口 -->
   <div class="hdr-actions" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
     <button type="button" class="hdr-btn" onclick="openHelp()" title="这个工具是干什么的？每个按钮什么意思？">📖 使用指南</button>
@@ -959,6 +1001,39 @@
 
     <div class="sample-link" data-page-node-id="qvOGu7iJZ1biSHBBpqfCY0">
       没有数据？<a href="/api/sample/student_scores.csv" download data-page-node-id="JcHexNdr46INC7kMLm1cgA">下载示例数据（学生成绩）</a>
+      或 <button type="button" class="sim-btn ghost" id="simToggleBtn" onclick="Simulate.toggle()">🎲 生成演示数据</button>
+    </div>
+
+    <!-- v2.17 ⑥ 模拟数据生成器：备课 / 答辩预演 / 验证算法 -->
+    <div class="sim-panel" id="simPanel" style="display:none;">
+      <div class="sim-grid">
+        <div class="sim-field">
+          <label for="simMethod">统计方法</label>
+          <select id="simMethod"></select>
+        </div>
+        <div class="sim-field">
+          <label for="simEffect">效应量（0.2 小 / 0.5 中 / 0.8 大）</label>
+          <input type="number" id="simEffect" value="0.5" step="0.1" min="-1" max="1" />
+        </div>
+        <div class="sim-field">
+          <label for="simN">每组样本量</label>
+          <input type="number" id="simN" value="30" step="5" min="3" max="5000" />
+        </div>
+        <div class="sim-field">
+          <label for="simSeed">随机种子（同种子可复现）</label>
+          <input type="number" id="simSeed" value="42" step="1" min="0" />
+        </div>
+      </div>
+      <div class="sim-actions">
+        <button type="button" class="sim-btn" id="simGoBtn" onclick="Simulate.generate()">生成并载入</button>
+        <button type="button" class="sim-btn ghost" onclick="Simulate.toggle()">收起</button>
+        <a id="simDownload" style="display:none;font-size:13px;" download>⬇ 下载这份 CSV</a>
+      </div>
+      <div class="sim-warn">
+        ⚠️ 生成的是<strong>模拟数据</strong>，只用于演示 / 备课 / 验证算法，
+        <strong>不能当真实研究数据写进论文</strong>。
+      </div>
+      <div class="sim-truth" id="simTruth" style="display:none;"></div>
     </div>
 
     <div class="trust" data-page-node-id="i7yTxdOMvNNVUhYfFZ5FDy">
@@ -1135,6 +1210,22 @@
       <div class="sub">
         上传「论文初稿」和「数据文件」，系统会自动识别论文里写的统计方法、统计量与变量名，
         然后用真实数据重跑一遍，比对你的论文结论是否站得住，并给出改进建议。
+      </div>
+
+      <!-- v2.15 AI 痕迹自查：只传论文、无需数据，纯本地规则 -->
+      <div style="margin: 14px auto 4px; max-width: 760px; border:1px dashed var(--c-border); border-radius:12px; padding:14px 18px; background:var(--c-bg, #faf9fc); text-align:left;">
+        <div style="font-size:14px; font-weight:600;">🧼 AI 痕迹自查<span style="font-weight:400; color:var(--c-muted); font-size:12.5px;">（只传论文即可，纯本地规则、不上传任何数据）</span></div>
+        <div style="font-size:12.5px; color:var(--c-muted); margin:4px 0 10px;">
+          检查高频套话密度、句长均匀性、被动句、拔高词无数据、AI 对话残留、
+          数模高风险模型未说明等 8 类「AI 风格」特征，给出修改建议。
+          <b>它帮你把空泛的话改成有据可依的话，不是什么"降 AI 率"开关。</b>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button class="ghost" id="aiAuditBtn" style="padding:7px 16px;">选择论文并自查</button>
+          <span style="font-size:12px; color:var(--c-muted);" id="aiAuditStatus">支持 .docx / .txt / .md / .pdf</span>
+          <input type="file" id="aiAuditInput" accept=".docx,.txt,.md,.pdf" style="display:none" />
+        </div>
+        <div id="aiAuditResult" style="margin-top:10px;"></div>
       </div>
 
       <div class="dual-upload">
@@ -1469,6 +1560,10 @@
     const s = data.summary || {};
     const issues = data.issues || [];
     _dcOpen = issues.length > 0;
+    // v2.16：供「协作审阅」分享用。markdown 由后端 datacheck.render_markdown 产出，
+    // 前端**不自己拼报告**（避免和 CLI / 流水线 / 导出口径不一致）。
+    window._lastDatacheckMarkdown = data.markdown || '';
+    window._lastDatacheckIssues = issues;
 
     const lv = s.high > 0 ? 'lv-high' : (s.mid > 0 ? 'lv-mid' : 'lv-ok');
     const icon = s.high > 0 ? '🔴' : (s.mid > 0 ? '🟡' : '🟢');
@@ -1502,6 +1597,12 @@
             + '<span class="dc-stat">自动修掉能确定的（重复行 / 反向计分），其余逐条给建议 —— 原文件绝不动。</span></div>'
           : '')
       + '<div class="dc-fix" id="dcFix" style="display:none"></div>'
+      // v2.16：体检报告也能分享 —— 它是产品入口第一站，
+      // 比论文排查更适合先发给导师/同门看（"我的数据本身有没有问题"）。
+      + '<div class="dc-fixbar">'
+      + '<button class="dc-btn" id="dcShareBtn" onclick="ReviewShare.fromDatacheck()">🔗 协作审阅</button>'
+      + '<span class="dc-stat">把这份体检报告变成链接发出去 —— 内容只存本机，不上传云端。</span>'
+      + '</div>'
       + '</div>';
 
     const hd = $('dcHd'), wrap = $('dcWrap');
@@ -2784,11 +2885,69 @@
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = '答辩图表包.zip';
+      // v2.23：不挂到 document 上的 <a>，Firefox 里 click() 不会触发下载。
+      // 导出 Word 那条路一直挂着，这里漏了 —— 同一件事别有两种写法。
+      document.body.appendChild(a);
       a.click();
+      a.remove();
       URL.revokeObjectURL(a.href);
       if (miss) toast('已下载；有 ' + miss.split(',').length + ' 张图没生成成功');
     } catch (e) { toast('打包出错：' + e.message); }
   };
+
+  // ===== v2.15 AI 痕迹自查（只传论文，纯本地规则）=====
+  const aiAuditInput = $('aiAuditInput');
+  $('aiAuditBtn').addEventListener('click', () => aiAuditInput.click());
+  aiAuditInput.addEventListener('change', runAiAudit);
+
+  async function runAiAudit() {
+    const f = aiAuditInput.files && aiAuditInput.files[0];
+    if (!f) return;
+    $('aiAuditStatus').textContent = '⏳ 正在按本地规则扫描（不上传数据）…';
+    $('aiAuditResult').innerHTML = '';
+    try {
+      const fd = new FormData();
+      fd.append('paper', f);
+      const r = await fetch('/api/ai_audit', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!d.ok) {
+        $('aiAuditStatus').textContent = d.error || '自查失败';
+        return;
+      }
+      $('aiAuditStatus').textContent = `已完成：全文 ${d.text_length} 字`;
+      const lvColor = { '低': '#16a34a', '中低': '#65a30d', '中': '#d97706',
+                        '中高': '#ea580c', '高': '#dc2626' }[d.level] || '#52525b';
+      const bd = Object.entries(d.breakdown || {})
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => `<span style="font-size:12px; padding:2px 9px; border-radius:999px; background:#fef2f2; color:#b91c1c; margin:2px;">${escapeHtml(k)} +${v}</span>`)
+        .join('') || '<span style="font-size:12.5px; color:#16a34a;">各项均未命中 ✅</span>';
+      const sugg = (d.suggestions || []).map(s =>
+        `<div style="margin:6px 0; font-size:13px; line-height:1.7;">
+           <b style="color:${s.priority === 'P0' ? '#dc2626' : s.priority === 'P1' ? '#d97706' : '#52525b'};">[${s.priority}]</b>
+           ${escapeHtml(s.issue)}<br>
+           <span style="color:var(--c-muted);">→ ${escapeHtml(s.action)}</span>
+         </div>`).join('') || '<div style="font-size:13px; color:#16a34a;">没有需要优先处理的问题。</div>';
+      const manual = (d.manual_checks || []).map(m => `<li style="margin:3px 0;">${escapeHtml(m)}</li>`).join('');
+      $('aiAuditResult').innerHTML = `
+        <div style="border:1px solid var(--c-border); border-radius:10px; padding:12px 14px; background:var(--c-card,#fff);">
+          <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
+            <span style="font-size:22px; font-weight:700; color:${lvColor};">${d.score}</span>
+            <span style="font-size:13px; color:var(--c-muted);">/100 AI 风格风险</span>
+            <span style="font-size:13px; font-weight:600; color:${lvColor};">${escapeHtml(d.level)}风险</span>
+            <span style="font-size:12.5px; color:var(--c-muted);">${escapeHtml(d.level_text)}</span>
+          </div>
+          <div style="margin:8px 0;">${bd}</div>
+          <div>${sugg}</div>
+          <details style="margin-top:8px;">
+            <summary style="cursor:pointer; font-size:12.5px; color:var(--c-muted);">机器查不了、需要人工核对的 ${d.manual_checks.length} 项</summary>
+            <ul style="margin:6px 0 0 18px; padding:0; font-size:12.5px; color:var(--c-muted); line-height:1.7;">${manual}</ul>
+          </details>
+          <div style="margin-top:8px; font-size:11.5px; color:var(--c-muted);">${escapeHtml(d.disclaimer)}</div>
+        </div>`;
+    } catch (e) {
+      $('aiAuditStatus').textContent = '出错：' + e.message;
+    }
+  }
 
   async function loadChart(p) {
     const section = $('chartSection');
@@ -2915,6 +3074,28 @@
   }
   window.copyMarkdown = copyMarkdown;
 
+  // v2.23：从 Content-Disposition 里取真实文件名。
+  // 后端文件名含中文时，Werkzeug 只会把真名放进 RFC 5987 的 `filename*=UTF-8''...`，
+  // 旁边那个 `filename=` 是 ASCII 回退，实测中文被**整段删掉**，只剩 `_independent_t_123.docx`。
+  // 旧正则 `/filename[^;=\n]*=/` 命中的正是这个残缺的回退值，导致导出的 Word 一律叫 `_xxx.docx`。
+  // 所以：先取 filename*（并 URL 解码），拿不到再退回 filename=，最后才是前端兜底名。
+  function cdFilename(cd, fallback) {
+    const s = String(cd || '');
+    let m = s.match(/filename\*\s*=\s*.*?''([^;]+)/i);
+    if (m) {
+      try {
+        const name = decodeURIComponent(m[1].trim());
+        if (name) return name;
+      } catch (e) { /* 百分号编码坏了就退回下一档 */ }
+    }
+    m = s.match(/filename\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;\n]+))/i);
+    if (m) {
+      const v = (m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]));
+      if (v && String(v).trim()) return String(v).trim();
+    }
+    return fallback;
+  }
+
   // ===== v0.9 导出 Word =====
   async function exportWord() {
     if (!window._lastMarkdown) { toast('请先运行一次分析'); return; }
@@ -2944,10 +3125,9 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      // 从响应头提取真实文件名（后端会返回 Content-Disposition: attachment; filename="xxx.docx"）
-      const cd = r.headers.get('Content-Disposition') || '';
-      const filenameMatch = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-      a.download = filenameMatch ? filenameMatch[1].replace(/['"]/g, '') : `智论助手报告_${window._lastMethod || '分析'}.docx`;
+      // v2.23：优先 filename*（中文真名），取不到才用 ASCII 回退，最后才是兜底名
+      a.download = cdFilename(r.headers.get('Content-Disposition'),
+                              `智论助手报告_${window._lastMethod || '分析'}.docx`);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -2988,10 +3168,9 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      // 从响应头提取真实文件名（后端会返回 Content-Disposition: attachment; filename="xxx.docx"）
-      const cd = r.headers.get('Content-Disposition') || '';
-      const filenameMatch = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-      a.download = filenameMatch ? filenameMatch[1].replace(/['"]/g, '') : `智论助手_论文排查报告.docx`;
+      // v2.23：同上，优先 filename*
+      a.download = cdFilename(r.headers.get('Content-Disposition'),
+                              `智论助手_论文排查报告.docx`);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -3445,7 +3624,14 @@
       const drop = $('iaDrop'), inp = $('iaInput'), btn = $('iaBtn');
       if (!drop || !inp) return;
       drop.addEventListener('click', function () { inp.click(); });
-      inp.addEventListener('change', function () { pick(inp.files && inp.files[0]); });
+      inp.addEventListener('change', function () {
+        const f = inp.files && inp.files[0];
+        pick(f);
+        // v2.22：不清空 value 的话，再选**同一个**文件不会再触发 change，
+        // 用户会以为点了没反应（换张图正常、重选就哑火，最难自查的那类 bug）。
+        // 注意 f 已经先取出来了，清空 files 不影响已选中的 file 引用。
+        try { inp.value = ''; } catch (e) { /* 个别浏览器只读，忽略 */ }
+      });
       ['dragenter', 'dragover'].forEach(function (ev) {
         drop.addEventListener(ev, function (e) {
           e.preventDefault(); drop.classList.add('over');
@@ -3499,6 +3685,7 @@
         <div style="display:flex; gap:8px;">
           <button class="ghost" onclick="exportAuditWord()" id="exportAuditBtn">📄 导出 Word</button>
           <button class="ghost" onclick="copyAuditMarkdown()">复制报告</button>
+          <button class="ghost" onclick="ReviewShare.fromAudit()" id="shareAuditBtn">🔗 协作审阅</button>
         </div>
       </div>`;
     // v0.9.5：供 Word 导出用的完整 markdown + 元信息
@@ -3509,6 +3696,10 @@
       样本量: data.rows || '',
     };
     if (directiveBadge) window._lastAuditMeta.核查指令 = data.directive.trim();
+    // v2.15：协作审阅用 —— 报告正文与结构化条目一起分享（缺了 comparisons
+    // 分享页就只剩一段 markdown，导师看不到逐条比对）
+    window._lastAuditComparisons = data.audit.comparisons || [];
+    window._lastAuditSuggestions = data.audit.suggestions || [];
     const chatHtml = AuditChat.render(data.audit.comparisons);
     $('checkResult').innerHTML = meta + renderExplanations(data.audit.explanations)
       + chatHtml + `<div class="md">${html}</div>` +
@@ -3530,6 +3721,264 @@
     );
   }
   window.copyAuditMarkdown = copyAuditMarkdown;
+
+  // ============================================================
+  // v2.15 · ⑨ 协作审阅：把核查报告变成一个可发给导师/同门的链接
+  //
+  // 三条硬约束（别顺手改坏）：
+  //   1. 内容存本机 .review_share/，**不上传任何云端** —— 提示文案里必须讲清楚；
+  //   2. 报告只读，对方只能**追加批注**，改不了正文；
+  //   3. 接口挂了只是少个按钮，绝不能影响核查主流程（失败只 toast）。
+  // ============================================================
+  const ReviewShare = (function () {
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function fmtDate(sec) {
+      const d = new Date(Number(sec) * 1000);
+      if (isNaN(d.getTime())) return '—';
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    }
+
+    function card(info) {
+      const full = location.origin + info.url;
+      return '<div class="rs-box">'
+        + '<div class="rs-title">🔗 协作审阅链接已生成</div>'
+        + '<input class="rs-url" id="rsUrl" readonly value="' + escapeHtml(full) + '">'
+        + '<div class="rs-actions">'
+        + '<button class="ghost" onclick="ReviewShare.copy()">复制链接</button>'
+        + '<a class="ghost" target="_blank" rel="noopener" href="'
+        + escapeHtml(info.url) + '">打开页面</a>'
+        + '<a class="ghost" href="' + escapeHtml(info.url)
+        + '/export">下载离线快照</a>'
+        + '</div>'
+        + '<div class="rs-hint">有效期至 ' + fmtDate(info.expires_at) + '。'
+        + '报告<b>只读</b>，导师 / 同门可在页面里追加批注，改不了正文；'
+        + '内容存在本机 <code>.review_share/</code> 目录，'
+        + '<b>不上传任何云端</b>，删掉目录即彻底销毁。</div>'
+        + '</div>';
+    }
+
+    function create(payload) {
+      return fetch('/api/review/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(function (r) {
+        return r.json().then(function (d) { return { r: r, d: d }; });
+      }).then(function (o) {
+        if (!o.r.ok || !o.d.ok) throw new Error(o.d.error || '生成失败');
+        return o.d;
+      });
+    }
+
+    /** 把结果卡片插到结果区顶部（不覆盖已有报告）。 */
+    function mount(hostId, info) {
+      const host = document.getElementById(hostId);
+      if (!host) return;
+      const old = document.getElementById('rsBox');
+      if (old) old.remove();
+      const wrap = document.createElement('div');
+      wrap.id = 'rsBox';
+      wrap.innerHTML = card(info);
+      host.insertBefore(wrap, host.firstChild);
+      wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    return {
+      /** Tab2 论文排查：分享当前核查报告。 */
+      fromAudit: function () {
+        const md = window._lastAuditMarkdown || '';
+        const cmps = window._lastAuditComparisons || [];
+        if (!md && !cmps.length) { toast('还没有可分享的核查结果'); return; }
+        const meta = window._lastAuditMeta || {};
+        const title = [meta.论文文件, meta.数据文件].filter(Boolean).join(' × ')
+          || '论文核查报告';
+        const btn = document.getElementById('shareAuditBtn');
+        if (btn) btn.disabled = true;
+        create({
+          title: title, markdown: md, comparisons: cmps,
+          suggestions: window._lastAuditSuggestions || [], kind: 'audit',
+        }).then(function (info) {
+          mount('checkResult', info);
+          toast('协作审阅链接已生成');
+        }).catch(function (e) {
+          toast('生成失败：' + e.message);
+        }).then(function () {
+          if (btn) btn.disabled = false;
+        });
+      },
+      /** Tab1 数据体检：分享体检报告（产品入口第一站）。 */
+      fromDatacheck: function () {
+        const md = window._lastDatacheckMarkdown || '';
+        const issues = window._lastDatacheckIssues || [];
+        if (!md && !issues.length) { toast('还没有可分享的体检结果'); return; }
+        const fname = (state && state.filename) ? String(state.filename) : '';
+        const btn = document.getElementById('dcShareBtn');
+        if (btn) btn.disabled = true;
+        // 体检是「问题清单」而不是「声称 vs 实算」，所以走 suggestions 而非 comparisons
+        create({
+          title: (fname ? fname + ' · ' : '') + '数据体检报告',
+          markdown: md,
+          comparisons: [],
+          suggestions: issues.map(function (it) {
+            const sev = it.level === 'high' ? '🔴 高' : (it.level === 'mid' ? '🟡 中' : '🔵 提示');
+            return sev + ' · ' + (it.title || '') + (it.suggestion ? ' —— ' + it.suggestion : '');
+          }),
+          kind: 'datacheck',
+        }).then(function (info) {
+          mount('datacheckBox', info);
+          toast('协作审阅链接已生成');
+        }).catch(function (e) {
+          toast('生成失败：' + e.message);
+        }).then(function () {
+          if (btn) btn.disabled = false;
+        });
+      },
+      copy: function () {
+        const el = document.getElementById('rsUrl');
+        if (!el) return;
+        el.select();
+        navigator.clipboard.writeText(el.value).then(
+          function () { toast('链接已复制'); },
+          function () { toast('复制失败，请手动选中复制'); }
+        );
+      },
+    };
+  })();
+  window.ReviewShare = ReviewShare;
+
+  // ============================================================
+  // v2.17 · ⑥ 模拟数据生成器（备课 / 答辩预演 / 验证算法）
+  // ============================================================
+  // 三条护栏（与后端 simulate.py 对齐）：
+  //   1. 方法清单**从后端 GET 取**，不在 HTML 里硬编码 12 个方法名；
+  //   2. 生成后必须**明确标注模拟**，且与真实上传走同一套 state / 体检流程，
+  //      让用户一眼看出这不是真实数据（不会误当真实数据写进论文）；
+  //   3. 失败只 toast + 复原按钮，绝不留下半张界面。
+  const Simulate = (function () {
+    let loaded = false;
+
+    function methodLabel(key) {
+      const sel = document.getElementById('method');
+      if (sel) {
+        for (let i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === key) return sel.options[i].text;
+        }
+      }
+      return key;
+    }
+
+    async function fillMethods() {
+      if (loaded) return;
+      const sel = document.getElementById('simMethod');
+      if (!sel) return;
+      try {
+        const r = await fetch('/api/simulate');
+        const j = await r.json();
+        const list = (j && j.methods) ? j.methods : [];
+        if (!list.length) return;
+        sel.innerHTML = list.map(function (k) {
+          return '<option value="' + k + '">' + escapeHtml(methodLabel(k)) + '</option>';
+        }).join('');
+        // 默认落在双因素 ANOVA：它自带"可检出的交互效应"，最适合演示
+        const tw = list.indexOf('two_way_anova');
+        if (tw >= 0) sel.selectedIndex = tw;
+        loaded = true;
+      } catch (e) {
+        // 静默：下拉空着也不影响其它功能（锦上添花原则）
+      }
+    }
+
+    function toggle() {
+      const p = document.getElementById('simPanel');
+      if (!p) return;
+      const willShow = p.style.display === 'none';
+      p.style.display = willShow ? '' : 'none';
+      if (willShow) fillMethods();
+    }
+
+    function fmtTruth(truth) {
+      if (!truth) return '';
+      const CN = {
+        expected_t: 't', expected_p: 'p', expected_d: "Cohen's d",
+        expected_F: 'F', expected_f: 'F', expected_r: 'r',
+        expected_chi2: 'χ²', expected_U: 'U', expected_W: 'W',
+        expected_stat: '统计量', expected_alpha: 'α',
+        expected_f_a: 'F(主效应A)', expected_f_b: 'F(主效应B)', expected_f_ab: 'F(交互)',
+        expected_p_a: 'p(主效应A)', expected_p_b: 'p(主效应B)', expected_p_ab: 'p(交互)',
+        expected_n: 'n', expected_n_events: '事件数',
+      };
+      const parts = [];
+      Object.keys(truth).forEach(function (k) {
+        if (k === 'method' || k === 'note') return;
+        const v = truth[k];
+        if (typeof v === 'number') {
+          parts.push(CN[k] || k.slice(8));
+          parts[parts.length - 1] += ' = ' + (Math.abs(v) < 1e-4 && v !== 0
+            ? v.toExponential(3) : String(Math.round(v * 10000) / 10000));
+        }
+      });
+      // 让 "expected_p" 这类键跟着它的统计量走，避免出现两个孤立的 p
+      return '应得的统计量：' + parts.join('　');
+    }
+
+    async function generate() {
+      const btn = document.getElementById('simGoBtn');
+      const methodEl = document.getElementById('simMethod');
+      if (!methodEl || !methodEl.value) { toast('请先选择统计方法'); return; }
+      const payload = {
+        method: methodEl.value,
+        effect_size: parseFloat(document.getElementById('simEffect').value),
+        n_per_group: parseInt(document.getElementById('simN').value, 10),
+        seed: parseInt(document.getElementById('simSeed').value, 10),
+        noise: 0.1,
+      };
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (!d.ok) { toast(d.error || '生成失败'); return; }
+        // 与真实上传同构：同一套 state、同一套工作台、同样的上传即体检
+        state = {
+          fileId: d.file_id,
+          filename: d.filename,
+          rows: d.rows,
+          columns: d.columns,
+          recommendation: d.recommendation,
+        };
+        state.simulated = true;
+        renderWorkspace();
+        runDataCheck();
+        // 生成时就指定了方法，直接选中它（推荐值未必对得上这份数据的设计）
+        const mSel = document.getElementById('method');
+        if (mSel && d.truth && d.truth.method) mSel.value = d.truth.method;
+        const tEl = document.getElementById('simTruth');
+        if (tEl) {
+          tEl.textContent = fmtTruth(d.truth);
+          tEl.style.display = '';
+        }
+        const dl = document.getElementById('simDownload');
+        if (dl && d.csv) {
+          dl.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(d.csv);
+          dl.download = d.filename;
+          dl.style.display = '';
+        }
+        // landing → workspace 的切换由 renderWorkspace() 内部完成，这里不重复做
+        toast('已生成模拟数据：' + d.rows + ' 行（' + methodLabel(d.truth.method || payload.method) + '）');
+      } catch (e) {
+        toast('生成失败：' + e.message);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    return { toggle: toggle, generate: generate, fillMethods: fillMethods, fmtTruth: fmtTruth };
+  })();
+  window.Simulate = Simulate;
 
   // ============================================================
   // Tab 3: 论文副驾驶（流水线 + 证据约束写作）

@@ -34,11 +34,72 @@ def _make_rng(seed: int) -> np.random.Generator:
 
 
 def _add_noise(values: np.ndarray, noise: float, rng: np.random.Generator) -> np.ndarray:
-    """给数组加高斯噪声（noise = 标准差占均值的比例，0 = 无噪声）。"""
+    """给数组加高斯噪声（noise = 标准差占均值的比例，0 = 无噪声）。
+
+    ⚠️ 缩放基准是 `values.mean()`：数据带大基数（如 50 分的量表）时，
+    noise=0.1 会加上 sd≈5 的噪声，足以把效应完全淹没。
+    有基数的生成器应把噪声加在**离差**上再抬回基数（见 `_gen_two_way_anova`），
+    否则既淹效应，又会因各单元格均值不同而引入异方差。
+    """
     if noise <= 0:
         return values
     scale = max(abs(values.mean()) * noise, 0.1)
     return values + rng.normal(0, scale, size=values.shape)
+
+
+# ---------------------------------------------------------------------------
+# 独立 oracle：不复用 app.py 的 ANOVA 实现，另走一条代码路径算 F / p
+# ---------------------------------------------------------------------------
+def _ols_ss(y: np.ndarray, X: np.ndarray) -> float:
+    """最小二乘残差平方和（用 lstsq，与 app 的 Type III SS 是两套代码）。"""
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ beta
+    return float(resid @ resid)
+
+
+def _two_way_terms(df: pd.DataFrame, a_col: str, b_col: str, v_col: str) -> dict:
+    """2×2 双因素 ANOVA 三项效应的 F / p（额外平方和法，平衡设计下 = Type III）。
+
+    返回 {"a": (F, p), "b": (F, p), "ab": (F, p)}。
+    """
+    y = df[v_col].to_numpy(dtype=float)
+    n = len(y)
+    a = pd.get_dummies(df[a_col], drop_first=True).to_numpy(dtype=float)
+    b = pd.get_dummies(df[b_col], drop_first=True).to_numpy(dtype=float)
+    ab = a * b
+    ones = np.ones((n, 1))
+
+    def sse(cols: list[np.ndarray]) -> float:
+        X = np.hstack([ones] + cols) if cols else ones
+        return _ols_ss(y, X)
+
+    full = [a, b, ab]
+    sse_full = sse(full)
+    df_full = n - (1 + a.shape[1] + b.shape[1] + ab.shape[1])
+    out: dict[str, tuple[float, float]] = {}
+    for name, term in (("a", a), ("b", b), ("ab", ab)):
+        reduced = [c for c in full if c is not term]
+        ss_term = sse(reduced) - sse_full
+        df_term = term.shape[1]
+        f = (ss_term / df_term) / (sse_full / df_full) if sse_full > 0 else float("nan")
+        out[name] = (float(f), float(stats.f.sf(f, df_term, df_full)))
+    return out
+
+
+def _rm_anova_f(data: np.ndarray) -> tuple[float, float]:
+    """被试内单因素重复测量 ANOVA 的 F / p（定义式，独立于 app 实现）。
+
+    data: (n_subjects, k_timepoints)
+    """
+    n, k = data.shape
+    grand = float(data.mean())
+    ss_total = float(((data - grand) ** 2).sum())
+    ss_time = float(n * ((data.mean(axis=0) - grand) ** 2).sum())
+    ss_subj = float(k * ((data.mean(axis=1) - grand) ** 2).sum())
+    ss_err = ss_total - ss_time - ss_subj
+    df_time, df_err = k - 1, (n - 1) * (k - 1)
+    f = (ss_time / df_time) / (ss_err / df_err) if ss_err > 0 else float("nan")
+    return float(f), float(stats.f.sf(f, df_time, df_err))
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +117,13 @@ def _gen_independent_t(effect_size: float, n_per_group: int, seed: int, noise: f
         "value": np.concatenate([g1, g2]),
     })
     # truth: 独立 T 检验应得的结果
+    # v2.17：d 的符号必须与 `run_independent_t` 同一约定 —— 那边是
+    # `d = (mean1 - mean2) / pooled_sd`，与 t 同号。旧写法用 (g2-g1) 会得到
+    # 与 expected_t 反号的 d（实测 +0.75 vs -0.75），拿它当标准答案去比对
+    # 会让人以为工具算错了符号。真值必须与被测对象同口径。
     t_stat, p_val = stats.ttest_ind(g1, g2)
     pooled_sd = np.sqrt(((n_per_group - 1) * g1.var(ddof=1) + (n_per_group - 1) * g2.var(ddof=1)) / (2 * n_per_group - 2))
-    cohens_d = (g2.mean() - g1.mean()) / pooled_sd if pooled_sd > 0 else float("nan")
+    cohens_d = (g1.mean() - g2.mean()) / pooled_sd if pooled_sd > 0 else float("nan")
     return df, {
         "method": "independent_t",
         "expected_t": float(t_stat),
@@ -107,26 +172,40 @@ def _gen_anova(effect_size: float, n_per_group: int, seed: int, noise: float) ->
 
 
 def _gen_two_way_anova(effect_size: float, n_per_group: int, seed: int, noise: float) -> tuple[pd.DataFrame, dict]:
+    """2×2 双因素，交互效应**真的可检出**。
+
+    v2.17 修的真缺陷：旧写法把噪声加在 base=50 的量上（`_add_noise` 按均值
+    缩放 → noise=0.1 就加 sd≈5.5），2.5 的交互当场被淹没 —— 实测 20 个 seed
+    只有 5 个 p_ab<0.05，中位 p=0.17，而 `note` 却写着"有交互效应"。
+    这也是《进一步完善计划》⑥ 验收标准（"重跑得到显著交互 p"）不达标的原因。
+    现在改成：噪声加在**离差**上再抬回基数 —— 各单元格共用同一个噪声尺度，
+    既保住同方差（不破坏 ANOVA 前提），也不再淹掉效应。
+    """
     rng = _make_rng(seed)
     n = max(n_per_group, 5)
     a_levels = ["A1", "A2"]
     b_levels = ["B1", "B2"]
-    rows = []
+    rows: list[dict] = []
+    mu: list[float] = []
     for a in a_levels:
         for b in b_levels:
-            for _ in range(n):
-                base = 50
-                a_eff = effect_size * 10 if a == "A2" else 0
-                b_eff = effect_size * 10 if b == "B2" else 0
-                interaction = effect_size * 5 if (a == "A2" and b == "B2") else 0
-                val = base + a_eff + b_eff + interaction + rng.normal(0, 5)
-                val = _add_noise(np.array([val]), noise, rng)[0]
-                rows.append({"factor_a": a, "factor_b": b, "value": val})
+            a_eff = effect_size * 10 if a == "A2" else 0
+            b_eff = effect_size * 10 if b == "B2" else 0
+            interaction = effect_size * 14 if (a == "A2" and b == "B2") else 0
+            mu.extend([a_eff + b_eff + interaction] * n)
+            rows.extend([{"factor_a": a, "factor_b": b} for _ in range(n)])
+    dev = np.array(mu, dtype=float) + rng.normal(0, 4, len(mu))
+    dev = _add_noise(dev, noise, rng)
     df = pd.DataFrame(rows)
+    df["value"] = 50 + dev
+    terms = _two_way_terms(df, "factor_a", "factor_b", "value")
     return df, {
         "method": "two_way_anova",
         "n_cells": 4, "n_per_cell": n,
-        "note": "双因素 ANOVA 有交互效应",
+        "expected_f_a": terms["a"][0], "expected_p_a": terms["a"][1],
+        "expected_f_b": terms["b"][0], "expected_p_b": terms["b"][1],
+        "expected_f_ab": terms["ab"][0], "expected_p_ab": terms["ab"][1],
+        "note": "双因素 ANOVA（交互 = effect_size×14；effect_size 越大越易检出）",
     }
 
 
@@ -135,16 +214,20 @@ def _gen_repeated_measures_anova(effect_size: float, n_per_group: int, seed: int
     n = max(n_per_group, 10)
     k = 3  # 3 个时间点
     cols = [f"T{i+1}" for i in range(k)]
-    data = {}
     base = rng.normal(50, 10, n)
-    for i in range(k):
-        t = base + i * effect_size * 5 + rng.normal(0, 3, n)
-        t = _add_noise(t, noise, rng)
-        data[cols[i]] = t
-    df = pd.DataFrame(data)
+    # 与 two_way 同理：噪声加在**离差**上（基数 50 会让 noise=0.1 变成 sd=5，
+    # 足以把 3 个时间点之间的差异淹掉），加完再抬回基数。
+    dev = np.column_stack([
+        i * effect_size * 5 + rng.normal(0, 3, n) for i in range(k)
+    ])
+    dev = _add_noise(dev, noise, rng)
+    mat = base[:, None] + dev
+    df = pd.DataFrame(mat, columns=cols)
+    f_val, p_val = _rm_anova_f(mat)
     return df, {
         "method": "repeated_measures_anova",
         "k_timepoints": k, "n_subjects": n,
+        "expected_F": f_val, "expected_p": p_val,
     }
 
 
@@ -197,8 +280,11 @@ def _gen_logistic_regression(effect_size: float, n_per_group: int, seed: int, no
     df = pd.DataFrame({"y_binary": y, "x_var": x})
     return df, {
         "method": "logistic_regression",
-        "n": n, "n_events": int(y.sum()),
-        "note": "二分类因变量 + 1 个连续自变量",
+        "expected_n": int(n), "expected_n_events": int(y.sum()),
+        "true_beta": float(effect_size),
+        "note": ("二分类因变量 + 1 个连续自变量。"
+                 "`expected_n*` 可与实算精确比对；`true_beta` 是**生成参数**——"
+                 "估计值只会落在它附近，不会相等（抽样变异），别拿它当精确 oracle。"),
     }
 
 
@@ -275,13 +361,16 @@ def _gen_cronbach_alpha(effect_size: float, n_per_group: int, seed: int, noise: 
         item = _add_noise(item, noise, rng)
         items[f"item_{i+1}"] = item
     df = pd.DataFrame(items)
-    # Cronbach's alpha 真值近似计算
+    # Cronbach's alpha 真值
+    # v2.17：去掉 `np.clip(alpha, 0, 1)` —— α 可以是负数（题目间负相关），
+    # 这是合法且有诊断意义的取值：实测一份反向题混编的量表 α = -4.86，
+    # 而 clip 后的"真值"会说 0，拿它当标准答案等于**美化真值**。
     item_vars = df.var(ddof=1).values
     total_var = df.sum(axis=1).var(ddof=1)
-    alpha = (k_items / (k_items - 1)) * (1 - item_vars.sum() / total_var) if total_var > 0 else 0
+    alpha = (k_items / (k_items - 1)) * (1 - item_vars.sum() / total_var) if total_var > 0 else float("nan")
     return df, {
         "method": "cronbach_alpha",
-        "expected_alpha": float(np.clip(alpha, 0, 1)),
+        "expected_alpha": float(alpha),
         "n_items": k_items, "n": n,
     }
 
@@ -326,6 +415,32 @@ def generate(method: str, effect_size: float = 0.5, n_per_group: int = 30,
     if gen is None:
         supported = " / ".join(sorted(_GENERATORS.keys()))
         raise ValueError(f"不支持的方法 {method}。当前支持：{supported}")
+
+    # v2.17：入参守门。旧版把 n=1 / 负数直接喂给 numpy，结果是
+    #   n=1  → 统计量算不出来，truth 里全是 NaN；
+    #   n<0  → `ValueError: negative dimensions are not allowed`（numpy 原生异常）。
+    # 前者尤其危险：**NaN 不在 JSON 标准里**，`jsonify` 会把 truth 序列化成
+    # 非法 JSON（NaN 裸奔），前端 `JSON.parse` 直接炸。宁可明确报错，
+    # 也绝不产出 NaN 真值。（`/api/simulate` 另有 `_clamp_num` 兜底，
+    # 但 CLI 与直接调用也会走这里，守门必须放在纯函数这一层。）
+    try:
+        n_per_group = int(n_per_group)
+    except (TypeError, ValueError):
+        raise ValueError("n_per_group 必须是整数。") from None
+    if n_per_group < 3:
+        raise ValueError("n_per_group 至少为 3（每组少于 3 个观测，统计量无意义）。")
+    for name, v in (("effect_size", effect_size), ("noise", noise), ("seed", seed)):
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} 必须是数字。") from None
+        if not np.isfinite(fv):
+            raise ValueError(f"{name} 必须是有限数字（不能是 NaN / Inf）。")
+    try:
+        seed = int(seed)
+    except (TypeError, ValueError):
+        raise ValueError("seed 必须是整数。") from None
+
     return gen(effect_size, n_per_group, seed, noise)
 
 

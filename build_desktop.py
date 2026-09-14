@@ -49,9 +49,10 @@ ENTRY = ROOT / "desktop_launcher.py"
 
 # 这些即使在项目里同名也不用拷（标准库同名模块、或 PyInstaller 自己认得）
 _SKIP_NAMES = {
-    "app",       # 入口起手就 import，且已被 datas 显式覆盖；扫到也没关系
-    "cli",       # 命令行工具，桌面端不需要
-    "simulate",  # 模拟脚本
+    "app",  # 入口起手就 import，且已被 datas 显式覆盖；扫到也没关系
+    "cli",  # 命令行工具，桌面端不需要
+    # v2.21：删掉这里的 "simulate" —— 它早已随包（datas 里明确列了），
+    # 留着豁免只会让"哪天它被从清单里删掉"这件事不再报警，正好是这道检查要防的。
 }
 
 

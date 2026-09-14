@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
-[![Tests](https://img.shields.io/badge/tests-49%20suites-brightgreen)](#七测试)
+[![Tests](https://img.shields.io/badge/tests-57%20suites-brightgreen)](#七测试)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![No Build](https://img.shields.io/badge/build-none%20required-success)](#二快速开始)
 
@@ -97,6 +97,8 @@
 
 支持对任意一条比对**追问**（审计对话），回答附带「依据：论文 x / 实算 y」回执。
 
+**AI 痕迹自查**（无需数据）：只传论文，纯本地规则检查高频套话密度、句长均匀性、被动句、拔高词无数据、AI 对话残留、数模高风险模型未说明等 8 类 AI 风格特征，给出分项扣分与修改建议。只评估风格风险，不判定作者身份。
+
 论文是 **.docx** 时，还会把里面的**描述统计表**（组别 | n | M | SD）逐格和你的数据核对——分组对得上才核对、对不上不硬猜，表格数字与数据不符会点名到行。
 
 ### 答辩准备包（v2.10 · 八站流程最后一站）
@@ -128,6 +130,51 @@ def run(df, group_col, value_col, alpha=0.05, **kw) -> dict: ...
 
 > 插件**不会**并进内置方法注册表：那张表是内置方法的真源，前端下拉、副驾驶、
 > 方法图谱都依赖它的完整性。插件走"注册表不认识 → 才查插件市场"的兜底分发。
+
+### 模拟数据生成器（v2.17）
+
+没有数据也能完整走一遍流程：选方法 + 效应量 + 样本量 + 种子 → 一键生成
+**可复现**的演示数据，直接载入分析流程（与真实上传同池，同样触发「上传即体检」）。
+用来备课、做 demo、或者反过来**验证工具自己算得对不对**。
+
+```bash
+python cli.py simulate two_way_anova --n 30 --seed 42 --verbose
+```
+
+每次生成都附一份 `truth`（这份数据**应得**的统计量）。`expected_*` 可与 `run_*`
+精确比对 —— 测试对 12 个方法 × 3 个 seed 逐位验过，对不上就是 bug。
+
+> ⚠️ 生成的是**模拟数据**，只用于演示 / 备课 / 验证算法，
+> **不能当真实研究数据写进论文**。文件名、界面、接口返回值三处都做了标注。
+
+### 协作审阅（v2.16）
+
+核查报告一键变成**可发给导师 / 同门的链接**（`/s/<token>`）：对方打开即可阅读
+并追加批注，不必装 Python、不必有账号。
+
+```bash
+# 默认就落在项目内 .review_share/，零配置；想彻底关掉：
+export REVIEW_SHARE_DIR=off
+```
+
+四条底线：
+
+| 底线 | 怎么保证的 |
+| --- | --- |
+| **报告只读、批注另存** | 批注只追加/删除，**绝不改** `markdown`/`comparisons`；测试逐字节比对过 |
+| **链接不可猜** | 96 bit 随机 token，**不是自增 ID**；非法 token 一律 404（不是 500） |
+| **无 XSS** | 页面**不含任何 JS**，CSP 收到 `default-src 'none'`，所有内容过 `html.escape` |
+| **本地优先** | 只写 `.review_share/`，**不上传任何云端**；删掉目录即彻底销毁，默认 30 天过期 |
+
+> 报告是证据，意见是意见 —— 两者物理分开，所以"协作审阅"不会变成
+> 「改完再说是导师意见」的新造假通道。
+
+两个入口都能分享：**论文排查报告**（Tab2）与**数据体检报告**（Tab1，产品入口
+第一站，发导师看"这份数据有没有问题"更早也更有用）。体检报告的 `markdown` 由
+后端 `datacheck.render_markdown()` 统一渲染，与页面、CLI `check-data` 三处一种说法。
+
+管理接口 `GET /api/review/list`（仅元信息，不含正文）与 `POST /api/review/gc`
+（只清过期）**在访问门禁内**——分享页是给没口令的人看的，分享列表不是。
 
 ### 论文副驾驶
 
@@ -347,6 +394,7 @@ python wsgi.py
 │   └── base.py               # Agent 基类
 ├── security_guard.py         # 应用层限流（内存有界 + 防 XFF 伪造）
 ├── cross_platform.py         # 跨端适配层（CORS / 预检，默认关闭）
+├── access_guard.py           # 访问门禁（ACCESS_CODE 一行环境变量，默认关闭）
 ├── tone_guide.py             # 语气规约（规则化，只报不改）
 │
 ├── templates/index.html      # 单页应用（原生 JS，无构建）
@@ -356,12 +404,22 @@ python wsgi.py
 │   ├── offline.html          #   离线页
 │   ├── favicon.ico           #   站点图标
 │   └── icons/                #   192/512 图标（含 maskable 版本）
+├── review_share.py           # v2.16 协作审阅：报告 → 分享链接 + 批注（本地落盘）
+├── .review_share/            # 分享落盘目录（默认位置，已 gitignore）
 ├── make_icon.py              # 生成 favicon 与全套 PWA 图标
 ├── examples/                 # 8 份示例数据与论文
 ├── docs/ARCHITECTURE.md      # 架构说明（改代码前先读这个）
 ├── tools/                    # 开发期诊断脚本（需真实 Key，不参与 CI）
 │
-├── *_test.py                 # 47 个回归测试套件
+├── desktop_launcher.py       # 桌面端入口（端口检测 + 拉起 Flask + 开浏览器）
+├── desktop.spec              # PyInstaller 配置（★ 新增模块必须回来补一行）
+├── build_desktop.py          # 一键打包（含打包前预检，漏模块 → rc=2）
+├── deploy/                   # 部署辅助（Nginx 配置模板等）
+│
+├── scripts/
+│   ├── regress_run.py        # 全量回归入口（单元测试 + exe 打包链路验证）
+│   └── exe_e2e.py            # 打包链路验证（真启动 exe 走 12 步）
+├── *_test.py                 # 24 个回归测试套件
 ├── requirements.txt
 ├── .env.example
 └── Dockerfile / docker-compose.yml
@@ -382,24 +440,53 @@ python wsgi.py
 
 ## 七、测试
 
-47 个测试套件，覆盖计算正确性、契约一致性、安全边界与前端逻辑。
-```bash
-# 多数测试不需要外部依赖
-export NO_PROXY=127.0.0.1,localhost   # 防代理截获本机请求
-python registry_test.py
-python methods_test.py
-python security_guard_test.py
+24 个测试套件（部分需真实 API Key 或 `--live`，默认跳过），覆盖计算正确性、契约一致性、安全边界与前端逻辑。
 
-# 部分测试需要先启动本地服务
-python app.py                         # 另开一个终端也行
-python smoke_test.py
-python paper_check_test.py
+### 一条命令跑全量回归（推荐）
+
+```bash
+.venv/Scripts/python.exe scripts/regress_run.py            # 单元测试 + exe 打包链路验证
+.venv/Scripts/python.exe scripts/regress_run.py --fast     # 只跑单元测试（跳过 exe）
+.venv/Scripts/python.exe scripts/regress_run.py --only exe # 只验打包链路
 ```
 
-几类测试的规模：`registry`(104) · `rm_anova`(88) · `datacheck`(115) · `forensics`(101) ·
-`cli`(69) · `red_line`(66) · `pwa`(57) · `audit_chat`(56) · `security_guard`(56) ·
-`tone_guide`(53) · `grimmer`(56) · `regression`(39) · `cronbach`(38) · `two_way`(30) ·
-`explain`(27) · `datacheck_ui`(25) · `secrets_guard`(19)。
+会汇总到 `_tmp_reg.txt`；有失败时另写 `_regress_<套件名>.log` 存该套件的完整原始输出
+（不然你只知道"cli_test 有一项失败"，还得手工重跑一遍才能看到详情）。
+退出码 0 全通过 / 1 有失败 / 2 环境未就绪。
+
+**为什么回归里要带上 exe 验证**：单元测试全绿 ≠ exe 能跑。exe 缺模块是"构建期"问题，
+任何单测都发现不了 —— 2026-09-11 那次 93.9MB 的包双击闪退，当时单测是全绿的。
+所以 `regress_run.py` 默认会真启动 `dist/智论助手.exe` 走完 12 步链路。
+
+**`cli_test` 的一条"只在回归里失败"的假象（已修）**：`cli_test` §9 用子进程交叉验证
+报告 md5 的可复现性。原实现起 4 个子进程但**不传 `env`**，于是子进程继承父进程环境：
+从回归 runner 里跑时父进程若已设 `PYTHONHASHSEED` 为某个具体值，这 4 个子进程全会拿到同一个值
+→ 这段"跨子进程一致"是**假绿**。现改为额外起 4 个**显式抽掉 `PYTHONHASHSEED`** 的子进程（共 8 个），
+逼它们用随机 hash，才真正验证了这个断言声称要守的性质。
+
+```bash
+# 也可以单独跑某几个套件
+export NO_PROXY=127.0.0.1,localhost   # 防代理截获本机请求
+python registry_test.py
+python security_guard_test.py
+
+# 少数套件需要先启动本地服务（否则返回 rc=2 = 环境未就绪，不是失败）
+python app.py                         # 另开一个终端也行
+python paper_check_test.py
+python methods_test.py
+```
+
+几类测试的规模：`simulate`(244) · `review_share`(181) · `datacheck`(115) · `table_check`(111) ·
+`registry`(104) · `copilot`(103) · `forensics`(101) · `export_docx`(97) · `plugin_registry`(93) ·
+`access_guard`(92) · `rm_anova`(88) · `cli`(69) · `grimmer`(56) · `red_line`(66) · `audit_chat`(56) ·
+`security_guard`(56) · `pwa`(57) · `tone_guide`(53) · `desktop_launcher`(48) · `build_desktop`(42) ·
+`regression`(39) · `cronbach`(38) · `two_way`(30) · `plugin_worker`(28) · `explain`(27) ·
+`datacheck_ui`(25) · `grim`(32) · `secrets_guard`(19)
+
+前端内联 JS 另有 **6 个 Node 探针**（`node _syntaxcheck/*_probe.js`，共 200+ 断言）：
+`defense_export`(82) · `simulate` · `review_share` · `datacheck` · `plugin_methods` · `image_audit`(47)。
+`node --check` 只验语法，探针用 DOM mock 把 IIFE 抽出来**真跑一遍**，验的是契约
+（该发什么请求、守门有没有生效、失败后按钮有没有复原、后端文本有没有转义）。
 
 > 统计方法都配了**独立 oracle 交叉验证**（如重复测量 ANOVA 同时用定义式与 OLS 两条路径
 > 算同一组数，互相印证）。

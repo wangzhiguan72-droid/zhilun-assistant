@@ -6,7 +6,12 @@
     → 论文核查（含表格交叉核查）→ 生成清洗副本 → 答辩准备包 → 关闭
 
 任何一步非 200 或返回 ok=false 都算失败。用法：
-    python _exe_e2e.py
+    python scripts/exe_e2e.py
+
+⚠️ 路径基准是**仓库根**而不是本文件所在目录：
+    本脚本在 `scripts/` 下，但 `dist/`、`examples/` 都在仓库根。
+    早期版本用 `Path(__file__).parent` 找 `dist/智论助手.exe`，
+    文件从根目录挪进 `scripts/` 之后就会永远找不到 exe（静默 SKIP，看起来"通过"）。
 """
 import json
 import subprocess
@@ -16,9 +21,21 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+HERE = Path(__file__).resolve().parent
+# 向上找到含 dist/ 或 examples/ 的那一层，作为仓库根
+ROOT = HERE if (HERE / "examples").exists() else HERE.parent
 EXE = ROOT / "dist" / "智论助手.exe"
 BASE = "http://127.0.0.1:5000"
+
+# =============================================================================
+# 目录定位自检 —— 防止脚本被移动后"静默 SKIP 却报通过"
+# =============================================================================
+if not (ROOT / "examples").exists():
+    print("  [FAIL] 找不到 examples/（仓库根判定错误）ROOT=%s" % ROOT)
+    sys.exit(2)
+if not EXE.exists():
+    print("  [FAIL] 未找到 %s —— 先跑 `python build_desktop.py`" % EXE)
+    sys.exit(2)
 
 results = []
 

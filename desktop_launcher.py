@@ -5,6 +5,7 @@
 - 若 5000 端口已有本应用实例，则直接复用并打开浏览器
 - 否则自动寻找空闲端口启动
 """
+import json
 import sys
 import time
 import socket
@@ -15,18 +16,45 @@ from pathlib import Path
 
 DEFAULT_PORT = 5000
 APP_TITLE = "智论助手 v0.9.0"
+# 本机 /health 里的身份标记（见 `app.health`）。老版本没有这个字段，所以
+# **缺字段仍按自家算，字段不对才算别人** —— 既认得老实例，又不会把别人认成自己。
+SERVICE_MARKER = "zhilun-assistant"
+
+# v2.19：回环地址的请求**强制不走代理**。开过代理工具 / 公司网络下，
+# `urlopen` 会把 127.0.0.1 也发给代理，于是"已有实例"永远检测不到 ——
+# 又起一个新实例（端口还不一样，用户会以为刚才的数据丢了）。
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _http_get(url: str, timeout: float) -> str:
+    """GET 一个**本机** URL，绕过一切代理，返回响应体文本。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "zhilun-launcher"})
+    with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
 
 
 def is_our_app(port: int, timeout: float = 1.0) -> bool:
-    """检测指定端口上是否运行着本应用（通过 /health 返回 ok）。"""
+    """检测指定端口上是否运行着本应用。
+
+    判定标准：``/health`` 返回**合法 JSON** 且 ``ok`` 为真；若响应里带了
+    ``service`` 标记，则必须等于 ``zhilun-assistant``。
+
+    旧实现只做 ``'"ok"' in body and "true" in body`` 子串匹配，会把任何
+    返回 ``{"ok": true}`` 的第三方服务误认成自己（5000 是 Flask 默认端口，
+    撞车概率不低），然后打开别人的页面。
+    """
     try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/health", timeout=timeout
-        ) as resp:
-            body = resp.read().decode("utf-8", errors="ignore")
-            return '"ok"' in body and "true" in body
-    except Exception:
+        body = _http_get(f"http://127.0.0.1:{port}/health", timeout)
+    except Exception:  # noqa: BLE001 —— 连不上 / 超时 / 非 2xx，一律"不是我们"
         return False
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(data, dict) or not data.get("ok"):
+        return False
+    service = data.get("service")
+    return service is None or service == SERVICE_MARKER
 
 
 def port_is_free(port: int) -> bool:
@@ -50,6 +78,18 @@ def find_free_port(start: int = DEFAULT_PORT, tries: int = 20) -> int:
 def open_browser_delayed(url: str, delay: float = 2.0) -> None:
     time.sleep(delay)
     webbrowser.open(url)
+
+
+def _wait_for_enter(prompt: str = "按回车键退出...") -> None:
+    """等用户回车。无控制台时（--windowed 打包、CI、被脚本拉起）直接放过。
+
+    旧实现直接 `input(...)`：没有 stdin 的环境会抛 `EOFError`，
+    用户还没看到"无法导入 app"这行报错，窗口就先炸了。
+    """
+    try:
+        input(prompt)
+    except (EOFError, OSError):
+        pass
 
 
 def main() -> None:
@@ -86,7 +126,7 @@ def main() -> None:
         from app import app
     except Exception as e:  # noqa: BLE001
         print(f"[错误] 无法导入 app：{e}")
-        input("按回车键退出...")
+        _wait_for_enter()
         return
 
     print("\n" + "=" * 44)
@@ -96,9 +136,17 @@ def main() -> None:
     print("=" * 44 + "\n")
 
     try:
-        app.run(host="127.0.0.1", port=port, debug=False)
+        # use_reloader 必须显式关：reloader 会派生子进程，冻结包里行为不可控
+        # （且本项目实测 reloader 子进程会随父进程回收，端口变成时好时坏）。
+        app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         print("\n[退出] 已停止")
+    except OSError as e:
+        # 检测端口和实际绑定之间有时间差，被别的程序抢了就会走到这里。
+        # 旧实现只捕获 KeyboardInterrupt，这里会甩一屏 traceback，
+        # 而浏览器线程已经把用户带到了这个打不开的地址上。
+        print(f"\n[错误] 端口 {port} 无法绑定：{e}")
+        print("（多半是刚才检测完又被别的程序占用了，重开一次即可）")
 
 
 if __name__ == "__main__":

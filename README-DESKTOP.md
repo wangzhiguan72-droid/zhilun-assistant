@@ -6,9 +6,12 @@
 
 1. 双击 `dist/智论助手.exe`
 2. 控制台窗口出现后，浏览器会自动打开 `http://127.0.0.1:5000`
-3. 用完关闭控制台窗口即可（服务随之停止）
+3. **退出走右下角托盘图标**（右键 → 退出）；没看到托盘图标时，关闭控制台窗口也可停止服务
 
-**注意**：不要关闭那个黑色控制台窗口，它是后端服务本体。
+**注意**：控制台窗口是后端服务本体，用托盘期间请**最小化**它，不要点 ×。
+
+> 🆕 **拖拽启动**：把 `.csv / .xlsx` 数据文件直接拖到 `智论助手.exe` 图标上，
+> 应用打开后自动加载该文件并立刻出「数据体检」报告。
 
 ## 二、它做了什么
 
@@ -20,10 +23,12 @@
 2. 拉起 Flask 后端（`app.py`）
 3. 延迟 2 秒自动打开浏览器
 
-两个 Tab 功能都在：
+四个页面功能都在：
 
-- **数据分析**：**12 种统计方法**（T 检验 / ANOVA / 相关 / 卡方 / 配对 T / Mann-Whitney / Wilcoxon / 线性回归 / Logistic 回归 / **Cronbach's α** / **双因素 ANOVA** / **重复测量 ANOVA**）+ 自动图表 + Word 导出
-- **论文排查**：上传论文 + 数据 → 识别方法/统计量/变量 → 规则化建议 → 可导出 Word
+- **📊 数据分析**：14+ 种统计方法（T 检验 / ANOVA / 相关 / 卡方 / 配对 T / Mann-Whitney / Wilcoxon / 线性回归 / Logistic 回归 / Cronbach's α / 双因素 ANOVA / 重复测量 ANOVA，以及**插件市场**里的扩展方法如 TOST 等价性检验）+ 上传即**数据体检** + 一键清洗副本 + 自动图表 + 答辩 Q&A 预演 + 图表打包
+- **🔍 论文排查**：上传论文 + 数据 → 识别方法/统计量/变量 → 逐项比对（含 docx **表格交叉核查**、GRIM/GRIMMER 取证）→ **AI 痕迹自查**（无需数据）→ 协作审阅分享链接 → 可导出 Word
+- **🧭 论文副驾驶**：六阶段流水线（调研→综述→设计→分析→核查→撰写）+ 证据约束写作 + 可选 LLM 润色
+- **托盘常驻**：右下角图标，双击打开页面、右键退出；pystray 未安装时自动退回控制台模式
 
 ## 三、重新打包
 
@@ -40,7 +45,8 @@
 | `desktop.spec` | PyInstaller 配置（资源清单 + 隐藏导入） |
 | `desktop_launcher.py` | 桌面启动器（端口检测 + 拉起 Flask + 开浏览器） |
 | `make_icon.py` | 生成 `assets/icon.ico` / `icon.png` |
-| `_exe_e2e.py` | **打包后**的功能验证（启动 exe 跑完整链路） |
+| `scripts/exe_e2e.py` | **打包后**的功能验证（启动 exe 跑完整链路） |
+| `scripts/regress_run.py` | 全量回归入口（单元测试 + 上面这项，已收编） |
 
 ### ⚠️ 打包前预检（必须理解这一条）
 
@@ -69,17 +75,24 @@
 
 ### 打包后请跑一次功能验证
 
-构建成功 ≠ 功能可用（预检只保证"模块都进去了"）。`_exe_e2e.py` 会**真的启动 exe**，
+构建成功 ≠ 功能可用（预检只保证"模块都进去了"）。`scripts/exe_e2e.py` 会**真的启动 exe**，
 走完 12 步完整链路再关掉：
 
 ```bash
-.venv/Scripts/python.exe _exe_e2e.py
+# 单独跑
+.venv/Scripts/python.exe scripts/exe_e2e.py
+
+# 或走统一回归入口（推荐：顺带把 24 个单元测试也跑了）
+.venv/Scripts/python.exe scripts/regress_run.py
 ```
 
 覆盖：启动就绪 → 首页 → 上传 → 数据体检 → 清洗副本 → T 检验 → 方法知识图谱
 → 论文核查（含表格交叉核查）→ 流水线阶段 → 答辩准备包 → 示例数据 → 门禁零干扰。
 
-全绿（`12 通过 / 0 失败`）才建议发给同学。
+全绿（`exe 端到端 12 通过 / 0 失败`）才建议发给同学。
+
+> `scripts/regress_run.py` 默认已经把 exe 验证包含在内。
+> 改完普通代码想快点跑，加 `--fast` 跳过；只验打包链路用 `--only exe`。
 
 
 ## 四、LLM 功能说明
@@ -87,8 +100,9 @@
 数据分析的「AI 深度解读」需要 API Key（环境变量）：
 
 ```
-ZHIPU_API_KEY / DASHSCOPE_API_KEY / DEEPSEEK_API_KEY / SILICONFLOW_API_KEY
+ZHIPU_API_KEY / DASHSCOPE_API_KEY / DEEPSEEK_API_KEY / SILICONFLOW_API_KEY / KIMI_API_KEY / MIMO_API_KEY
 ```
+（共 7 家平台；也可以在页面右上角「⚙️ 模型设置」里填自己的 Key，只存本机浏览器。）
 
 没有 Key 时会**静默降级**为规则化输出，其余功能不受影响。
 （结果缓存命中时甚至完全不需要 Key。）
@@ -104,15 +118,16 @@ Visual Studio Build Tools 安装失败，Rust 的 GNU 工具链又缺 `dlltool`�
 PyInstaller 方案包体 94.6 MB，但**零额外依赖、构建稳定**，对「本机内测」场景
 完全够用。
 
-## 六、当前版本状态（v2.14）
+## 六、当前版本状态
 
 | 项 | 值 |
 | --- | --- |
 | 产物 | `dist/智论助手.exe` |
-| 体积 | **94.6 MB**（单文件，免装 Python） |
+| 体积 | 约 95 MB（单文件，免装 Python） |
+| 版本 | 以根目录 `version.py` 为准（单一真源；页面角标与启动器横幅同源） |
 | 构建校验 | `python build_desktop.py` → 预检通过 + rc=0 |
-| **功能验证** | **`python _exe_e2e.py` → 12 通过 / 0 失败** |
-| 打包模块 | 24 个本地模块全部就位（见 `build/desktop/Analysis-00.toc`） |
+| **功能验证** | **`python scripts/regress_run.py` → 25 项全绿（24 单元测试 + exe 12 步）** |
+| 打包模块 | 以 `build_desktop.py` 预检为准（预检 rc=0 = 全部就位） |
 
 exe 已验证可用路由：`/` · `/health` · `/api/upload` · `/api/datacheck` ·
 `/api/datacheck/fix` · `/api/analyze` · `/api/methods_graph` · `/api/check_paper` ·

@@ -8,7 +8,9 @@
 """
 import json
 import sys
+import tempfile
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -203,7 +205,10 @@ if server_up:
     df4["buy"] = ((0.0004 * df4["income"] + 0.12 * df4["edu_years"] - 4.5
                    + rng.normal(0, 0.4, 120)) > 0).astype(float)
     df4.insert(0, "id", range(1, 121))
-    csv_path = r"D:\论文排版辅助agent\examples\_regression_tmp.csv"
+    # 临时 CSV 放在**临时目录**而不是 examples/：
+    #   · 旧实现把路径硬编码成作者的绝对路径（换台机器直接 FileNotFoundError）
+    #   · 而且写进 examples/ 后会留在仓库里（测试产物污染 fixtures 目录）
+    csv_path = Path(tempfile.gettempdir()) / "_regression_tmp.csv"
     df4.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
     boundary = "----multi"
@@ -276,8 +281,11 @@ if server_up:
     r3 = post_json("/api/analyze", {"file_id": up["file_id"], "method": "nope"})
     check("错误提示含新方法", "linear_regression" in r3["error"])
 
-    import os
-    os.remove(csv_path)
+    # 清理临时文件（放在 finally 语义的位置：上面任何一步抛异常都不该留下垃圾）
+    try:
+        csv_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 else:
     section("6. HTTP 契约层 · 服务器未运行，跳过（启动 app.py 后可重跑）")
 

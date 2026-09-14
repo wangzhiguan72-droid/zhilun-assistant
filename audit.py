@@ -718,6 +718,10 @@ _KIND_CN = {
     "chi2": "卡方值 χ²", "df": "自由度", "r2": "R²",
     "pseudo_r2": "伪 R²", "beta": "回归系数 β", "or": "优势比 OR",
     "alpha": "信度系数 α", "u": "U 统计量", "w": "W 统计量",
+    # v2.16：表格核查的三种统计量。缺了它们，审计对话的条目标签会显示成
+    # 原始 key（"table_mean"）而不是中文，前端 chip 里出现一坨英文很出戏。
+    "table_n": "表格样本量 n", "table_mean": "表格均值",
+    "table_sd": "表格标准差",
 }
 
 
@@ -788,6 +792,56 @@ def _attach_comparison_summaries(comparisons: list[dict], real: dict,
             "hint": hint,
         }
         out.append(c)
+    return out
+
+
+def _table_text_comparisons(tct: dict | None) -> list[dict]:
+    """把 v2.12 文本形态表格（Markdown 表 / 管道表）的不一致转成 comparison 条目。
+
+    **为什么要有这个函数**：v2.12 原本只把不一致写进 `suggestions`，
+    于是它们既不在 `comparisons` 里（**没有 summary → 审计对话点不到**），
+    也不在协作审阅的逐条比对表里。而 v2.11 的 docx 表格是两者都进的 ——
+    同一类问题两种待遇，用户会以为"文本表那条不能追问是故意的"。
+
+    统一成与 docx 表格相同的 `table_mean` / `table_sd` kind，
+    这样「报告里看到的条目」＝「能追问的条目」＝「分享出去的条目」。
+
+    **只比不判**：措辞沿用 table_check 的口径，绝不暗示造假。
+    """
+    out: list[dict] = []
+    for m in (tct or {}).get("mismatches") or []:
+        if not isinstance(m, dict):
+            continue  # 脏数据：不是字典就跳过，别把整份报告搞崩
+        try:
+            real_v = float(m.get("real"))
+            diff_v = float(m.get("diff"))
+            real_s = f"{real_v:.4f}"
+            diff_s = f"{diff_v:.4f}"
+        except (TypeError, ValueError):
+            continue
+        kind = "table_mean" if m.get("kind") == "mean" else "table_sd"
+        cn = "均值" if kind == "table_mean" else "标准差"
+        label = (m.get("label") or "?")[:40]
+        # 表名只在"看着真像表题"时才带。table_check 取的是表格**前一行**，
+        # 那行经常是一整句正文（"本研究对被试进行了测量，描述统计如下。"），
+        # 照抄进来会把结论句撑成读不通的长句。
+        # 判定：形如「表1 …」/「表一 …」/「Table 1 …」，或很短（≤12 字）的一行；
+        # 且以句号结尾的一律不当表题（那是正文句子）。
+        cap = (m.get("table") or "").strip().strip("：: ")
+        cap_s = ""
+        if cap and not cap.endswith(("。", ".", "；", ";")):
+            cap_like = bool(re.match(r"^(表\s*[\d一二三四五六七八九十]+"
+                                     r"|Table\s*\d+)", cap, re.I))
+            if cap_like or len(cap) <= 12:
+                cap_s = f"「{cap}」"  # 不额外套"表"字，避免出现 表「表1 描述统计」
+        out.append({
+            "status": "mismatch",
+            "kind": kind,
+            "paper": f"{cap_s}第「{label}」行 {cn} {m.get('raw')}",
+            "real": f"{real_s}（列「{m.get('column') or '?'}」，n={m.get('n')}）",
+            "diff": diff_s,
+            "source": "table_text",
+        })
     return out
 
 
@@ -1415,6 +1469,9 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     #      v2.11：表格核对的不一致条目也在这里合并（不受指令过滤影响——
     #      它们是另一类核查），同样能被追问。
     comparisons = comparisons + table_check["mismatches"]
+    # v2.16：文本形态表格（Markdown / 管道表）的不一致同样进 comparisons，
+    # 让它们可被追问、也能出现在协作审阅的逐条比对里（见 _table_text_comparisons）。
+    comparisons = comparisons + _table_text_comparisons(table_check_text)
     comparisons = _attach_comparison_summaries(comparisons, real, methods)
 
     # 5) 渲染 Markdown
@@ -1544,17 +1601,24 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
 
     # 5.5 声称 vs 实际 对比
     md_lines.append("\n### 五、声称值 vs 实际值 对比\n")
-    if any(c.get("status") not in ("no_real",) for c in comparisons):
+    # v2.16：表格核查条目（table_n / table_mean / table_sd）在 5.5d / 5.5e
+    # 有专门的、信息更全的表（含表名、行标签、容差），这里不再重复一行，
+    # 否则同一处不一致在报告里出现两次，反而让人以为查出了两倍的问题。
+    _cmp_rows = [c for c in comparisons
+                 if c.get("status") != "no_real"
+                 and not str(c.get("kind") or "").startswith("table_")]
+    if _cmp_rows:
         md_lines.append("| 统计量 | 论文写法 | 真实数据 | 差异 | 状态 |")
         md_lines.append("| --- | --- | --- | --- | --- |")
-        for c in comparisons:
-            if c.get("status") == "no_real":
-                continue
+        for c in _cmp_rows:
             status_label = {"ok": "✅ 一致", "minor_diff": "🟡 小差异", "mismatch": "🔴 不一致",
                             "unknown": "⚪ 无法对比"}.get(c["status"], c["status"])
             md_lines.append(f"| {c.get('kind', '-')} | {c.get('paper', '-')} "
                             f"| {c.get('real', '-')} | {c.get('diff', '-')} "
                             f"| {status_label} |")
+    elif any(str(c.get("kind") or "").startswith("table_") for c in comparisons):
+        # 只有表格类比对时，别误报"没有可对比的统计量"——明明比过
+        md_lines.append("统计量级别的比对见本节上方的「表格数字一致性核查」。")
     else:
         md_lines.append("没有可对比的统计量（论文未给出具体数值，或实际跑失败）。")
 

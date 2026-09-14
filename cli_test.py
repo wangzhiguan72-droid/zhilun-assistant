@@ -256,14 +256,35 @@ _probe = (
     "print(hashlib.md5(r['markdown'].encode()).hexdigest())\n"
 )
 _hashes = []
-for _ in range(4):
-    _p = subprocess.run([PY, "-u", "-c", _probe], cwd=str(ROOT),
+
+
+def _hash_once(env=None):
+    """起一个子进程算报告 md5。env=None 表示继承父进程环境。"""
+    _p = subprocess.run([PY, "-u", "-c", _probe], cwd=str(ROOT), env=env,
                         capture_output=True, text=True, encoding="utf-8",
                         errors="replace", timeout=180)
-    if _p.stdout.strip():
-        _hashes.append(_p.stdout.strip().splitlines()[-1])
-check(f"报告 md5 跨 {len(_hashes)} 个子进程一致",
-      len(_hashes) == 4 and len(set(_hashes)) == 1,
+    return _p.stdout.strip().splitlines()[-1] if _p.stdout.strip() else ""
+
+
+# 历史 bug（PYTHONHASHSEED 事故）：这一条曾以「rc=1、68 通过 / 1 失败」的形式
+# 出现，且**只在全量回归 runner 里复现**——单独跑 cli_test 时全绿。
+# 原因是 `_probe` 起的子进程不传 env 时会继承父进程环境：
+#   · 从 `_regress_run.py` 里跑，若父进程已设 PYTHONHASHSEED 为某个具体值，
+#     4 个子进程全会拿到同一个值 → 这段「跨子进程一致」是**假绿**，
+#     反而掩盖了 hash 随机化是否真的被消除；
+#   · 因此下面显式**抽掉**该变量，逼每个子进程用随机 hash，
+#     这才真正验证「报告跨进程可复现」这个它声称要守的性质。
+_diffseed_env = {k: v for k, v in os.environ.items() if k != "PYTHONHASHSEED"}
+for _ in range(4):
+    _h = _hash_once()
+    if _h:
+        _hashes.append(_h)
+for _ in range(4):
+    _h = _hash_once(_diffseed_env)
+    if _h:
+        _hashes.append(_h)
+check(f"报告 md5 跨 {len(_hashes)} 个子进程一致（含 4 个随机 hash 子进程）",
+      len(_hashes) == 8 and len(set(_hashes)) == 1,
       f"hashes={_hashes}")
 
 # 同一进程内多次调用也应一致，且顺序 == 文档顺序

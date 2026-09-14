@@ -235,13 +235,19 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         print(f"错误：未知方法 {method}。当前支持：{' / '.join(available_methods())}", file=sys.stderr)
         sys.exit(1)
 
-    df, truth = generate(
-        method=method,
-        effect_size=args.effect_size,
-        n_per_group=args.n,
-        seed=args.seed,
-        noise=args.noise,
-    )
+    # v2.17：generate() 对非法入参抛 ValueError（n<3 / NaN 等）。CLI 要把它
+    # 变成一行可读的错误 + 退出码 1，而不是甩一屏 traceback 给用户。
+    try:
+        df, truth = generate(
+            method=method,
+            effect_size=args.effect_size,
+            n_per_group=args.n,
+            seed=args.seed,
+            noise=args.noise,
+        )
+    except ValueError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        sys.exit(1)
 
     if args.output:
         df.to_csv(args.output, index=False)

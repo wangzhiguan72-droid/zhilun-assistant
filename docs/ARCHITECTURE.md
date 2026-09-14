@@ -107,6 +107,14 @@ run_independent_t(df, group_col, value_col) -> {
   子进程重跑主模块会递归派生进程。独立解释器起 worker 不碰 `__main__`。
 - 冻结环境（PyInstaller）下 `sys.executable` 不是解释器 → 降级为进程内执行，
   并通过 `/api/plugins` 的 `sandbox` 字段**如实标注**，不静默。
+- **v2.20：stdout 是协议的，不是插件的**。父进程 `pickle.loads(proc.stdout)`，
+  插件往 stdout 写的任何东西都会混进 pickle 流。不 flush 的小 `print` 会**侥幸**
+  通过（文本层缓冲到进程退出才 flush，落在 pickle 之后被 `loads` 忽略），但
+  `print(..., flush=True)` / 输出超过 8KB 缓冲区 / `PYTHONUNBUFFERED=1` 必炸，
+  报的还是"无法解析的结果"，而 stderr 为空 —— 用户看不出是自己多打了一行调试 print。
+  故插件执行期间 `sys.stdout` 改道 `sys.stderr`，结束后还原；结果先落内存缓冲
+  再整体写出（不可 pickle 的结果不会留下半截 pickle）；插件同目录加入
+  `sys.path`（**append 不 insert**，免得插件自带的 `numpy.py` 顶掉标准库）。
 
 ### `datacheck.py` —— 数据体检（产品入口）
 
@@ -257,13 +265,100 @@ cache_key = hash(model + PROMPT_VERSION + method + summary_canonical_json)
 
 ---
 
+## 五之二、`simulate.py` —— 模拟数据生成器（v2.17）
+
+纯 numpy/scipy，12 个生成器，**不 import `app`**（`app` 需要 import 它 → 循环依赖
+会直接炸）。每个 `generate_*` 返回 `(df, truth)`。
+
+`truth` 是本模块的价值所在，分两类，别混用：
+
+| 字段 | 性质 | 怎么用 |
+| --- | --- | --- |
+| `expected_*` | **可精确比对的 oracle** | 与 `run_*` 的输出逐位对得上（测试对 12 方法 × 3 seed 验过） |
+| `true_beta`（logistic） | 生成参数 | 估计值只会落在它附近，**不是 oracle**，抽样变异决定偏差 |
+
+三条不变量：
+
+* **真值必须与被测量同口径** —— `expected_d` 曾因用 `(g2−g1)/pooled` 而与
+  `run_independent_t` 的 `d` 反号，拿它当标准答案会误判工具算错符号；
+* **真值不许美化** —— `cronbach_alpha` 曾 `np.clip(alpha, 0, 1)`，而 α 可以为负
+  （题目间负相关，实测 −4.86），clip 后的"真值"会说 0；
+* **不许产出 NaN** —— NaN 不在 JSON 标准里，`jsonify` 会把它序列化成非法 JSON。
+  `generate()` 对 `n<3` / NaN / Inf 明确抛 `ValueError`，`/api/simulate` 另有
+  `_clamp_num` 钳制，并把被改动的入参放进 `adjusted` 回报（静默改数最难排查）。
+
+> 坑：`_add_noise` 按 `values.mean()` 缩放。带基数（50 分量表）的生成器必须把
+> 噪声加在**离差**上再抬回基数 —— 否则 `noise=0.1` 就是 sd≈5.5，效应整个被淹没
+> （`two_way_anova` 曾因此 20 个 seed 只中 5 个显著）。
+
+---
+
+## 五之三、`review_share.py` —— 协作审阅（v2.16）
+
+核查报告 → `/s/<token>` 分享页 + 批注。三条不变量（测试逐条守着）：
+
+* **报告只读**：批注只追加/删除，绝不改 `markdown`/`comparisons`——改了就等于
+  提供「改完说是导师意见」的造假通道；
+* **非法 token 一律 404 不是 500**：URL 是用户可编辑的，路由层已为此踩过一次；
+* **无 XSS**：分享页不含 JS，CSP `default-src \'none\'`，内容一律 `html.escape`，
+  正文进 `<pre>` 不做 markdown → HTML 转换。
+
+落盘目录 `.review_share/`（`REVIEW_SHARE_DIR` 可改/可 `off`）。
+`/s/` 对访问门禁放行（分享就是给没口令的人看），但批注走页面表单，
+`/api/review/*` 仍在门禁内——包括管理接口 `GET /api/review/list`（只回元信息，
+不含正文）与 `POST /api/review/gc`（只清过期）。
+
+两个内容来源：**论文排查报告**（`kind='audit'`，带 `comparisons`）与
+**数据体检报告**（`kind='datacheck'`，只带 `suggestions`）。体检的 markdown
+由后端 `datacheck.render_markdown()` 统一渲染后随 `/api/datacheck` 返回，
+前端不另写渲染器——页面 / CLI `check-data` / 分享页三处保持一种说法。
+
+---
+
+## 五之四、`export_docx.py` —— Word 导出（v2.18）
+
+纯函数 `markdown_to_docx(markdown, *, chart_png, method_label, meta, title) -> bytes`：
+报告 markdown → docx 字节流，被 `/api/export` 与论文排查报告导出共用。
+
+三条不变量（测试逐条守着）：
+
+* **绝不静默丢表格数据**：分隔行只在「紧邻表头 + 每格只含 `-:` + 至少一格 ≥3 字符」
+  时成立，非首位的 `---` 一律当数据；列数取表头与所有数据行的**最大列数**，
+  长行扩列、短行补空。docx 看着正常却少一行，是最坏的失败方式。
+* **标题 `#`~`######` 全识别**：`##`→H1 / `###`→H2 是历史映射（**保留不动**，
+  否则已有报告的观感会变），`####`→H3 … `######`→H4。
+* **入参宽容**：`markdown` 接受 `None` / `bytes` / 非字符串，`title` / `meta` 同理 ——
+  纯函数不该因为调用方传了个 `None` 就甩栈。
+
+拆行不用 `strip('|')`（会连剥多个首尾管道符、吃掉行首/行尾空单元格），改为各剥一个。
+图表嵌入失败降级成「（图表嵌入失败）」文字，不阻断导出。
+
+---
+
+## 五之五、`desktop_launcher.py` —— 桌面启动器（v2.19）
+
+双击图标后的第一件事：判断 5000 端口上**是不是自己人**，是就复用并开浏览器，
+否则顺延端口起新实例。三条要点：
+
+* **回环请求强制不走代理**：`_http_get` 挂空 `ProxyHandler`。开了代理工具时
+  `urlopen` 会把 127.0.0.1 也发给代理，"已有实例" 就永远检测不到 → 起了第二个
+  （端口还不一样，用户以为刚才的数据丢了）。
+* **身份判定用 JSON 不用子串**：`/health` 必须是合法 JSON、`ok` 为真，且
+  `service` 标记（若有）等于 `zhilun-assistant`。**缺字段仍算自家（老版本），
+  字段不对才算别人** —— 5000 是 Flask 默认端口，撞车概率不低。
+* **报错路径不二次崩溃**：`_wait_for_enter()` 吞 `EOFError` / `OSError`
+  （`--windowed` 打包 / CI 没有 stdin）；`app.run` 显式 `use_reloader=False`
+  并捕获 `OSError`（检测端口与实际绑定之间有时间差，被抢了给可读提示而非 traceback）。
+
+---
+
 ## 六、测试策略
 
-42 个 `*_test.py`，分三类：
+57 个 `*_test.py`，分三类：
 
 | 类型 | 例子 | 需要什么 |
 | --- | --- | --- |
-| 纯单测（多数） | `registry_test` / `security_guard_test` / `tone_guide_test` | 无，`test_client` 即可 |
+| 纯单测（多数） | `registry_test` / `security_guard_test` / `review_share_test` / `simulate_test` | 无，`test_client` 即可 |
 | 需活服务 | `smoke_test` / `methods_test` / `paper_check_test` / `regression_audit_test` | 本机 5000 端口（未就绪时退出码 2） |
 | 真调 LLM | `llm_cache_test` / `prefix_cache_test` / `zhipu_cache_test` | 真实 Key，较慢 |
 
@@ -290,6 +385,11 @@ export NO_PROXY=127.0.0.1,localhost   # 防代理截获本机请求
    不能因为复跑通过就认定根因已解决。
 4. 前端内联 JS 的语法用 `node --check`，**逻辑正确性**要另写 DOM mock 探针
    （见 `_syntaxcheck/`）。`_syntaxcheck/` 是各会话共有目录，**不要整体删除**。
+5. **导出 / 下载路径的两条硬契约**（v2.23 用血泪换来的）：
+   - 文件名必须优先取 RFC 5987 的 `filename*`。Werkzeug 对非 ASCII `download_name`
+     会给两个参数，`filename=` 里中文被**整段删掉**，只剩 `_independent_t_123.docx`。
+   - Blob 下载的 `<a>` 必须 `document.body.appendChild(a)` 再 `click()`，
+     不挂到文档上的锚点在 Firefox 里点了没反应。
 
 ---
 

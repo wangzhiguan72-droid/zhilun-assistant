@@ -19,6 +19,13 @@ uploads/*
 _ck.txt
 _up*.json
 _chk.json
+# 测试产物：examples/ 是**夹具目录**，测试不该往里写东西
+# （regression_test 曾把临时 CSV 写进 examples/ 并留在仓库里，已修；这里是兜底）
+examples/_*.csv
+examples/_*.json
+_empty.json
+_regress.log
+_regress_*.log
 
 # ===== 打包产物 =====
 build/
@@ -65,3 +72,6 @@ _tmp_*
 methods_graph_preview.html
 workspace/
 
+
+# v2.15 协作审阅的分享落盘（含报告正文，可能含未发表数据，绝不入库）
+.review_share/

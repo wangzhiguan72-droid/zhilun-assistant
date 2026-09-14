@@ -27,7 +27,8 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 本脚本位于 tools/ 下，项目根在其上一级
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Key 来源：项目根 .env（v0.5.3 落盘）或真实环境变量
 from env_loader import load_dotenv  # noqa: E402

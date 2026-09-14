@@ -25,7 +25,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Key 来源：项目根 .env（v0.5.3 落盘）或真实环境变量；都没有则 SKIP
 from env_loader import load_dotenv
@@ -82,6 +82,33 @@ def call(agent: ZhipuAgent, question: str) -> tuple[str, dict]:
     return text, agent.last_usage or {}
 
 
+def _is_throttle(err: Exception) -> bool:
+    """429 / 限流属于外部平台配额问题，不代表"缓存契约失效"。
+
+    注意关键词要覆盖各家措辞：智谱返回的是 error code 1305
+    「该模型当前访问量过大」，字面没有 429 字样。
+    """
+    s = str(err)
+    return any(k in s for k in ("429", "限流", "速率限制", "访问量过大"))
+
+
+def call_or_skip(agent: ZhipuAgent, question: str) -> tuple[str, dict]:
+    """真调一次；撞限流则打印 [SKIP] 并 exit 0（外部配额，非代码问题）。
+
+    ⚠️ 本脚本有 3 处真调（建立缓存 / 验证命中 / 重试），**每一处**都要走这里。
+    只守第一处是不够的——第 2、3 次撞 429 会直接抛栈导致假红。
+    """
+    try:
+        return call(agent, question)
+    except AgentError as e:
+        if _is_throttle(e):
+            print(f'[SKIP] 平台限流（{str(e)[:80]}…），跳过前缀缓存实证')
+            print('       这是外部配额问题，非代码/契约问题；稍后重跑即可。')
+            sys.exit(0)
+        print(f'[FAIL] 调用失败：{e}')
+        sys.exit(1)
+
+
 def fmt_usage(u: dict) -> str:
     total = u.get("prompt_tokens", 0)
     cached = u.get("cached_tokens", 0)
@@ -98,11 +125,7 @@ print()
 # --- 第 1 次调用：建立缓存 ---
 q1 = "该研究最值得质疑的一处统计报告遗漏是什么？"
 print(f'[调用 1] 建立缓存 ｜ 问题：{q1}')
-try:
-    ans1, u1 = call(agent, q1)
-except AgentError as e:
-    print(f'[FAIL] 调用失败：{e}')
-    sys.exit(1)
+ans1, u1 = call_or_skip(agent, q1)
 print(f'  -> {ans1[:120]}')
 print(f'  usage: {fmt_usage(u1)}')
 
@@ -113,31 +136,42 @@ time.sleep(8)
 # --- 第 2 次调用：同一前缀，不同问题 ---
 q2 = "3.4 节的 t 检验报告有什么格式上的不完整？"
 print(f'[调用 2] 验证命中 ｜ 问题：{q2}')
-ans2, u2 = call(agent, q2)
+ans2, u2 = call_or_skip(agent, q2)
 print(f'  -> {ans2[:120]}')
 print(f'  usage: {fmt_usage(u2)}')
 
-# --- 判定（异步生效有波动：miss 就再等一次重试） ---
-if u2.get("cached_tokens", 0) > 0:
+# --- 判定（异步生效有波动：未达阈值就再等一次重试） ---
+# 注意：cached_tokens > 0 不等于真命中——平台在未命中时也会返回极少量
+# cached（观测到 2–3 token 噪声）。真正的前缀缓存命中应覆盖绝大部分 prompt
+# （本脚本实测 96.8%），故要求 ≥50% 且 ≥64 token 才算生效。
+HIT_RATIO, HIT_MIN_ABS = 0.50, 64
+
+def is_real_hit(u: dict) -> bool:
+    cached = (u or {}).get("cached_tokens", 0)
+    total = (u or {}).get("prompt_tokens", 0) or 1
+    return cached >= HIT_MIN_ABS and (cached / total) >= HIT_RATIO
+
+if is_real_hit(u2):
     print(f'\n[PASS] 前缀缓存命中！cached_tokens={u2["cached_tokens"]}')
     print('结论：智谱 GLM 隐式缓存对冻结前缀契约生效，')
     print('      agents/prompts.py 的做法可以直接推广到智谱平台。')
     sys.exit(0)
 
-print('\n[MISS] 第 2 次未命中（缓存写入可能仍在路上），15s 后重试一次...')
+print('\n[MISS] 第 2 次未达有效命中阈值（缓存写入可能仍在路上），15s 后重试一次...')
 time.sleep(15)
 q3 = "该研究用的相关分析自由度是多少？"
 print(f'[调用 3] 重试验证 ｜ 问题：{q3}')
-ans3, u3 = call(agent, q3)
+ans3, u3 = call_or_skip(agent, q3)
 print(f'  -> {ans3[:120]}')
 print(f'  usage: {fmt_usage(u3)}')
-if u3.get("cached_tokens", 0) > 0:
+if is_real_hit(u3):
     print(f'\n[PASS] 前缀缓存命中（第 3 次调用）！cached_tokens={u3["cached_tokens"]}')
     sys.exit(0)
 
-print('\n[WARN] 三次调用均未观测到 cached_tokens > 0。可能原因：')
+print('\n[WARN] 三次调用均未观测到**有效**命中（阈值 ≥50% 且 ≥64 token）。可能原因：')
 print('  1. 前缀未达智谱缓存块的最小 token 阈值（硅基流动是 512 token/块）')
 print('  2. 免费档缓存策略与付费档不同（缓存免费可能也意味着命中率低优先级）')
 print('  3. 异步写入延迟超过本次等待窗口')
-print('结论待定：冻结前缀契约本身无害（命中是纯增益），保持即可。')
+print('结论待定：冻结前缀契约本身无害（命中是纯增益），保持即可；')
+print('         但**不要**据此宣称已在智谱平台省钱。')
 sys.exit(0)

@@ -17,9 +17,17 @@
 路由表（状态 → 容灾链，顺序 = 优先级）：
 
     recommend     → zhipu/glm-4.7-flash → sf/glm-z1-9b → dashscope/qwen3.7-flash
+                    → maas/qwen-plus-2025-07-28 → mimo/mimo-v2.5
     analyze       → 不调 LLM（Python 算就够了）
-    paper_check   → deepseek/deepseek-flash → sf/deepseek-v4-pro → zhipu/glm-4.7-flash
-    write_text    → zhipu/glm-4.7-flash → sf/deepseek-v4-flash → dashscope/qwen3.7-flash
+    paper_check   → deepseek/deepseek-flash → sf/deepseek-v4-pro
+                    → zhipu/glm-4.7-flash → maas/glm-5
+                    → kimi/kimi-k2.6（v1.8 长上下文备胎）→ mimo/mimo-v2.5-pro
+    write_text    → zhipu/glm-4.7-flash → sf/deepseek-v4-flash
+                    → dashscope/qwen3.7-flash → maas/qwen-plus-2025-07-28
+                    → mimo/mimo-v2.5（v1.8）
+
+    （maas = 百炼 MaaS 私有工作空间端点，v0.5.4 新增，恒为尾位兜底；
+      kimi / mimo = v1.8 新增的两家付费档平台，BYOK 用户自带 Key 即插即用）
 
 档位（v0.5.3，区分免费用户 / 会员）：
     free（默认）：只走 FREE_MODELS 白名单里的零成本模型，付费候选自动跳过
@@ -57,12 +65,15 @@ from typing import Any
 
 from .base import AgentError, BaseAgent
 from .deepseek_agent import DeepSeekAgent
+from .kimi_agent import KimiAgent
+from .maas_agent import MaasAgent
+from .mimo_agent import MimoAgent
 from .qwen_agent import QwenAgent
 from .siliconflow_agent import SiliconFlowAgent
 from .zhipu_agent import ZhipuAgent
 
 
-# provider 前缀 → Agent 类（四个平台全部登记）
+# provider 前缀 → Agent 类（七个平台全部登记）
 # 不在 STATE_TO_MODEL 里的平台就是备用：懒加载，不进链就不会实例化，
 # 没 Key 零影响
 _PROVIDERS = {
@@ -70,6 +81,9 @@ _PROVIDERS = {
     "zhipu":     ZhipuAgent,         # 智谱 BigModel（bigmodel.cn）
     "deepseek":  DeepSeekAgent,      # DeepSeek 官方（api.deepseek.com）
     "dashscope": QwenAgent,          # 阿里云百炼（dashscope.aliyuncs.com）
+    "maas":      MaasAgent,          # 百炼 MaaS 专属工作空间（私有端点）
+    "kimi":      KimiAgent,          # Kimi 开放平台（月之暗面，v1.8）
+    "mimo":      MimoAgent,          # 小米 MiMo 开放平台（v1.8）
 }
 
 # 状态 → 容灾链 [(provider, 模型友好名, 默认温度), ...]
@@ -79,21 +93,71 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
         ("zhipu",     "glm-4.7-flash", 0.5),   # ★★☆ 免费：智谱永久免费，200K，混合思考
         ("sf",        "glm-z1-9b",     0.5),   # ★☆☆ 免费：硅基流动免费档（智谱没 Key 时退回这）
         ("dashscope", "qwen3.7-flash", 0.5),   # ★★☆ 免费：百炼免费额度，缓存实测 92.5%
+        ("maas",      "qwen-plus-2025-07-28", 0.5),  # v0.5.4 私有端点尾位兜底
+        ("mimo",      "mimo-v2.5",     0.5),   # ★★☆ v1.8 BYOK 尾位：轻量快档
     ],
     "paper_check": [
         # 付费档（会员）优先：deepseek-flash 官方直连，缓存命中价差最大；
         # v4-pro 是付费档备胎。免费档（tier=free）会把这两个跳过，
-        # 直接落到下面智谱免费闪速做基础审计（质量降级但不花钱）。
+        # 直接落到下面免费档做基础审计（质量降级但不花钱）。
         ("deepseek", "deepseek-flash", 0.3),
         ("sf",       "deepseek-v4-pro", 0.3),
         ("zhipu",    "glm-4.7-flash",  0.3),   # ★★☆ 免费兜底：审计质量够用的最低成本档
+        ("maas",     "glm-5",          0.3),   # ★★★ v0.5.4 私有端点：GLM 旗舰审计兜底
+        ("kimi",     "kimi-k2.6",      0.3),   # ★★★ v1.8 长上下文备胎：整篇论文放得下（BYOK）
+        ("mimo",     "mimo-v2.5-pro", 0.3),   # ★★☆ v1.8 质量档备胎（BYOK）
     ],
     "write_text": [
         ("zhipu",     "glm-4.7-flash",    0.5),  # ★★☆ 免费：长文本生成主力
         ("sf",        "deepseek-v4-flash", 0.5), # ★★☆ 付费档备胎
         ("dashscope", "qwen3.7-flash",    0.5),  # ★★☆ 免费：v0.5.3 尾位兜底（缓存实测 92.5%）
+        ("maas",      "qwen-plus-2025-07-28", 0.5),  # ★★★ v0.5.4 私有端点尾位
+        ("mimo",      "mimo-v2.5",      0.5),  # ★★☆ v1.8 BYOK 尾位：轻量快档
+    ],
+    # v1.6 ②审计对话：用户对「一条比对」追问。
+    # LLM 只负责**解释**（把已算好的统计量讲成人话），绝不参与计算。
+    # 温度略高（0.6）让措辞自然，但输入只有单条 summary，幻觉空间极小。
+    "audit_chat": [
+        ("zhipu",     "glm-4.7-flash", 0.6),   # ★★☆ 免费：问答足够，200K 上下文
+        ("sf",        "glm-z1-9b",     0.6),   # ★☆☆ 免费：备胎
+        ("dashscope", "qwen3.7-flash", 0.6),   # ★★☆ 免费：尾位
+        ("maas",      "qwen-plus-2025-07-28", 0.6),  # 私有端点兜底
+        ("mimo",      "mimo-v2.5",     0.6),   # ★★☆ v1.8 BYOK 尾位：轻量问答
+    ],
+    # v1.8 Kimi / MiMo 接入原则：
+    #   - 两家都是付费档（不进 FREE_MODELS），默认链里排在免费候选之后
+    #     作为**尾部备胎**——免费用户零感知，BYOK 用户填了 Key 即插即用；
+    #   - set_user_key() 过的平台自动排到链首（用户自己的 Key 优先），
+    #     见 _ordered_chain()。
+    #
+    # v2.9 ④多模态图表核查：读图 + 比对论文结论句。
+    # 与其它状态的关键差异：**必须用支持视觉输入的模型**，
+    # 所以链上候选都带 V 标识；glm-4.6v-flash 是智谱免费多模态档（首选）。
+    "audit_image": [
+        ("zhipu",     "glm-4.6v-flash", 0.2),   # ★★☆ 免费：智谱多模态（图片+视频）
+        ("maas",      "qwen3-vl-235b-a22b-thinking", 0.2),  # ★★★ 私有端点视觉旗舰兜底
+        ("maas",      "qwen3-vl-32b-thinking", 0.2),  # ★★☆ 私有点端视觉中档
+        ("mimo",      "mimo-v2.5",      0.2),   # ★★☆ v1.8 BYOK 尾位
     ],
 }
+
+# v2.9：多模态状态要求模型**必须支持视觉输入**。容灾链上若混入纯文本模型，
+# 图片会被静默忽略、模型凭空描述（比报错更危险——用户以为图被看过了）。
+# 这里显式声明"哪些模型能看图"，_get_agent 对本状态做一次能力校验。
+VISION_MODELS: frozenset[str] = frozenset({
+    "glm-4.6v-flash",
+    "qwen3-vl-235b-a22b-thinking",
+    "qwen3-vl-32b-thinking",
+    "qwen3-vl-30b-a3b-thinking",
+    "qwen-vl-plus",
+    "qwen-vl-max",
+    "gpt-4o", "gpt-4o-mini", "gpt-4-turbo",
+    "claude-3-5-sonnet", "claude-3-opus",
+    "mimo-v2.5", "mimo-vl",
+})
+
+# 需要视觉能力的路由状态（目前只有图表核查）
+VISION_REQUIRED_STATES: frozenset[str] = frozenset({"audit_image"})
 
 # ── 模型档位（v0.5.3）────────────────────────────────────────────────────────
 # 产品定位：免费用户只享受**零成本模型**，付费模型留给会员。
@@ -102,8 +166,14 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
 # 是为了不破坏 STATE_TO_MODEL 的 3 元组契约（多处测试依赖）。
 FREE_MODELS: frozenset[tuple[str, str]] = frozenset({
     ("zhipu",     "glm-4.7-flash"),   # 智谱永久免费
+    ("zhipu",     "glm-4.6v-flash"),  # v2.9 智谱免费多模态（④图表核查首选）
     ("sf",        "glm-z1-9b"),       # 硅基流动免费档
     ("dashscope", "qwen3.7-flash"),   # 百炼免费额度
+    # v0.5.4：自有 MaaS 端点（成本由项目方承担，对用户是零成本）→ 免费档放行
+    ("maas",      "qwen-plus-2025-07-28"),
+    ("maas",      "glm-5"),
+    ("maas",      "qwen3-vl-235b-a22b-thinking"),  # v2.9 私有端点视觉兜底
+    ("maas",      "qwen3-vl-32b-thinking"),
 })
 
 TIER_FREE = "free"
@@ -147,6 +217,10 @@ class Router:
         self._last_usage: dict[str, Any] | None = None
         # 上一次成功调用的**状态名**（v0.5.2：/api/llm_stats 按状态展示前缀缓存命中率）
         self._last_state: str | None = None
+        # 每个状态**上一次真正成功**用过的模型名（v1.1.1：缓存 key 稳定性）
+        # 容灾切换会让"当前候选"漂移，用这个记住"实际服务过该状态的是谁"，
+        # 让缓存 key 在模型切换前后保持稳定，避免命中率被容灾悄悄打掉。
+        self._last_ok_model: dict[str, str] = {}
 
     # ── 档位（v0.5.3）─────────────────────────────────────────────
     @staticmethod
@@ -162,10 +236,28 @@ class Router:
         self._resolved.clear()
 
     def _allowed(self, provider: str, model: str) -> bool:
-        """当前档位是否放行该模型：pro 档不限；free 档只放行免费白名单。"""
+        """当前档位是否放行该模型。
+
+        - pro 档不限；
+        - free 档只放行免费白名单；
+        - v1.8 BYOK 例外：用户给某平台填了自己的 Key（set_user_key），
+          该平台的模型即插即用（费用由用户自付，与"会员"无关）。
+        """
         if self.tier == TIER_PRO:
             return True
-        return (provider, model) in FREE_MODELS
+        return (provider, model) in FREE_MODELS or provider in self._user_keys
+
+    @staticmethod
+    def _vision_ok(state: str, model: str) -> bool:
+        """该状态用这个模型是否安全（v2.9）。
+
+        只有视觉类状态（audit_image）需要校验：链上不是视觉模型就跳过，
+        避免"图片被忽略、模型凭空描述图表"——这比直接报错更危险，
+        因为用户会以为模型真的看过图了。
+        """
+        if state not in VISION_REQUIRED_STATES:
+            return True
+        return model in VISION_MODELS
 
     def set_user_key(self, provider: str, key: str) -> None:
         """设置用户自带的 API Key（BYOK 模式）。
@@ -194,6 +286,16 @@ class Router:
         user_key = self._user_keys.get(provider)
         return cls(model=model, default_temperature=temp, api_key=user_key)
 
+    # ── 容灾链排序（v1.8 BYOK）────────────────────────────────────
+    def _ordered_chain(self, state: str) -> list[tuple[str, str, float]]:
+        """该状态的候选链：用户自带 Key 的平台排最前（其余保持原序）。
+
+        规则很简单：用户填了 Key = "我就要用这一家"，优先级高于
+        服务端内置 Key（平台额度）。没填 Key 的用户完全无感知。
+        """
+        chain = STATE_TO_MODEL[state]
+        return sorted(chain, key=lambda c: c[0] not in self._user_keys)
+
     def _cooling(self, key: tuple[str, str]) -> bool:
         """该 Agent 是否还在冷却期（近期运行时失败过）。"""
         return self._cooldown_until.get(key, 0.0) > time.time()
@@ -219,8 +321,11 @@ class Router:
             raise AgentError(f"未知状态：{state}。已知：{list(STATE_TO_MODEL.keys())}")
 
         errors: list[str] = []
-        for provider, model, temp in STATE_TO_MODEL[state]:
+        for provider, model, temp in self._ordered_chain(state):
             key = (provider, model)
+            if not self._vision_ok(state, model):
+                errors.append(f"{provider}/{model}: 无视觉能力（{state} 需要读图），跳过")
+                continue
             if not self._allowed(provider, model):
                 errors.append(f"{provider}/{model}: 免费档跳过（付费模型，需会员）")
                 continue
@@ -259,8 +364,11 @@ class Router:
         else:
             agent = None
             errors: list[str] = []
-            for provider, model, temp in STATE_TO_MODEL[state]:
+            for provider, model, temp in self._ordered_chain(state):
                 key = (provider, model)
+                if not self._vision_ok(state, model):
+                    errors.append(f"{provider}/{model}: 无视觉能力（{state} 需要读图），跳过")
+                    continue
                 if not self._allowed(provider, model):
                     errors.append(f"{provider}/{model}: 免费档跳过（付费模型，需会员）")
                     continue
@@ -285,6 +393,7 @@ class Router:
                     self._last_agent = agent
                     self._last_usage = getattr(agent, "last_usage", None)
                     self._last_state = state
+                    self._remember_model(state, agent)  # v1.1.1 缓存 key 稳定性
                     return result
                 except AgentError as e:
                     # v0.5：429 带 Retry-After 时按平台说的冷却，封顶 COOLDOWN_MAX
@@ -308,7 +417,32 @@ class Router:
         # v0.5.2：记下这次调用的 Agent + usage（前缀缓存观测）
         self._last_agent = agent
         self._last_usage = getattr(agent, "last_usage", None)
+        self._last_state = state
+        self._remember_model(state, agent)  # v1.1.1 缓存 key 稳定性
         return result
+
+    # ── 缓存 key 稳定性（v1.1.1）──────────────────────────────────
+    def _remember_model(self, state: str, agent: BaseAgent) -> None:
+        """记下该状态实际成功服务过的模型名。"""
+        name = getattr(agent, "model_name", None)
+        if name:
+            self._last_ok_model[state] = name
+
+    def cache_model_name(self, state: str) -> str:
+        """给缓存 key 用的**稳定**模型名。
+
+        优先返回该状态上次真正成功用过的模型（跨容灾切换保持一致）；
+        没有历史时回退到"当前首选候选"（首次调用前的探测）。
+        拿不到就返回 ""（key 仍可生成，只是不区分模型）。
+        """
+        name = self._last_ok_model.get(state)
+        if name:
+            return name
+        try:
+            agent = self._get_agent(state)
+            return getattr(agent, "model_name", "") or ""
+        except Exception:  # noqa: BLE001
+            return ""
 
     def health(self) -> dict[str, Any]:
         """列出每个状态实际路由到的 Agent + 冷却状态（调试用）。"""

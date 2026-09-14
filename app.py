@@ -1,24 +1,28 @@
 """
-智论助手 - MVP 后端服务
-========================
-当前包含两条主路径：
+智论助手 - 后端服务
+====================
+当前包含三条主路径：
   A. 数据分析路径（首版）：
         1) 上传 Excel/CSV
-        2) 自动识别列类型（连续/分类）
-        3) 推荐并运行独立样本 T 检验
+        2) 自动识别列类型（连续/分类，含 Likert 1–5 量表列）
+        3) 分步向导推荐 / 手动切换统计方法（12 个，见 methods_registry.METHODS）
         4) 输出 Markdown 形式的可引用结果
-        5) v0.5 新增：生成对应方法的图表（柱状/散点/堆叠柱）
+        5) v0.5 新增：生成对应方法的图表（柱状/散点/堆叠柱/折线）
+        6) v0.8 新增：SSE 流式渲染；v0.9 新增：导出 Word
   B. 论文排查路径（v0.2 新增）：
         1) 同时上传「论文初稿 (.docx/.txt/.md/.pdf)」+「数据 (.csv/.xlsx)」
         2) 从论文里识别统计方法 / 统计量 / 变量名
         3) 用数据重跑一次，对比声称值与实际值
         4) 输出 Markdown 形式的核查报告 + 改进建议
         5) v0.4 新增：自然语言指令过滤（"只看 T 检验" 等）
+  C. 论文副驾驶路径（v1.2 新增）：
+        六阶段流水线 + 证据约束写作引擎（见 pipeline.py / paper_writer.py）
 
 设计原则：
   - 每个分析函数都写成独立的、可被其他智能体复用的纯函数。
   - 接口尽量扁平，方便后续 Agent 接力（接 SPSS 输出、做方差分析、做回归、做图表）。
-  - 不做付费、不做人味润色、不导出 Word。
+  - **方法分发走 METHODS 注册表（methods_registry.py）**，加新方法不改控制流。
+  - 不做付费、不做代写、不做"绕过检测"类功能（见 进一步完善计划.md §八 四句咒）。
 """
 
 from __future__ import annotations
@@ -46,12 +50,36 @@ import matplotlib.pyplot as plt
 
 from extract_paper import (
     read_paper_text, extract_methods, extract_quantities, extract_variables,
+    read_paper_tables,  # v2.11 P3 表格交叉核查（docx 结构化表格）
 )
-from audit import build_audit_report
+from audit import build_audit_report, _red_line_scan as red_line_scan
 from llm_enhance import enhance_analysis
 from llm_audit import audit_paper_with_llm
+from audit_chat import explain_comparison  # v1.6 ②审计对话（LLM 只解释，不计算）
+from defense_pack import build_qa_pack  # v2.10 ⑧答辩准备包（纯规则，零 LLM）
+from multimodal_agent import (  # v2.9 ④多模态图表核查（LLM 只读图，不改结论）
+    audit_image,
+    ALLOWED_IMAGE_MIME as IMAGE_MIME_TYPES,
+    MAX_IMAGE_BYTES,
+)
+import security_guard  # v1.7 P2 应用层限流与防御（独立可测）
+import cross_platform  # v2.8 跨端适配：CORS / 预检 / 小程序接入辅助（默认关闭）
+import access_guard  # v2.13 访问门禁：ACCESS_CODE 环境变量一句话加密码（默认关闭）
 # v0.5.1 BYOK：用户自带 Key 注入 Router（/api/analyze 与 /api/check_paper 用）
 from agents import get_router
+# v1.2 论文副驾驶：流水线编排 + 证据约束写作引擎
+import pipeline as copilot_pipeline
+import paper_writer as copilot_writer
+import paper_polisher as copilot_polisher  # 可选 LLM 润色层（证据闸门约束下）
+# v1.3 总线 seam：METHODS 注册表（方法清单单一真源）
+from methods_registry import (
+    MissingField, available_methods as _registry_available_methods,
+    call_method, get_spec, method_labels as _registry_method_labels,
+    method_keys as _registry_method_keys,
+)
+# v1.4 · ①方法学知识图谱：决策树 + 前提假设（方法名仍由注册表派生）
+from methods_graph import build_graph as _build_methods_graph, enrich_recommendation
+import datacheck as data_doctor  # v2.0 产品入口：数据体检（纯本地规则，零 LLM）
 
 # 中文字体（Windows 自带；其他系统会回退到默认）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
@@ -200,7 +228,8 @@ def _recommend_method(columns: list[dict[str, Any]]) -> dict[str, Any]:
             "group_col": cat[0],
             "value_col": cat[1] if len(cat) > 1 else None,
         })
-    return rec
+    # v1.4：补 decision_path（前端 SVG 高亮路径）+ candidates（候选方法 + 前提旗标）
+    return enrich_recommendation(rec)
 
 
 # -----------------------------------------------------------------------------
@@ -1693,6 +1722,324 @@ def run_two_way_anova(df: pd.DataFrame, factor_a: str, factor_b: str,
 
 
 # -----------------------------------------------------------------------------
+# 重复测量方差分析：repeated_measures_anova（v1.1 新增）
+# -----------------------------------------------------------------------------
+def run_repeated_measures_anova(df: pd.DataFrame, time_cols: list[str],
+                                 subject_col: str | None = None) -> dict[str, Any]:
+    """单因素重复测量方差分析（One-way Repeated Measures ANOVA）。
+
+    设计：同一批被试在 k ≥ 3 个时间点（或条件）上各测一次，宽表输入
+    （每个时间点一列）。检验"时间/条件"的主效应是否显著。
+
+    模型：y_ij = μ + π_i(被试效应) + τ_j(时间效应) + ε_ij
+
+    平方和分解（经典分解，与 SPSS/Faiss 手算一致）：
+        SS_total = ΣΣ(y_ij − ȳ)²
+        SS_subject = k · Σ_i(ȳ_i· − ȳ)²          df = n−1
+        SS_time    = n · Σ_j(ȳ_·j − ȳ)²          df = k−1
+        SS_error   = SS_total − SS_subject − SS_time   df = (n−1)(k−1)
+
+        F = MS_time / MS_error = (SS_time/df_time) / (SS_error/df_error)
+        偏 η² = SS_time / (SS_time + SS_error)
+
+    另给出：
+        - Mauchly 球形度检验（k ≥ 3 时有意义）+ Greenhouse-Geisser ε 校正
+        - 事后两两配对 t 检验（Bonferroni 校正）+ Cohen's d_z
+
+    与"双因素 ANOVA"的区别：这里每个格子只有 1 个观测，被试效应必须建模；
+    用双因素 ANOVA 会把被试×时间的交互误当误差，导致 F 严重膨胀。
+
+    前置假设：被试内因素各水平为正态、球形度（不满足则用 GG 校正）。
+    """
+    if not time_cols or len(time_cols) < 3:
+        raise ValueError(
+            f"重复测量方差分析至少需要 3 个时间点/条件列"
+            f"（当前 {len(time_cols) if time_cols else 0} 个）。"
+            f"若只有 2 个时间点，请改用「配对样本 T 检验」。"
+        )
+    for c in time_cols:
+        if c not in df.columns:
+            raise ValueError(f"列不存在：{c}。")
+    if subject_col and subject_col not in df.columns:
+        raise ValueError(f"被试编号列不存在：{subject_col}。")
+    dup = [c for c in time_cols if time_cols.count(c) > 1]
+    if dup:
+        raise ValueError(f"时间点列不能重复：{sorted(set(dup))}。")
+    if subject_col and subject_col in time_cols:
+        raise ValueError("被试编号列不能同时作为时间点列。")
+
+    for c in time_cols:
+        if not pd.api.types.is_numeric_dtype(df[c]):
+            raise ValueError(f"时间点列【{c}】必须为数值列。")
+
+    # 宽表 → 完整案例（所有时间点都非空的被试才纳入）
+    sub = df[time_cols].apply(pd.to_numeric, errors="coerce").dropna(how="any")
+    n = len(sub)
+    k = len(time_cols)
+    if n < 3:
+        raise ValueError(
+            f"样本量不足：重复测量方差分析至少需要 3 名完整被试（当前 n={n}，"
+            f"已剔除含缺失时间点的个体）。"
+        )
+    if k < 3:
+        raise ValueError(f"重复测量方差分析至少需要 3 个时间点（当前 k={k}）。")
+
+    mat = sub[time_cols].to_numpy(dtype=float)   # (n, k)
+    grand = float(mat.mean())
+    row_means = mat.mean(axis=1)
+    col_means = mat.mean(axis=0)
+
+    ss_total = float(((mat - grand) ** 2).sum())
+    ss_subject = float(k * ((row_means - grand) ** 2).sum())
+    ss_time = float(n * ((col_means - grand) ** 2).sum())
+    ss_error = ss_total - ss_subject - ss_time
+    # 数值兜底：负零 / 极微负值
+    ss_error = max(ss_error, 0.0)
+
+    df_subject = n - 1
+    df_time = k - 1
+    df_error = (n - 1) * (k - 1)
+
+    ms_time = ss_time / df_time
+    ms_error = ss_error / df_error if df_error > 0 else float("nan")
+    f_time = ms_time / ms_error if (ms_error and ms_error > 0) else float("nan")
+    p_time = float(stats.f.sf(f_time, df_time, df_error)) if not pd.isna(f_time) else float("nan")
+    eta2 = ss_time / (ss_time + ss_error) if (ss_time + ss_error) > 0 else float("nan")
+
+    # ---- Mauchly 球形度检验 + Greenhouse-Geisser ε ----
+    # 正交对比矩阵 C（k × (k−1)），对 k 个时间点的差异做标准化对比
+    Cc = np.zeros((k, k - 1))
+    for j in range(k - 1):
+        Cc[:j + 1, j] = 1.0
+        Cc[j + 1, j] = -(j + 1)
+    for j in range(k - 1):
+        nrm = np.linalg.norm(Cc[:, j])
+        if nrm > 0:
+            Cc[:, j] /= nrm
+
+    D = mat @ Cc                       # (n, k−1) 对比得分
+    m = k - 1
+    if n > 1:
+        S = np.cov(D, rowvar=False, ddof=1)
+    else:
+        S = np.cov(D, rowvar=False)
+    if np.ndim(S) == 0:
+        S = np.asarray(S).reshape(1, 1)
+    S = np.atleast_2d(S)
+
+    trS = float(np.trace(S))
+    if trS > 0 and m >= 1:
+        detS = float(np.linalg.det(S))
+        W = detS / ((trS / m) ** m)
+    else:
+        W = float("nan")
+
+    # Mauchly 卡方近似（W → 0 时对数发散，做下限保护）
+    chi2 = float("nan")
+    df_chi2 = float("nan")
+    p_mauchly = float("nan")
+    if k >= 3 and n > 1 and not pd.isna(W):
+        W_safe = min(max(W, 1e-12), 1.0)
+        f_adj = (2 * m * m + m + 2) / (6 * m)
+        chi2 = float(-(n - 1) * f_adj * np.log(W_safe))
+        df_chi2 = k * (k - 1) / 2 - 1
+        if df_chi2 > 0:
+            p_mauchly = float(stats.chi2.sf(chi2, df_chi2))
+
+    # GG ε（夹到 [1/(k−1), 1]）
+    if trS > 0:
+        eps_gg = (trS ** 2) / (m * float((S ** 2).sum()))
+        eps_gg = float(min(max(eps_gg, 1.0 / m), 1.0))
+    else:
+        eps_gg = 1.0
+
+    df1c = df_time * eps_gg
+    df2c = df_error * eps_gg
+    p_gg = float(stats.f.sf(f_time, df1c, df2c)) if not pd.isna(f_time) else float("nan")
+
+    # ---- 事后两两配对 t 检验（Bonferroni）----
+    pairs: list[dict[str, Any]] = []
+    n_pairs = k * (k - 1) // 2
+    for i in range(k):
+        for j in range(i + 1, k):
+            a_col = mat[:, i]
+            b_col = mat[:, j]
+            diff = a_col - b_col
+            sd_diff = float(diff.std(ddof=1))
+            if sd_diff > 0:
+                t_val, p_raw = stats.ttest_rel(a_col, b_col)
+                t_val = float(t_val)
+                p_raw = float(p_raw)
+                dz = float(diff.mean() / sd_diff)
+            else:
+                t_val = float("nan")
+                p_raw = float("nan")
+                dz = float("nan")
+            pairs.append({
+                "a": time_cols[i], "b": time_cols[j],
+                "mean_a": float(a_col.mean()), "mean_b": float(b_col.mean()),
+                "mean_diff": float(diff.mean()),
+                "sd_diff": sd_diff,
+                "t": t_val, "df": n - 1,
+                "p_raw": p_raw,
+                "p_bonf": float(min(p_raw * n_pairs, 1.0)) if not pd.isna(p_raw) else float("nan"),
+                "dz": dz,
+            })
+
+    # ---- 报告 ----
+    def _fmt(x, d=3):
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return "—"
+        return f"{float(x):.{d}f}"
+
+    def _eta_txt(e):
+        if pd.isna(e):
+            return "—"
+        if e < 0.06:
+            return "小效应"
+        if e < 0.14:
+            return "中等效应"
+        return "大效应"
+
+    md: list[str] = []
+    md.append("## 重复测量方差分析（Repeated Measures ANOVA）结果\n")
+    md.append(f"**被试内因素（时间/条件）**：{' → '.join(time_cols)}（共 {k} 个水平）\n")
+    md.append(f"**完整被试数 n**：{n}　　**设计**：单因素被试内（每名被试每个水平测 1 次）\n")
+
+    md.append("### 一、描述统计\n")
+    md.append("| 时间点/条件 | 均值 M | 标准差 SD | 标准误 SE | n |")
+    md.append("| --- | ---: | ---: | ---: | ---: |")
+    for j, c in enumerate(time_cols):
+        col = mat[:, j]
+        sd = float(col.std(ddof=1))
+        md.append(f"| {c} | {_fmt(col.mean())} | {_fmt(sd)} | "
+                  f"{_fmt(sd / np.sqrt(n))} | {n} |")
+
+    md.append("\n### 二、方差分析表（被试内效应）\n")
+    md.append("| 变异来源 | 平方和 SS | 自由度 df | 均方 MS | F | p | 偏 η² | 显著性 |")
+    md.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | :-: |")
+    md.append(f"| 时间/条件（被试内） | {_fmt(ss_time)} | {df_time} | {_fmt(ms_time)} | "
+              f"{_fmt(f_time)} | {_fmt(p_time, 4)} | {_fmt(eta2)} | "
+              f"{'✓' if (not pd.isna(p_time) and p_time < 0.05) else '—'} |")
+    md.append(f"| 误差（时间×被试） | {_fmt(ss_error)} | {df_error} | {_fmt(ms_error)} | — | — | — | — |")
+    md.append(f"| 被试间 | {_fmt(ss_subject)} | {df_subject} | — | — | — | — | — |")
+    md.append(f"| 总计 | {_fmt(ss_total)} | {n * k - 1} | — | — | — | — | — |")
+
+    md.append("\n### 三、球形度检验（Mauchly）与校正\n")
+    if not pd.isna(p_mauchly):
+        assume_ok = p_mauchly >= 0.05
+        md.append(f"- **Mauchly's W** = {_fmt(W, 4)}，χ²({_fmt(df_chi2, 1)}) = "
+                  f"{_fmt(chi2)}，p = {_fmt(p_mauchly, 4)}")
+        md.append(f"- **Greenhouse-Geisser ε** = {_fmt(eps_gg, 4)}")
+        if assume_ok:
+            md.append("- 球形度假定**成立**（p ≥ 0.05），采用未校正的 F 检验结果即可。")
+        else:
+            md.append(f"- 球形度假定**不成立**（p < 0.05），应对自由度做校正。"
+                      f"校正后：F({_fmt(df1c, 2)}, {_fmt(df2c, 2)}) = {_fmt(f_time)}，"
+                      f"**p = {_fmt(p_gg, 4)}**（以这一行为准）。")
+    else:
+        md.append(f"- 球形度检验不可用（k={k} 或样本不足）。"
+                  f"Greenhouse-Geisser ε = {_fmt(eps_gg, 4)}。")
+
+    md.append(f"\n### 四、事后多重比较（配对 t 检验，Bonferroni 校正）\n")
+    md.append("| 对比 | 均值差 | t | df | p（原始） | p（Bonferroni） | Cohen's d_z | 显著性 |")
+    md.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | :-: |")
+    for pr in pairs:
+        sig = "✓" if (not pd.isna(pr["p_bonf"]) and pr["p_bonf"] < 0.05) else "—"
+        md.append(f"| {pr['a']} − {pr['b']} | {_fmt(pr['mean_diff'])} | "
+                  f"{_fmt(pr['t'])} | {pr['df']} | {_fmt(pr['p_raw'], 4)} | "
+                  f"{_fmt(pr['p_bonf'], 4)} | {_fmt(pr['dz'])} | {sig} |")
+
+    md.append("\n### 五、结论（可直接引用进论文）\n")
+    means_txt = "、".join(f"{c}（M = {_fmt(mat[:, j].mean())}）"
+                          for j, c in enumerate(time_cols))
+    md.append(
+        f"对 {n} 名被试在 {k} 个时间点（{'、'.join(time_cols)}）的测量值进行单因素"
+        f"重复测量方差分析。各时间点均值为：{means_txt}。"
+    )
+    if not pd.isna(p_time):
+        if p_time < 0.05:
+            md.append(
+                f"结果显示**时间/条件主效应显著**，F({df_time}, {df_error}) = {_fmt(f_time)}，"
+                f"p = {_fmt(p_time, 4)}，偏 η² = {_fmt(eta2)}（{_eta_txt(eta2)}），"
+                f"说明被试的测量值在不同时间点间存在统计学差异。"
+            )
+        else:
+            md.append(
+                f"结果显示**时间/条件主效应不显著**，F({df_time}, {df_error}) = {_fmt(f_time)}，"
+                f"p = {_fmt(p_time, 4)}，偏 η² = {_fmt(eta2)}（{_eta_txt(eta2)}），"
+                f"尚不能认为不同时间点间存在统计学差异。"
+            )
+
+    sig_pairs = [pr for pr in pairs if not pd.isna(pr["p_bonf"]) and pr["p_bonf"] < 0.05]
+    if sig_pairs:
+        detail = "；".join(
+            f"{pr['a']} 与 {pr['b']}（均值差 = {_fmt(pr['mean_diff'])}，"
+            f"p = {_fmt(pr['p_bonf'], 4)}，d_z = {_fmt(pr['dz'])}）"
+            for pr in sig_pairs
+        )
+        md.append(f"\n经 Bonferroni 校正的事后比较显示，以下配对差异显著：{detail}。")
+    elif p_time is not None and not pd.isna(p_time) and p_time < 0.05:
+        md.append("\n但经 Bonferroni 校正后，各时间点两两比较均未达到显著水平"
+                  "（可能因多重比较校正过于保守或样本量偏小）。")
+
+    md.append("\n### 六、改进建议\n")
+    md.append(
+        "- 重复测量 ANOVA 要求：球形度（各时间点差值的方差齐性）、"
+        "各水平近似正态、被试内观测相互独立。已给出 Mauchly 检验结果。"
+    )
+    if not pd.isna(p_mauchly) and p_mauchly < 0.05:
+        md.append(
+            f"- 球形度假定不成立，报告时**必须**使用 Greenhouse-Geisser 校正后的"
+            f"自由度与 p 值（ε = {_fmt(eps_gg, 4)}），或用多元方差分析（MANOVA）路径。"
+        )
+    md.append(
+        "- 报告时给出 F 值、校正后的自由度、p 值、偏 η²，以及事后比较的"
+        "校正 p 值与效应量（Cohen's d_z），而非只报告 p 值。"
+    )
+    md.append(
+        "- 若含**组间因素**（如实验组 vs 对照组），应改用"
+        "「混合设计方差分析（Mixed ANOVA）」；若时间点只有 2 个，用配对 T 检验即可。"
+    )
+    md.append(
+        "- 建议绘制各时间点的均值折线图（带标准误误差条），直观展示变化趋势。"
+    )
+
+    summary: dict[str, Any] = {
+        "n": n, "k": k,
+        "time_cols": list(time_cols),
+        "grand_mean": grand,
+        "col_means": [float(x) for x in col_means],
+        "col_sds": [float(mat[:, j].std(ddof=1)) for j in range(k)],
+        "ss_total": ss_total, "ss_subject": ss_subject,
+        "ss_time": ss_time, "ss_error": ss_error,
+        "df_subject": df_subject, "df_time": df_time, "df_error": df_error,
+        "ms_time": float(ms_time), "ms_error": float(ms_error),
+        "f": float(f_time), "p": p_time, "eta2": float(eta2),
+        "mauchly_w": None if pd.isna(W) else float(W),
+        "mauchly_chi2": None if pd.isna(chi2) else float(chi2),
+        "mauchly_df": None if pd.isna(df_chi2) else float(df_chi2),
+        "mauchly_p": None if pd.isna(p_mauchly) else float(p_mauchly),
+        "gg_epsilon": float(eps_gg),
+        "p_gg_corrected": None if pd.isna(p_gg) else float(p_gg),
+        "df1_corrected": float(df1c),
+        "df2_corrected": float(df2c),
+        "sphericity_ok": None if pd.isna(p_mauchly) else bool(p_mauchly >= 0.05),
+        "posthoc": pairs,
+        "significant": bool(not pd.isna(p_time) and p_time < 0.05),
+    }
+    return {
+        "method": "repeated_measures_anova",
+        "summary": summary,
+        "markdown": "\n".join(md),
+        "variables": {
+            "time_cols": list(time_cols),
+            "subject": subject_col,
+        },
+    }
+
+
+# -----------------------------------------------------------------------------
 # 图表生成（v0.5 新增）
 # -----------------------------------------------------------------------------
 # 设计要点：
@@ -1934,6 +2281,39 @@ def _build_chart_png(df: pd.DataFrame, method: str,
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
             ax.grid(linestyle="--", alpha=0.3)
+        elif method == "repeated_measures_anova":
+            # 重复测量：均值折线 + SE 误差条（标准论文图） + 个体轨迹
+            # 时间点列由 value_col2 以 "|" 分隔打包传入（见 SSE 调用点）
+            cols = [c for c in (value_col2 or "").split("|") if c]
+            if len(cols) < 3:
+                return None, "重复测量 ANOVA 图表需要至少 3 个时间点列。"
+            sub = df[cols].apply(pd.to_numeric, errors="coerce").dropna(how="any")
+            if sub.empty:
+                return None, "筛选后无有效数据。"
+            k = len(cols)
+            xs = np.arange(k)
+            means = [float(sub[c].mean()) for c in cols]
+            ses = [float(sub[c].std(ddof=1) / np.sqrt(len(sub))) for c in cols]
+            # 个体轨迹（淡灰，展示被试内变异）
+            for _, row in sub.iterrows():
+                ax.plot(xs, [float(row[c]) for c in cols], color="#94a3b8",
+                        alpha=0.25, linewidth=0.9, zorder=1)
+            # 均值折线
+            ax.errorbar(xs, means, yerr=ses, marker="o", markersize=7,
+                        color="#4f46e5", ecolor="#ef4444", elinewidth=1.8,
+                        capsize=6, linewidth=2.2, zorder=3,
+                        label="均值 ± SE", markerfacecolor="white",
+                        markeredgewidth=2)
+            ax.set_xticks(xs)
+            ax.set_xticklabels([f"{c}\n(n={len(sub)})" for c in cols])
+            ax.set_xlabel("时间点 / 条件", fontsize=11)
+            ax.set_ylabel("测量值", fontsize=11)
+            ax.set_title(f"重复测量 ANOVA：{k} 个时间点的均值变化（n = {len(sub)}）",
+                         fontsize=12, pad=10)
+            ax.legend(loc="best", fontsize=10, frameon=False)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.grid(axis="y", linestyle="--", alpha=0.3)
         else:
             return None, f"暂不支持为方法 {method} 生成图表。"
 
@@ -1948,19 +2328,8 @@ def _build_chart_png(df: pd.DataFrame, method: str,
 
 
 def method_label(method: str) -> str:
-    return {
-        "independent_t": "独立样本 T 检验",
-        "anova": "单因素方差分析",
-        "correlation": "Pearson 相关",
-        "chi_square": "卡方检验",
-        "paired_t": "配对样本 T 检验",
-        "mann_whitney": "Mann-Whitney U 检验",
-        "wilcoxon": "Wilcoxon 符号秩检验",
-        "linear_regression": "多元线性回归",
-        "logistic_regression": "二元 Logistic 回归",
-        "cronbach_alpha": "信度分析（Cronbach's α）",
-        "two_way_anova": "双因素方差分析",
-    }.get(method, method)
+    """方法 key → 中文名。v1.3 起由 METHODS 注册表派生（单一真源）。"""
+    return _registry_method_labels().get(method, method)
 
 
 # -----------------------------------------------------------------------------
@@ -1971,9 +2340,60 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/favicon.ico")
+def favicon():
+    """浏览器根路径 favicon（v2.6）。
+
+    真正图标在 static/favicon.ico；这里补一条根路径路由，
+    免得每个用户都吃一次 404（限流器本就豁免了 /favicon.ico）。
+    """
+    resp = send_from_directory(str(BASE_DIR / "static"), "favicon.ico",
+                               mimetype="image/x-icon")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "ts": int(time.time())})
+    """健康检查（Docker healthcheck / 反代探测）。不触碰任何用户数据。"""
+    return jsonify({
+        "ok": True,
+        "ts": int(time.time()),
+        "service": "zhilun-assistant",
+        "rate_limit": security_guard.limiter.stats(),
+    })
+
+
+# -----------------------------------------------------------------------------
+# 错误出口统一化（v1.7 · 规划§四 P2：错误堆栈不外漏）
+# -----------------------------------------------------------------------------
+# 默认 Flask 会回 HTML 错误页（暴露框架指纹），未捕获异常在 debug=False 下
+# 也会返回通用 500 页。这里统一成 JSON，且**绝不回显堆栈**。
+@app.errorhandler(413)
+def _on_413(e):
+    return jsonify({
+        "ok": False,
+        "error": f"上传文件过大，单文件上限 {MAX_UPLOAD_MB} MB。",
+    }), 413
+
+
+@app.errorhandler(404)
+def _on_404(e):
+    # 静态资源仍按默认走（浏览器需要正确 content-type）；仅 API 返回 JSON
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "接口不存在。"}), 404
+    return e, 404
+
+
+@app.errorhandler(405)
+def _on_405(e):
+    return jsonify({"ok": False, "error": "请求方法不被允许。"}), 405
+
+
+@app.errorhandler(500)
+def _on_500(e):
+    # 不回显异常细节（防信息泄漏）；细节只在服务端日志里
+    return jsonify({"ok": False, "error": "服务器内部错误，请稍后重试。"}), 500
 
 
 @app.route("/api/llm_stats")
@@ -2049,20 +2469,141 @@ def api_upload():
         "rows": int(len(df)),
         "columns": columns,
         "recommendation": recommendation,
-        "available_methods": [
-            {"key": "independent_t", "label": "独立样本 T 检验（2 个分组）"},
-            {"key": "anova", "label": "单因素方差分析 ANOVA（3+ 个分组）"},
-            {"key": "correlation", "label": "Pearson 相关分析（2 个连续变量）"},
-            {"key": "chi_square", "label": "卡方检验（2 个分类变量）"},
-            {"key": "paired_t", "label": "配对样本 T 检验（同一对象前后测）"},
-            {"key": "mann_whitney", "label": "Mann-Whitney U 检验（2 组非参数）"},
-            {"key": "wilcoxon", "label": "Wilcoxon 符号秩检验（配对非参数）"},
-            {"key": "linear_regression", "label": "多元线性回归（1 个数值因变量 + 多个自变量）"},
-            {"key": "logistic_regression", "label": "二元 Logistic 回归（1 个二分类因变量 + 多个自变量）"},
-            {"key": "cronbach_alpha", "label": "信度分析 Cronbach's α（多个量表题项）"},
-            {"key": "two_way_anova", "label": "双因素方差分析（2 个分类因素 + 1 个数值因变量）"},
-        ],
+        # v1.3：方法清单由 METHODS 注册表派生，避免"加了方法忘了同步此处"
+        "available_methods": _registry_available_methods(),
     })
+
+
+@app.route("/api/datacheck", methods=["POST"])
+def api_datacheck():
+    """数据体检（v2.0 产品入口）—— 「数据里有没有错」的第一站。
+
+    入参 JSON：{"file_id": "<上传返回的 id>"}
+    出参：{"ok": True, "issues": [...], "summary": {...}}
+
+    纯本地规则引擎（datacheck.py），零 LLM、零外部依赖、不落盘。
+    定位：只报「可疑点」，不判定造假；绝不改动用户原始数据。
+    """
+    payload = request.get_json(silent=True) or {}
+    file_id = payload.get("file_id")
+    if not file_id or file_id not in _SESSION:
+        return jsonify({"ok": False, "error": "会话已过期，请重新上传文件。"}), 400
+
+    try:
+        report = data_doctor.run_datacheck(_SESSION[file_id])
+    except Exception as e:  # noqa: BLE001 - 体检失败不阻断主流程
+        return jsonify({"ok": False, "error": f"数据体检失败：{e}"}), 500
+
+    return jsonify({"ok": True, **report})
+
+
+@app.route("/api/datacheck/fix", methods=["POST"])
+def api_datacheck_fix():
+    """一键生成「清洗后副本」（产品入口第二站：清洗与修复建议）。
+
+    入参 JSON：{"file_id": "<上传返回的 id>"}
+    出参：{"ok": True, "actions": [...], "changes": [...], "stats": {...},
+           "clean_csv": "<CSV 文本>", "rows": int, "cols": int}
+
+    红线：**绝不改动用户原始数据**（`datacheck.propose_fix` 内部全程 copy），
+    清洗结果只作为「副本」返回给前端下载。仍为零 LLM、零外部依赖。
+    """
+    payload = request.get_json(silent=True) or {}
+    file_id = payload.get("file_id")
+    if not file_id or file_id not in _SESSION:
+        return jsonify({"ok": False, "error": "会话已过期，请重新上传文件。"}), 400
+
+    try:
+        df = _SESSION[file_id]
+        report = data_doctor.run_datacheck(df)
+        fix = data_doctor.propose_fix(df, report)
+    except Exception as e:  # noqa: BLE001 - 清洗失败不阻断主流程
+        return jsonify({"ok": False, "error": f"生成清洗副本失败：{e}"}), 500
+
+    return jsonify({"ok": True, **fix})
+
+
+@app.route("/api/methods_graph", methods=["GET"])
+def api_methods_graph():
+    """方法学知识图谱（①知识图谱）—— 决策树 + 每个方法的前提假设。
+
+    给前端做**纯 SVG** 的可点击决策图。特点：
+      - 零 LLM、零外部依赖，硬编码可审 → 永不白屏
+      - 方法中文名 / key 全集由 `methods_registry` 派生 → 加方法自动同步
+      - 出参的 `graph.uncovered` 列出「注册表有但决策树没画」的方法，
+        正常情况下为空数组（registry_test 会断言它为空）
+    """
+    try:
+        graph = _build_methods_graph()
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"图谱构造失败：{e}"}), 500
+    return jsonify({"ok": True, "graph": graph})
+
+
+@app.route("/api/red_line_scan", methods=["POST"])
+def api_red_line_scan():
+    """学术红线自检（⑩红线引擎）—— 前端在提交指令 / 导出前实时校验。
+
+    入参 JSON：{"text": "用户指令 / 备注"}
+    出参：{"ok": True, "blocked": bool, "hits": [str],
+           "correct_usage": str, "categories": [str]}
+
+    纯正则、零 LLM、不消耗任何额度，可以放心高频调用（如输入框边打字边查）。
+    """
+    payload = request.get_json(silent=True) or {}
+    text = payload.get("text") or ""
+    return jsonify({"ok": True, **red_line_scan(text)})
+
+
+def _dispatch_analysis(df: pd.DataFrame, payload: dict) -> tuple[dict | None, str | None]:
+    """按 payload 的 method 运行对应统计方法。
+
+    返回 (result, error)。这是 /api/analyze 与 /api/copilot/paper 共用的调度器，
+    保证「论文副驾驶」与「数据分析」走的是同一套纯函数、同一份结果契约。
+
+    v1.3（总线 seam）：不再用 if/elif 硬编码方法分支，改为查 `METHODS` 注册表。
+    加新方法 = 往 `methods_registry.py` 插一条 MethodSpec，本函数无需改动。
+    """
+    method = payload.get("method")
+    try:
+        return call_method(method, df, payload), None
+    except MissingField as e:
+        # 字段缺口 / 未知方法 → 友好中文提示
+        return None, str(e)
+    except ValueError as e:
+        return None, str(e)
+    except Exception as e:  # noqa: BLE001
+        return None, f"分析过程出错：{e}"
+
+
+# ---------------------------------------------------------------------------
+# v1.8 · BYOK（用户自带 Key）：六家平台统一注入
+# ---------------------------------------------------------------------------
+# 表单/JSON 字段名 ↔ provider 对齐。新增平台 = 这里加一行 +
+# agents/openai_compat.PROVIDER_REGISTRY 登记一个 ProviderConfig。
+_BYOK_FIELDS: tuple[tuple[str, str], ...] = (
+    ("sf",        "siliconflow_key"),   # 硅基流动
+    ("zhipu",     "zhipu_key"),         # 智谱 GLM
+    ("deepseek",  "deepseek_key"),      # DeepSeek 官方
+    ("dashscope", "dashscope_key"),     # 阿里云百炼（千问）
+    ("kimi",      "kimi_key"),          # Kimi（月之暗面）
+    ("mimo",      "mimo_key"),          # 小米 MiMo
+)
+
+
+def _apply_byok(router, getter) -> int:
+    """把用户在页面上填的 Key 注入 Router（BYOK 模式）。
+
+    getter: 取值函数（JSON payload 用 payload.get，表单用 request.form.get）。
+    返回注入的平台数（0 = 用户没填任何 Key，走服务端默认免费档）。
+    """
+    n = 0
+    for provider, field in _BYOK_FIELDS:
+        raw = (getter(field) or "").strip()
+        if raw:
+            router.set_user_key(provider, raw)
+            n += 1
+    return n
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -2092,90 +2633,16 @@ def api_analyze():
     if not method:
         return jsonify({"ok": False, "error": "请提供分析方法。"}), 400
 
-    # 处理 BYOK（用户自带 Key）
+    # 处理 BYOK（用户自带 Key，v1.8 起支持六家平台）
     router = get_router()
-    siliconflow_key = (payload.get("siliconflow_key") or "").strip()
-    zhipu_key = (payload.get("zhipu_key") or "").strip()
-    if siliconflow_key:
-        router.set_user_key("sf", siliconflow_key)
-    if zhipu_key:
-        router.set_user_key("zhipu", zhipu_key)
+    _apply_byok(router, payload.get)
 
     df = _SESSION[file_id]
-    try:
-        if method == "independent_t":
-            if not group_col or not value_col:
-                return jsonify({"ok": False, "error": "独立样本 T 检验需要分组列和数值列。"}), 400
-            result = run_independent_t(df, group_col, value_col)
-        elif method == "anova":
-            if not group_col or not value_col:
-                return jsonify({"ok": False, "error": "方差分析需要分组列和数值列。"}), 400
-            result = run_anova(df, group_col, value_col)
-        elif method == "correlation":
-            if not value_col or not value_col2:
-                return jsonify({"ok": False, "error": "Pearson 相关需要两个数值列。"}), 400
-            result = run_correlation(df, value_col, value_col2)
-        elif method == "chi_square":
-            if not group_col or not value_col:
-                return jsonify({"ok": False, "error": "卡方检验需要两个分类列（分组列 + 数值列字段）。"}), 400
-            result = run_chi_square(df, group_col, value_col)
-        elif method == "paired_t":
-            if not value_col or not value_col2:
-                return jsonify({"ok": False, "error": "配对 T 检验需要两个数值列（前测 + 后测）。"}), 400
-            result = run_paired_t(df, value_col, value_col2)
-        elif method == "mann_whitney":
-            if not group_col or not value_col:
-                return jsonify({"ok": False, "error": "Mann-Whitney U 检验需要分组列和数值列。"}), 400
-            result = run_mann_whitney(df, group_col, value_col)
-        elif method == "wilcoxon":
-            if not value_col or not value_col2:
-                return jsonify({"ok": False, "error": "Wilcoxon 符号秩检验需要两个数值列（前测 + 后测）。"}), 400
-            result = run_wilcoxon(df, value_col, value_col2)
-        elif method == "linear_regression":
-            x_cols = payload.get("x_cols") or ([value_col2] if value_col2 else [])
-            if not value_col or not x_cols:
-                return jsonify({"ok": False, "error": "线性回归需要因变量列和至少 1 个自变量列。"}), 400
-            if isinstance(x_cols, str):
-                x_cols = [c.strip() for c in x_cols.split(",") if c.strip()]
-            result = run_linear_regression(df, value_col, x_cols)
-        elif method == "logistic_regression":
-            x_cols = payload.get("x_cols") or ([value_col2] if value_col2 else [])
-            if not value_col or not x_cols:
-                return jsonify({"ok": False, "error": "Logistic 回归需要因变量列和至少 1 个自变量列。"}), 400
-            if isinstance(x_cols, str):
-                x_cols = [c.strip() for c in x_cols.split(",") if c.strip()]
-            result = run_logistic_regression(df, value_col, x_cols)
-        elif method == "cronbach_alpha":
-            item_cols = payload.get("item_cols") or payload.get("x_cols") \
-                or [c for c in (payload.get("columns") or []) if c]
-            if isinstance(item_cols, str):
-                item_cols = [c.strip() for c in item_cols.split(",") if c.strip()]
-            if not item_cols or len(item_cols) < 2:
-                return jsonify({"ok": False,
-                                "error": "信度分析需要至少 2 个题项（数值列）。"}), 400
-            result = run_cronbach_alpha(df, item_cols)
-        elif method == "two_way_anova":
-            factor_a = payload.get("group_col")
-            factor_b = payload.get("value_col2")
-            if not factor_a or not factor_b or not value_col:
-                return jsonify({"ok": False, "error":
-                                "双因素方差分析需要：因素 A 列、因素 B 列、数值因变量列。"}), 400
-            result = run_two_way_anova(df, factor_a, factor_b, value_col)
-        else:
-            return jsonify({
-                "ok": False,
-                "error": (
-                    f"方法 {method} 不被识别。当前支持："
-                    "independent_t / anova / correlation / chi_square / "
-                    "paired_t / mann_whitney / wilcoxon / "
-                    "linear_regression / logistic_regression / cronbach_alpha / "
-                    "two_way_anova。"
-                ),
-            }), 400
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"分析过程出错：{e}"}), 500
+    result, err = _dispatch_analysis(df, payload)
+    if err:
+        # 参数类错误 → 400；运行期错误 → 500（沿用原语义）
+        code = 400 if ("需要" in err or "不被识别" in err) else 500
+        return jsonify({"ok": False, "error": err}), code
 
     # v0.4：可选 LLM 深度解读（默认关；失败静默降级为纯模板）
     # v0.5：带缓存（相同统计量重复解读直接命中，0 token）
@@ -2246,67 +2713,10 @@ def _analyze_sse(payload: dict):
             time.sleep(0.15)
 
             yield _sse("stage", {"stage": "compute", "message": "正在计算统计量…", "progress": 35})
-            try:
-                if method == "independent_t":
-                    if not group_col or not value_col:
-                        raise ValueError("独立样本 T 检验需要分组列和数值列。")
-                    result = run_independent_t(df, group_col, value_col)
-                elif method == "anova":
-                    if not group_col or not value_col:
-                        raise ValueError("方差分析需要分组列和数值列。")
-                    result = run_anova(df, group_col, value_col)
-                elif method == "correlation":
-                    if not value_col or not value_col2:
-                        raise ValueError("Pearson 相关需要两个数值列。")
-                    result = run_correlation(df, value_col, value_col2)
-                elif method == "chi_square":
-                    if not group_col or not value_col:
-                        raise ValueError("卡方检验需要两个分类列。")
-                    result = run_chi_square(df, group_col, value_col)
-                elif method == "paired_t":
-                    if not value_col or not value_col2:
-                        raise ValueError("配对 T 检验需要两个数值列（前测 + 后测）。")
-                    result = run_paired_t(df, value_col, value_col2)
-                elif method == "mann_whitney":
-                    if not group_col or not value_col:
-                        raise ValueError("Mann-Whitney U 检验需要分组列和数值列。")
-                    result = run_mann_whitney(df, group_col, value_col)
-                elif method == "wilcoxon":
-                    if not value_col or not value_col2:
-                        raise ValueError("Wilcoxon 符号秩检验需要两个数值列（前测 + 后测）。")
-                    result = run_wilcoxon(df, value_col, value_col2)
-                elif method in ("linear_regression", "logistic_regression"):
-                    x_cols = payload.get("x_cols") or ([value_col2] if value_col2 else [])
-                    if isinstance(x_cols, str):
-                        x_cols = [c.strip() for c in x_cols.split(",") if c.strip()]
-                    if not value_col or not x_cols:
-                        raise ValueError("回归分析需要因变量列和至少 1 个自变量列。")
-                    result = (
-                        run_linear_regression(df, value_col, x_cols)
-                        if method == "linear_regression"
-                        else run_logistic_regression(df, value_col, x_cols)
-                    )
-                elif method == "cronbach_alpha":
-                    item_cols = payload.get("item_cols") or payload.get("x_cols") \
-                        or [c for c in (payload.get("columns") or []) if c]
-                    if isinstance(item_cols, str):
-                        item_cols = [c.strip() for c in item_cols.split(",") if c.strip()]
-                    if not item_cols or len(item_cols) < 2:
-                        raise ValueError("信度分析需要至少 2 个题项（数值列）。")
-                    result = run_cronbach_alpha(df, item_cols)
-                elif method == "two_way_anova":
-                    factor_a = payload.get("group_col")
-                    factor_b = payload.get("value_col2")
-                    if not factor_a or not factor_b or not value_col:
-                        raise ValueError("双因素方差分析需要：因素 A 列、因素 B 列、数值因变量列。")
-                    result = run_two_way_anova(df, factor_a, factor_b, value_col)
-                else:
-                    raise ValueError(f"方法 {method} 不被识别。")
-            except ValueError as e:
-                yield _sse("error", {"message": str(e)})
-                yield _sse("done", {"ok": False}); return
-            except Exception as e:  # noqa: BLE001
-                yield _sse("error", {"message": f"分析过程出错：{e}"})
+            # v1.2：与 /api/analyze 共用同一调度器（单一真源，避免两处逻辑漂移）
+            result, err = _dispatch_analysis(df, payload)
+            if err:
+                yield _sse("error", {"message": err})
                 yield _sse("done", {"ok": False}); return
 
             yield _sse("stage", {"stage": "write", "message": "正在撰写学术解读…", "progress": 65})
@@ -2342,12 +2752,21 @@ def _analyze_sse(payload: dict):
                     if isinstance(xs, str):
                         xs = [c.strip() for c in xs.split(",") if c.strip()]
                     chart_x2 = xs[0] if xs else None
+                elif method == "repeated_measures_anova":
+                    # 重复测量：把时间点列打包进 value_col2（"|" 分隔），
+                    # 避免改动 _build_chart_png 的公共签名
+                    tc = payload.get("item_cols") or payload.get("time_cols") \
+                        or payload.get("x_cols") or [c for c in (payload.get("columns") or []) if c]
+                    if isinstance(tc, str):
+                        tc = [c.strip() for c in tc.split(",") if c.strip()]
+                    chart_x2 = "|".join(tc)
                 png, err = _build_chart_png(
                     df, method,
                     group_col if method in ("independent_t", "anova", "mann_whitney", "chi_square") else None,
                     value_col,
                     chart_x2 if method in ("correlation", "paired_t", "wilcoxon",
-                                           "linear_regression", "logistic_regression") else None,
+                                           "linear_regression", "logistic_regression",
+                                           "repeated_measures_anova") else None,
                 )
                 if png and not err:
                     import base64
@@ -2470,6 +2889,14 @@ def api_chart():
     if not method:
         return jsonify({"ok": False, "error": "请提供分析方法。"}), 400
 
+    # 重复测量 ANOVA：时间点列来自 item_cols/time_cols（打包进 value_col2）
+    if method == "repeated_measures_anova":
+        tc = payload.get("item_cols") or payload.get("time_cols") \
+            or payload.get("x_cols") or [c for c in (payload.get("columns") or []) if c]
+        if isinstance(tc, str):
+            tc = [c.strip() for c in tc.split(",") if c.strip()]
+        value_col2 = "|".join(tc)
+
     df = _SESSION[file_id]
 
     cache_key = _chart_cache_key(file_id, method,
@@ -2496,6 +2923,131 @@ def api_chart():
     })
 
 
+# -----------------------------------------------------------------------------
+# v2.10 · 答辩准备包（P6 · 八站流程最后一站）
+# -----------------------------------------------------------------------------
+def _defense_prepare(payload: dict) -> tuple[pd.DataFrame, list[dict], str | None]:
+    """答辩两端的公共前置：校验会话 + 把 runs 里的参数规范化。
+
+    runs: 前端收集的历次分析参数 [{method, group_col?, value_col?,
+          value_col2?, item_cols?}...]（不含 file_id）。
+    返回 (df, runs_norm, error)。runs 里未知方法在重放时跳过，不在此拦截。
+    """
+    file_id = payload.get("file_id")
+    if not file_id or file_id not in _SESSION:
+        return None, [], "会话已过期，请重新上传文件。"
+    runs_in = payload.get("runs")
+    if not isinstance(runs_in, list) or not runs_in:
+        return None, [], "请先完成至少一次分析，再生成答辩准备包。"
+    runs_norm: list[dict] = []
+    for r in runs_in[:20]:  # 封顶 20 个：一次答辩用不了那么多图
+        if not isinstance(r, dict) or not r.get("method"):
+            continue
+        runs_norm.append(r)
+    if not runs_norm:
+        return None, [], "runs 里没有可识别的分析记录。"
+    return _SESSION[file_id], runs_norm, None
+
+
+@app.route("/api/defense_pack", methods=["POST"])
+def api_defense_pack():
+    """答辩 Q&A 预演：后端**重放**前端传来的历次分析参数，实算统计量后
+    生成高频问答（每条要点引用实算数字，绝不采信前端传来的数值）。
+
+    请求体（JSON）：
+        file_id: 上传接口返回的 file_id
+        runs:    [{method, group_col?, value_col?, value_col2?, item_cols?}...]
+        include_datacheck: bool（可选，附数据质量题）
+    返回：{ok, qa: [...], used_analyses: [...], note}
+    """
+    payload = request.get_json(silent=True) or {}
+    df, runs_norm, err = _defense_prepare(payload)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+
+    summaries: list[dict] = []
+    for r in runs_norm:
+        result, r_err = _dispatch_analysis(df, r)
+        if r_err or not result:
+            continue  # 单个失败不拖垮整包（如该图列已被改）
+        summaries.append({
+            "method": r["method"],
+            "label": method_label(r["method"]),
+            "summary": result.get("summary", {}),
+            "cols": {k: r.get(k) for k in
+                     ("group_col", "value_col", "value_col2") if r.get(k)},
+        })
+
+    dc_report = None
+    if payload.get("include_datacheck"):
+        try:
+            dc_report = data_doctor.run_datacheck(df)
+        except Exception:  # noqa: BLE001 — 体检失败只少一题，不炸整包
+            dc_report = None
+
+    pack = build_qa_pack(summaries, datacheck_report=dc_report)
+    if not pack["qa"]:
+        return jsonify({"ok": False,
+                        "error": "这些分析没能算出可引用的统计量，请先完成一次完整分析。"}), 400
+    return jsonify({"ok": True, **pack})
+
+
+@app.route("/api/defense_charts", methods=["POST"])
+def api_defense_charts():
+    """把会话内历次分析的图打成 zip 一次性下载（内存打包，**不落盘**）。
+
+    请求体同 /api/defense_pack（不含 include_datacheck）。
+    返回：application/zip 附件；单张图失败只跳过并在 X-Missing-Charts 标注。
+    """
+    from flask import send_file
+
+    payload = request.get_json(silent=True) or {}
+    df, runs_norm, err = _defense_prepare(payload)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    missing: list[str] = []
+    missing_keys: list[str] = []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, r in enumerate(runs_norm, 1):
+            method = r["method"]
+            group_col = r.get("group_col")
+            value_col = r.get("value_col")
+            value_col2 = r.get("value_col2")
+            # 与 /api/chart 同一预处理：时间点列打包进 value_col2
+            if method == "repeated_measures_anova":
+                tc = r.get("item_cols") or r.get("time_cols") \
+                    or r.get("x_cols") or []
+                value_col2 = "|".join(
+                    [c for c in (tc if isinstance(tc, list) else str(tc).split(",")) if c])
+            try:
+                png_bytes, c_err = _build_chart_png(
+                    df, method, group_col, value_col, value_col2)
+            except Exception:  # noqa: BLE001 — 单图失败跳过
+                png_bytes, c_err = None, "生成异常"
+            if not png_bytes:
+                missing.append(f"{method_label(method)}：{c_err or '生成失败'}")
+                missing_keys.append(str(method))
+                continue
+            safe_name = method_label(method).replace("/", " ")
+            zf.writestr(f"{i:02d}_{safe_name}.png", png_bytes)
+
+    if len(missing) == len(runs_norm):
+        return jsonify({"ok": False,
+                        "error": f"所有图表都生成失败：{missing[0]}"}), 400
+    buf.seek(0)
+    resp = send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name="答辩图表包.zip")
+    # HTTP 头只允许 latin-1：中文细节不能进头，这里只放 ASCII 方法 key，
+    # 前端据此提示「有 N 张图没进包」
+    if missing_keys:
+        resp.headers["X-Missing-Charts"] = ",".join(missing_keys)[:400]
+    return resp
+
+
 @app.route("/api/sample/<name>")
 def api_sample(name: str):
     """提供内置示例数据下载，方便用户立即体验。"""
@@ -2513,6 +3065,159 @@ def api_sample_paper(name: str):
 # -----------------------------------------------------------------------------
 # 论文排查接口（路径 B）
 # -----------------------------------------------------------------------------
+@app.route("/api/audit_chat", methods=["POST"])
+def api_audit_chat():
+    """v1.6 · 规划§三②审计对话：对**一条**统计比对追问，LLM 只解释不计算。
+
+    入参（JSON）：
+        summary:  comparison.summary 子字典（由 /api/check_paper 返回）
+        question: 用户的追问（自然语言）
+        force:    可选 true = 绕过缓存强制真调
+    出参：
+        {ok: true, answer: str|null, cited: {...}, llm_model, llm_cached, llm_error}
+
+    铁律②：只把 summary 这一小段喂 LLM，绝不传 df / 原始数据。
+    降级：无 Key / LLM 报错 → answer=null + llm_error，前端回退模板文案，
+          规则引擎结论不受影响（绝不白屏）。
+    """
+    payload = request.get_json(silent=True) or {}
+    summary = payload.get("summary") or {}
+    question = (payload.get("question") or "").strip()
+    force = bool(payload.get("force"))
+
+    if not isinstance(summary, dict) or not summary:
+        return jsonify({"ok": False, "error": "缺少比对条目（summary）。"}), 400
+    if not question:
+        return jsonify({"ok": False, "error": "请先输入你的问题。"}), 400
+    if len(question) > 500:
+        return jsonify({"ok": False, "error": "问题过长（请控制在 500 字以内）。"}), 400
+
+    # 追问本身也过红线：防止借"对话"绕过学术不端拦截
+    rl = red_line_scan(question)
+    if rl["blocked"]:
+        return jsonify({
+            "ok": False,
+            "error": "该问题涉及学术不端，本工具无法回答。",
+            "red_line": rl,
+        }), 400
+
+    # BYOK：与 analyze / check_paper 同一套注入方式（v1.8 六家平台）
+    router = get_router()
+    _apply_byok(router, payload.get)
+
+    answer, err, meta = explain_comparison(summary, question, force=force)
+
+    # 引用回执：让前端能显示"这条回答基于哪些数字"（可审计）
+    cited = {
+        "方法": summary.get("method_cn") or summary.get("method_key") or "",
+        "统计量": summary.get("kind_cn") or "",
+        "论文值": summary.get("paper"),
+        "实算值": summary.get("real"),
+        "结论": summary.get("status_cn") or summary.get("status") or "",
+    }
+    # 降级：LLM 不可用时回退到规则引擎的模板说明，保证"永远有话说"
+    if answer is None:
+        fallback = summary.get("verdict") or ""
+        hint = summary.get("hint") or ""
+        if fallback:
+            answer = fallback + (("\n\n" + hint) if hint else "")
+    return jsonify({
+        "ok": True,
+        "answer": answer,
+        "cited": cited,
+        "fallback": err is not None and bool(answer),
+        "llm_model": meta.get("model", ""),
+        "llm_cached": meta.get("cached", False),
+        "llm_error": err,
+    })
+
+
+@app.route("/api/audit_image", methods=["POST"])
+def api_audit_image():
+    """v2.9 · 规划§三④多模态图表核查：读图 + 判断"图配得上结论吗"。
+
+    入参（multipart/form-data）：
+        image:  统计图表截图（.png/.jpg/.jpeg/.webp/.gif，≤ 5 MB）
+        claim:  论文里与这张图对应的一句结论（可选）
+        force:  可选 "1" = 绕过缓存强制真调
+    出参：
+        {ok, matches_conclusion, issues, caption, image_mime, image_kb,
+         llm_model, llm_cached, llm_error, fallback}
+
+    铁律②：只把「图片 + 结论句」送进多模态模型，**绝不传原始数据 df**。
+    图不落盘：字节只在本请求栈内存活，用完即释放（不写 uploads/，不进日志）。
+    降级：无 Key / 模型不可用 → llm_error + fallback=true，前端提示手动核对。
+    """
+    f = request.files.get("image")
+    if f is None or not (f.filename or "").strip():
+        return jsonify({"ok": False, "error": "请上传一张统计图表图片。"}), 400
+
+    claim = (request.form.get("claim") or "").strip()
+    force = (request.form.get("force") or "").strip() in ("1", "true", "yes")
+
+    if len(claim) > 500:
+        return jsonify({"ok": False, "error": "结论句过长（请控制在 500 字以内）。"}), 400
+
+    # 结论句也过红线：防止借"读图"谈论伪造数据 / 规避检测
+    if claim:
+        rl = red_line_scan(claim)
+        if rl["blocked"]:
+            return jsonify({
+                "ok": False,
+                "error": "该内容涉及学术不端，本工具无法处理。",
+                "red_line": rl,
+            }), 400
+
+    # MIME：优先看浏览器声明的类型；文件名兜底（有些环境不带 content_type）
+    mime = (f.mimetype or "").strip().lower()
+    if mime not in IMAGE_MIME_TYPES:
+        ext = Path(f.filename or "").suffix.lower()
+        mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif"}.get(ext, "")
+
+    raw = f.read()
+    if not raw:
+        return jsonify({"ok": False, "error": "图片内容为空，请重新上传。"}), 400
+    if len(raw) > MAX_IMAGE_BYTES:
+        return jsonify({
+            "ok": False,
+            "error": (f"图片过大（{len(raw) / 1024 / 1024:.1f} MB），"
+                      f"请压缩到 {MAX_IMAGE_BYTES // 1024 // 1024} MB 以内。"),
+        }), 413
+
+    # BYOK：与 analyze / check_paper / audit_chat 同一套注入方式
+    router = get_router()
+    _apply_byok(router, request.form.get)
+
+    # 图片字节只在这一层存在：audit_image 返回后 base64 串随栈帧释放，
+    # 期间不写 uploads/、不进日志、不进缓存（缓存只存模型输出的文本）。
+    result, err, meta = audit_image(raw, mime, claim, force=force)
+    raw = None  # noqa: F841  显式断开引用，尽快让大对象可回收
+
+    if result is None:
+        return jsonify({
+            "ok": False,
+            "error": err or "图表解读失败",
+            "llm_model": meta.get("model", ""),
+            "llm_error": err,
+            "fallback": True,
+            "hint": "图表核查为实验功能：请在无 AI 辅助的情况下手动核对图与结论是否一致。",
+        }), 200
+
+    return jsonify({
+        "ok": True,
+        "matches_conclusion": result.get("matches_conclusion"),
+        "issues": result.get("issues", []),
+        "caption": result.get("caption", ""),
+        "raw": result.get("raw", ""),
+        "claim": claim,
+        "llm_model": meta.get("model", ""),
+        "llm_cached": meta.get("cached", False),
+        "llm_error": err,
+        "fallback": err is not None,
+    })
+
+
 @app.route("/api/check_paper", methods=["POST"])
 def api_check_paper():
     """同时接收论文 + 数据，跑出核查报告。
@@ -2525,7 +3230,7 @@ def api_check_paper():
         siliconflow_key:  硅基流动 API Key（BYOK 模式，可选）
         zhipu_key:       智谱 API Key（BYOK 模式，可选）
     返回 JSON：
-        paper_claims: {methods, quantities, variables, raw_text_excerpt}
+        paper_claims: {methods, quantities, variables, raw_text, raw_text_excerpt}
         columns:      数据列概览（与 /api/upload 同结构）
         rows:         行数
         audit:        {markdown, comparisons, suggestions, real}
@@ -2540,7 +3245,10 @@ def api_check_paper():
 
     # 1) 解析论文
     try:
+        paper.seek(0)  # 表格读取与文本读取各消费一次流，先回卷
         paper_text = read_paper_text(paper)
+        paper.seek(0)
+        paper_tables = read_paper_tables(paper)  # 非 docx → []，按无表格处理
     except ValueError as e:
         return jsonify({"ok": False, "error": f"论文解析失败：{e}"}), 400
     except Exception as e:  # noqa: BLE001
@@ -2571,23 +3279,32 @@ def api_check_paper():
         "methods": methods,
         "quantities": quantities,
         "variables": variables,
+        # v2.12：表格交叉核查（table_check）需要**全文**来解析 Markdown/管道表；
+        # 只给前端预览的 excerpt 不够用。全文已有 paper_text，直接带上（内存内）。
+        "raw_text": paper_text,
         # 只回前 1500 字给前端预览（避免 Markdown 渲染卡顿）
         "raw_text_excerpt": paper_text[:1500],
         "raw_text_length": len(paper_text),
     }
 
-    # 4) 处理 BYOK（用户自带 Key）
+    # 4) 处理 BYOK（用户自带 Key，v1.8 起支持六家平台）
     router = get_router()
-    siliconflow_key = (request.form.get("siliconflow_key") or "").strip()
-    zhipu_key = (request.form.get("zhipu_key") or "").strip()
-    if siliconflow_key:
-        router.set_user_key("sf", siliconflow_key)
-    if zhipu_key:
-        router.set_user_key("zhipu", zhipu_key)
+    _apply_byok(router, request.form.get)
 
     # 5) 跑核查报告（v0.4 支持用户指令过滤）
     directive = (request.form.get("directive") or "").strip()
-    audit = build_audit_report(paper_claims, df, columns, directive=directive)
+
+    # 5.1) v1.5 学术红线自检：指令若含代写 / 买卖 / 规避查重 / 伪造数据等意图 → 直接拒绝
+    red_line = red_line_scan(directive)
+    if red_line["blocked"]:
+        return jsonify({
+            "ok": False,
+            "error": "该指令涉及学术不端，本工具无法执行。",
+            "red_line": red_line,
+        }), 400
+
+    audit = build_audit_report(paper_claims, df, columns, directive=directive,
+                               paper_tables=paper_tables)
 
     # 6) v0.4.2：可选 AI 深度审计（默认关；失败静默降级为纯规则报告）
     #    冻结前缀 = 论文全文（前缀缓存命中，价差 10 倍）；规则发现 + 指令 = 变量区
@@ -2623,23 +3340,336 @@ def api_check_paper():
     })
 
 
-# 简易防刷：每 IP 每分钟最多 30 次接口请求（MVP 宽松值，本地内测足够）
-_REQUEST_LOG: dict[str, list[float]] = {}
-_RATE_LIMIT_PER_MIN = 30
+# -----------------------------------------------------------------------------
+# v1.2 论文副驾驶 · 流水线编排 + 证据约束写作
+# -----------------------------------------------------------------------------
+
+# 流水线工作目录：默认项目下的 workspace/（可被请求体 workdir 覆盖，但限制在项目内）
+_COPILOT_WORKSPACE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 
 
+def _copilot_resolve_workdir(raw: str | None) -> str:
+    """把请求里的 workdir 限制在项目内，防目录穿越。"""
+    if not raw:
+        return _COPILOT_WORKSPACE
+    cand = os.path.abspath(raw)
+    root = os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
+    if not cand.startswith(root):
+        return _COPILOT_WORKSPACE
+    return cand
+
+
+@app.route("/api/copilot/phases", methods=["GET", "POST"])
+def api_copilot_phases():
+    """阶段目录（前端渲染流水线看板用）。只读，无副作用。"""
+    return jsonify({"ok": True, "phases": copilot_pipeline.phase_catalog()})
+
+
+@app.route("/api/copilot/status", methods=["POST"])
+def api_copilot_status():
+    """扫描流水线状态：每个阶段的完成情况 + 下一个待执行阶段。"""
+    payload = request.get_json(silent=True) or {}
+    workdir = _copilot_resolve_workdir(payload.get("workdir"))
+    pipe = copilot_pipeline.Pipeline(workdir)
+    state = pipe.status_dict()
+    nxt = pipe.next_phase()
+    state["next_phase"] = nxt.key if nxt else None
+    return jsonify({"ok": True, **state})
+
+
+@app.route("/api/copilot/datacheck", methods=["POST"])
+def api_copilot_datacheck():
+    """流水线第 0 关门控：跑数据体检 → 落盘报告 → 写入流水线状态。
+
+    body: { file_id: "<上传返回的 id>", workdir?: "...", filename?: "..." }
+    出参：{"ok": True, "passed": bool, "high": int, "mid": int, "low": int,
+           "report_file": "datacheck_res.md", "issues": [...], "summary": {...}}
+
+    **只卡 high**（硬矛盾）；mid / low 只提醒不阻断。零 LLM、零外部依赖。
+    体检未通过时后续阶段全部 blocked —— 这就是「数据体检是产品入口」。
+    """
+    payload = request.get_json(silent=True) or {}
+    file_id = payload.get("file_id")
+    if not file_id or file_id not in _SESSION:
+        return jsonify({"ok": False, "error": "会话已过期，请重新上传文件。"}), 400
+
+    workdir = _copilot_resolve_workdir(payload.get("workdir"))
+    try:
+        pipe = copilot_pipeline.Pipeline(workdir)
+        result = pipe.run_datacheck_gate(
+            _SESSION[file_id],
+            filename=str(payload.get("filename") or ""),
+        )
+    except Exception as e:  # noqa: BLE001 - 门控失败不阻断主流程
+        return jsonify({"ok": False, "error": f"数据体检失败：{e}"}), 500
+    return jsonify(result)
+
+
+@app.route("/api/copilot/dispatch", methods=["POST"])
+def api_copilot_dispatch():
+    """生成某阶段的上下文桥接串（只传摘要，不传全文）。
+
+    body: { workdir?, phase?, bridge?: {phase_key: summary} }
+    """
+    payload = request.get_json(silent=True) or {}
+    workdir = _copilot_resolve_workdir(payload.get("workdir"))
+    pipe = copilot_pipeline.Pipeline(workdir)
+
+    key = payload.get("phase")
+    phase = copilot_pipeline.PHASE_BY_KEY.get(key) if key else pipe.next_phase()
+    if phase is None:
+        return jsonify({"ok": True, "done": True, "context": "", "message": "流水线已全部完成。"})
+
+    ctx = pipe.dispatch_context(phase, payload.get("bridge") or {})
+    return jsonify({
+        "ok": True,
+        "phase": phase.key,
+        "name": phase.name,
+        "context": ctx,
+        "expected_outputs": phase.outputs,
+        "validator": phase.validator,
+    })
+
+
+@app.route("/api/copilot/validate", methods=["POST"])
+def api_copilot_validate():
+    """校验某阶段产出文件是否齐备。"""
+    payload = request.get_json(silent=True) or {}
+    workdir = _copilot_resolve_workdir(payload.get("workdir"))
+    pipe = copilot_pipeline.Pipeline(workdir)
+    key = payload.get("phase")
+    if not key:
+        return jsonify({"ok": False, "error": "缺少 phase 参数。"}), 400
+    try:
+        return jsonify({"ok": True, **pipe.validate(key)})
+    except KeyError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/copilot/mark", methods=["POST"])
+def api_copilot_mark():
+    """记录阶段状态（done / in_progress / blocked）。"""
+    payload = request.get_json(silent=True) or {}
+    workdir = _copilot_resolve_workdir(payload.get("workdir"))
+    pipe = copilot_pipeline.Pipeline(workdir)
+    key = payload.get("phase")
+    status = payload.get("status", "done")
+    if status not in ("pending", "in_progress", "done", "blocked"):
+        return jsonify({"ok": False, "error": f"非法状态：{status}"}), 400
+    try:
+        rec = pipe.mark(key, status, payload.get("note", ""))
+    except KeyError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "phase": key, "record": rec})
+
+
+@app.route("/api/copilot/paper", methods=["POST"])
+def api_copilot_paper():
+    """从一组分析结果，生成证据约束的论文初稿（claim 台账 + 图表清单 + 正文）。
+
+    body: {
+      workdir?, title?, template? ("latex"|"thesis"),
+      analyses?: [ {method, group_col, value_col, ...} ],   # 服务端重跑真实数据
+      results?:  [ {method, summary, ...} ],                # 或直接给现成结果
+      data_file?: 上传的临时数据标识（复用 /api/analyze 的 file_id 机制则不需要）
+      use_llm?: 1,        # 可选：LLM 学术语言润色（污染稿静默回退原稿）
+      llm_force?: 1,      # 可选：绕过润色缓存强制重润
+    }
+
+    为保持「计算 + 生成解耦」，这里优先用 analyses 描述让服务端**真跑**统计，
+    再交给写作引擎；results 直传仅用于测试 / 已算好的场景。
+    """
+    payload = request.get_json(silent=True) or {}
+    workdir = _copilot_resolve_workdir(payload.get("workdir"))
+    title = (payload.get("title") or "未命名研究").strip()
+    template = payload.get("template", "latex")
+    if template not in ("latex", "thesis"):
+        template = "latex"
+
+    # 1) 取分析结果：优先 results 直传，否则需要 file_id + analyses 真跑统计
+    results: list[dict] = []
+    if isinstance(payload.get("results"), list) and payload["results"]:
+        results = payload["results"]
+    else:
+        file_id = payload.get("file_id")
+        analyses = payload.get("analyses") or []
+        if not file_id or not analyses:
+            return jsonify({
+                "ok": False,
+                "error": "缺少分析输入：请提供 results，或提供 file_id + analyses。",
+            }), 400
+        df = _SESSION.get(file_id)
+        if df is None:
+            return jsonify({"ok": False, "error": "会话已过期，请重新上传数据。"}), 400
+        for a in analyses:
+            one, err = _dispatch_analysis(df, a)
+            if err:
+                return jsonify({"ok": False, "error": f"分析失败：{err}"}), 400
+            results.append(one)
+
+    if not results:
+        return jsonify({"ok": False, "error": "没有可写入的分析结果。"}), 400
+
+    # 2) 写作引擎（纯逻辑，零幻觉）
+    bundle = copilot_writer.build_paper_bundle(results, title=title, template=template)
+    claims = copilot_writer.build_claim_inventory(results)
+
+    # 2.5) 可选 LLM 润色（证据闸门约束：污染稿静默回退原稿）
+    polish_meta: dict = {"llm_used": False}
+    if payload.get("use_llm") == 1:
+        bundle, polish_meta = copilot_polisher.polish_bundle(
+            bundle, claims, template=template,
+            force=payload.get("llm_force") == 1,
+        )
+
+    # 3) 落盘到 workdir/paper/（产出文件即契约）
+    written: list[str] = []
+    for rel, content in bundle.items():
+        full = os.path.join(workdir, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content)
+        written.append(rel)
+
+    # 4) 写作闸门自检（在润色稿上跑，确保润色未破坏证据约束）
+    lint_target = bundle.get("paper/thesis.md") or bundle.get("paper/manuscript.tex", "")
+    issues = copilot_writer.lint_draft(lint_target, claims)
+
+    return jsonify({
+        "ok": True,
+        "title": title,
+        "template": template,
+        "written": written,
+        "claim_count": len(claims),
+        "claims": [c.to_dict() for c in claims],
+        "lint": issues,
+        "polish": polish_meta,
+        "preview": lint_target[:4000],
+    })
+
+
+# -----------------------------------------------------------------------------
+# v2.13 访问门禁（部署到公网时保护小范围内部使用）
+#
+# 为什么**最先注册**：
+#   Flask 的 before_request 按注册顺序执行。门禁必须在限流之前判断 —— 否则
+#   没解锁的陌生人会先消耗掉限流配额，把真正要用的同学挤出去。
+#
+# 为什么不生效时零成本：
+#   ACCESS_CODE 未配置 → access_guard.enabled() 为 False → 立即 return None，
+#   本地双击桌面端、跑测试、开发调试的行为**一个字节都不变**。
+#
+# 登录相关的三条路径由 access_guard.is_exempt 放行（/unlock、/health、
+# /favicon.ico、/static/*）—— 否则用户连输口令的页面都打不开（死锁）。
+# -----------------------------------------------------------------------------
+@app.before_request
+def _access_gate():
+    try:
+        return access_guard.gate(request)
+    except Exception:  # noqa: BLE001
+        # 门禁自身异常绝不锁死站点（与限流器同一哲学：宁可漏防，不可挂站）
+        return None
+
+
+@app.route("/unlock", methods=["GET", "POST"])
+def unlock():
+    """访问口令解锁页（ACCESS_CODE 未配置时直接跳首页）。"""
+    return access_guard.handle_unlock(request)
+
+
+@app.route("/logout")
+def logout():
+    """退出登录：清掉解锁 cookie。改过 ACCESS_CODE 后旧 cookie 自动失效。"""
+    return access_guard.logout_response()
+
+
+# 防刷限流（v1.7 · 规划§四 P2 上线安全）
+# 逻辑抽到 security_guard.py（可独立单测）：
+#   · 普通接口 / LLM 接口（烧钱）**分开计数**，LLM 接口更严
+#   · 空闲 IP 会被回收，内存有界（旧实现 `_REQUEST_LOG` 从不清理，是慢性泄漏）
+#   · `X-Forwarded-For` 仅在 TRUST_PROXY=1 时采信（否则任何人加个头就能伪造 IP 绕过）
+# 阈值默认宽松（本地内测零干扰），可用 RATE_LIMIT_PER_MIN /
+# RATE_LIMIT_LLM_PER_MIN 环境变量覆盖。
 @app.before_request
 def rate_limit():
-    if request.path.startswith("/static") or request.path in ("/", "/health"):
+    try:
+        path = request.path
+        if security_guard.is_exempt(path):
+            return None
+        # CORS 预检不计入限流：它不消耗业务资源，却会挤占配额，
+        # 导致用户被自己的预检耗尽额度（症状：跨域调用时好时坏）。
+        if security_guard.is_preflight(request.method):
+            return None
+        # 测试 / CI / 单机内测可整体关闭（RATE_LIMIT_DISABLE=1）
+        if security_guard.disabled():
+            return None
+        ip = security_guard.client_ip(request)
+        if security_guard.is_llm_path(path):
+            # LLM 接口：按 IP 计（贵），阈值更严
+            allowed, retry = security_guard.limiter.check(
+                "llm:" + ip, security_guard.llm_per_min())
+            if not allowed:
+                return jsonify({
+                    "ok": False,
+                    "error": f"AI 接口请求过于频繁，请 {retry} 秒后再试。",
+                    "retry_after": retry,
+                }), 429, {"Retry-After": str(retry)}
+        else:
+            allowed, retry = security_guard.limiter.check(
+                "api:" + ip, security_guard.per_min())
+            if not allowed:
+                return jsonify({
+                    "ok": False,
+                    "error": "请求过于频繁，请稍后再试。",
+                    "retry_after": retry,
+                }), 429, {"Retry-After": str(retry)}
+    except Exception:  # noqa: BLE001
+        # 限流器自身异常绝不阻断主流程（宁可漏限，不可挂站）
         return None
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
-    now = time.time()
-    history = _REQUEST_LOG.setdefault(ip, [])
-    history[:] = [t for t in history if now - t < 60]
-    if len(history) >= _RATE_LIMIT_PER_MIN:
-        return jsonify({"ok": False, "error": "请求过于频繁，请稍后再试。"}), 429
-    history.append(now)
     return None
+
+
+# -----------------------------------------------------------------------------
+# v2.8 跨端适配：CORS 与预检
+#
+# 为什么单独一段、而不是塞进限流钩子：
+#   ① 预检（OPTIONS）必须**先于限流**放行，否则浏览器每次真实请求前都要先吃一个
+#      429，表现为「跨域调用玄学失败」。用 Flask 的 before_request 先注册即先执行。
+#   ② 默认完全不启用（CORS_ALLOW_ORIGINS 为空时不发任何头），
+#      浏览器同源访问的行为与 v2.7 完全一致，不会为了新端把老端搞坏。
+#
+# 关于微信小程序：wx.request **不走浏览器同源策略**，不看 CORS 头、也不发预检，
+# 所以小程序本来就能直接调本后端（前提：https + 已在微信后台配置并备案域名）。
+# 这里的 CORS 是给「Uni-app 编译出的 H5」和第三方网页用的。
+# -----------------------------------------------------------------------------
+@app.before_request
+def _cors_preflight():
+    """仅处理 OPTIONS 预检。非 OPTIONS 请求原样放行给后续钩子。"""
+    if request.method != "OPTIONS":
+        return None
+    if not cross_platform.cors_enabled():
+        # 未启用 CORS 时不特殊处理，交给 Flask 走正常 405/404 逻辑，
+        # 避免出现「发了 OPTIONS 却什么都不配置就说 204」的误导行为。
+        return None
+    body, status, headers = cross_platform.preflight_response(
+        request.headers.get("Origin"),
+        request.headers.get("Access-Control-Request-Headers"),
+    )
+    return body, status, headers
+
+
+@app.after_request
+def _cors_headers(resp):
+    """给实际响应补 CORS 头（未启用时是空操作）。"""
+    if request.method == "OPTIONS":
+        return resp  # 预检已在 before_request 里构造完毕
+    try:
+        return cross_platform.apply_cors_headers(
+            resp, request.headers.get("Origin"))
+    except Exception:  # noqa: BLE001
+        # 加头失败绝不能把正常请求变成 500
+        return resp
+
 
 
 if __name__ == "__main__":
@@ -2647,5 +3677,17 @@ if __name__ == "__main__":
     # 只在直启时做，import 场景（测试 / WSGI）不加载，保持测试环境干净。
     _load_dotenv()
     port = int(os.environ.get("PORT", "5000"))
-    print(f"🚀 智论助手 MVP 启动： http://127.0.0.1:{port}")
-    app.run(host="127.0.0.1", port=port, debug=True)
+    # 容器部署必须绑 0.0.0.0（绑 127.0.0.1 时映射出去的端口永远连不上）；
+    # 本地直启默认仍绑 127.0.0.1，避免无意中把服务暴露到局域网。
+    host = os.environ.get("HOST", "127.0.0.1")
+    # debug 默认关：开 debug 会暴露堆栈且启用自动重载（reloader 子进程
+    # 还会在父进程退出时被回收）。需要调试时显式 DEBUG=1。
+    debug = os.environ.get("DEBUG", "0") == "1"
+    shown = "127.0.0.1" if host in ("127.0.0.1", "localhost") else host
+    print(f"🚀 智论助手 MVP 启动： http://{shown}:{port}")
+    # 跨端配置告警：不阻断启动，但要把危险配置明确说出来
+    for _w in cross_platform.warn_dangerous_config():
+        print(f"⚠️  {_w}")
+    if cross_platform.cors_enabled():
+        print(f"🌐 跨域已启用，白名单：{cross_platform.allowed_origins()}")
+    app.run(host=host, port=port, debug=debug, use_reloader=debug)

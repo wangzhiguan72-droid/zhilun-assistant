@@ -4,6 +4,15 @@
 <meta charset="UTF-8" data-page-node-id="2fSIBWgtRt9NTGqg9HexAW" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="sf3Rib9Jl81Kf4qwx5Irbf" />
 <title>智论助手 · 你的学术副驾驶</title>
+<!-- PWA：可"安装"为桌面应用（v2.6）。manifest + service worker 见 static/ -->
+<link rel="manifest" href="/static/manifest.json" />
+<meta name="theme-color" content="#1e40af" />
+<link rel="icon" href="/static/favicon.ico" sizes="any" />
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="智论助手" />
+<meta name="description" content="本地运行的论文数据体检、统计核查与写作副驾。统计全部本地计算，不上传数据。" />
 <!-- Markdown 渲染：PRD 指定 markdown-it -->
 <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
 <style>
@@ -189,6 +198,182 @@
     padding: 12px 14px; border-radius: 4px;
     font-size: 13px; color: #1e3a8a; margin-bottom: 16px;
   }
+
+  /* ---------- v2.0 · 数据体检（产品入口） ---------- */
+  .dc-wrap {
+    border: 1px solid var(--c-border); border-radius: var(--radius);
+    background: var(--c-card); margin-bottom: 16px; overflow: hidden;
+  }
+  .dc-hd {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 11px 14px; cursor: pointer; user-select: none;
+    border-left: 3px solid var(--c-muted); background: var(--c-bg);
+  }
+  .dc-hd.lv-high { border-left-color: var(--c-danger); }
+  .dc-hd.lv-mid  { border-left-color: var(--c-warn); }
+  .dc-hd.lv-ok   { border-left-color: var(--c-success); }
+  .dc-hd .dc-t { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .dc-hd .dc-v { font-size: 12px; color: var(--c-muted); }
+  .dc-caret { font-size: 12px; color: var(--c-muted); transition: transform .15s ease; }
+  .dc-wrap.open .dc-caret { transform: rotate(90deg); }
+  .dc-verdict { padding: 10px 14px; font-size: 13px; color: var(--c-text); border-top: 1px solid var(--c-border); }
+  .dc-issues { padding: 4px 14px 12px; }
+  .dc-issue {
+    border: 1px solid var(--c-border); border-radius: 8px;
+    padding: 9px 12px; margin-top: 8px; font-size: 13px; background: #fff;
+  }
+  .dc-issue.lv-high { border-left: 3px solid var(--c-danger); }
+  .dc-issue.lv-mid  { border-left: 3px solid var(--c-warn); }
+  .dc-issue.lv-low  { border-left: 3px solid var(--c-primary-soft); }
+  .dc-issue .dc-t2 { font-weight: 600; margin-bottom: 4px; }
+  .dc-row { color: #475569; margin-top: 3px; }
+  .dc-row b { color: var(--c-text); }
+  .dc-tag {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    margin-right: 6px; background: var(--c-primary-bg); color: var(--c-primary);
+  }
+  .dc-note { padding: 8px 14px 12px; font-size: 12px; color: var(--c-muted); }
+  .dc-skel { padding: 12px 14px; font-size: 13px; color: var(--c-muted); }
+
+  /* ---------- v2.1 · 一键清洗副本（产品入口第二站） ---------- */
+  .dc-fixbar { padding: 0 14px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .dc-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 13px; padding: 7px 13px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--c-primary-soft); background: var(--c-primary-bg);
+    color: var(--c-primary); font-weight: 600;
+  }
+  .dc-btn:hover { filter: brightness(0.97); }
+  .dc-btn[disabled] { opacity: .55; cursor: default; }
+  .dc-stat { font-size: 12px; color: var(--c-muted); }
+  .dc-fix { padding: 2px 14px 12px; font-size: 13px; }
+  .dc-fix .dc-fh { font-weight: 600; margin: 10px 0 2px; display: flex; align-items: center; gap: 8px; }
+  .dc-fx {
+    border: 1px solid var(--c-border); border-left: 3px solid var(--c-muted);
+    border-radius: 8px; padding: 8px 11px; margin-top: 7px; background: #fff;
+  }
+  .dc-fx.auto { border-left-color: var(--c-success); }
+  .dc-fx.manual { border-left-color: var(--c-warn); }
+  .dc-fx .dc-t3 { font-weight: 600; margin-bottom: 3px; }
+  .dc-badge {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    margin-right: 6px; background: var(--c-primary-bg); color: var(--c-primary);
+  }
+  .dc-badge.auto { background: #e7f6ec; color: #1a7f45; }
+  .dc-badge.manual { background: #fdf3e3; color: #9a6a10; }
+
+  /* ---------- ① 方法学知识图谱（v1.4） ---------- */
+  .graph-wrap {
+    border: 1px solid var(--c-border); border-radius: var(--radius);
+    background: var(--c-card); margin-bottom: 16px; overflow: hidden;
+    box-shadow: var(--shadow-sm);
+  }
+  .graph-hd {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 10px 14px; background: var(--c-bg);
+    border-bottom: 1px solid var(--c-border);
+    font-size: 13px; font-weight: 600; color: var(--c-text);
+  }
+  .graph-hd .hint { font-weight: 400; font-size: 12px; color: var(--c-muted); }
+  .graph-scroll { overflow-x: auto; padding: 10px 12px; }
+  .graph-svg { display: block; }
+  .graph-node { cursor: pointer; }
+  .graph-node text { pointer-events: none; }
+  /* 决策路径步骤条 */
+  .path-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px 4px; }
+  .path-step {
+    display: inline-flex; align-items: baseline; gap: 5px;
+    background: var(--c-primary-bg); border: 1px solid #dbeafe;
+    border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #1e3a8a;
+  }
+  .path-step .pq { color: var(--c-muted); }
+  .path-step .pa { font-weight: 600; }
+  .path-arrow { color: var(--c-muted); font-size: 12px; }
+  /* 候选方法卡片 */
+  .cand-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px 12px; }
+  .cand {
+    border: 1px solid var(--c-border); border-radius: 8px;
+    padding: 8px 11px; font-size: 12.5px; background: var(--c-card);
+    max-width: 100%;
+  }
+  .cand .cname { font-weight: 600; color: var(--c-text); }
+  .cand .cneed { color: var(--c-muted); font-size: 11.5px; margin-top: 2px; }
+  .cand.ok { border-color: var(--c-primary); background: var(--c-primary-bg); }
+  .cand.ok .cname { color: var(--c-primary); }
+  .cand.ok .cname::before { content: "✓ "; color: var(--c-primary); }
+  /* 前提假设详情 */
+  .assump {
+    margin: 0 14px 12px; padding: 10px 12px; border-radius: 8px;
+    background: #f1f5f9; border: 1px solid var(--c-border); font-size: 12.5px;
+  }
+  .assump .atitle { font-weight: 600; margin-bottom: 4px; }
+  .assump ul { margin: 4px 0 0; padding-left: 18px; color: #334155; }
+  .assump li { margin: 2px 0; }
+
+  /* ---------- ⑩ 学术红线 + 诚信承诺（v1.5） ---------- */
+  .redline-box {
+    margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+    background: #fef2f2; border: 1px solid #fecaca; font-size: 12.5px; color: #991b1b;
+  }
+  .redline-box .rt { font-weight: 600; margin-bottom: 4px; }
+  .redline-box ul { margin: 4px 0 0; padding-left: 18px; }
+  .redline-box .rcu {
+    margin-top: 6px; padding-top: 6px; border-top: 1px dashed #fca5a5;
+    white-space: pre-line; color: #7f1d1d;
+  }
+  .directive-box textarea.redline-hit { border-color: var(--c-danger); }
+  /* 学术诚信承诺模态 */
+  .integrity-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45);
+    display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 20px;
+  }
+  .integrity-modal {
+    background: var(--c-card); border-radius: var(--radius); max-width: 520px; width: 100%;
+    box-shadow: var(--shadow-md); overflow: hidden;
+  }
+  .integrity-modal .im-hd {
+    padding: 14px 18px; border-bottom: 1px solid var(--c-border);
+    font-weight: 600; font-size: 15px;
+  }
+  .integrity-modal .im-bd { padding: 14px 18px; font-size: 13.5px; line-height: 1.7; }
+  .integrity-modal .im-bd ul { margin: 6px 0 0; padding-left: 20px; color: #334155; }
+  .integrity-modal .im-ft {
+    padding: 12px 18px; border-top: 1px solid var(--c-border);
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+  .im-pledge {
+    margin-top: 12px; padding: 10px 12px; background: var(--c-bg);
+    border: 1px solid var(--c-border); border-radius: 8px; font-size: 13px;
+    display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
+  }
+  .im-pledge input { margin-top: 3px; accent-color: var(--c-primary); }
+
+  /* ---------- ③ 人话解释卡片（v1.5 XAI） ---------- */
+  .xai-wrap { margin: 0 0 16px; }
+  .xai-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .xai-card {
+    border: 1px solid var(--c-border); border-radius: 10px;
+    margin-bottom: 8px; background: var(--c-card); overflow: hidden;
+  }
+  .xai-card summary {
+    padding: 10px 14px; cursor: pointer; font-size: 13.5px; font-weight: 600;
+    list-style: none; display: flex; align-items: baseline; gap: 8px;
+  }
+  .xai-card summary::-webkit-details-marker { display: none; }
+  .xai-card summary::after { content: "▸"; color: var(--c-muted); margin-left: auto; }
+  .xai-card[open] summary::after { content: "▾"; }
+  .xai-card.sev-high { border-color: #fecaca; }
+  .xai-card.sev-high summary { color: #991b1b; background: #fef2f2; }
+  .xai-card.sev-mid { border-color: #fde68a; }
+  .xai-card.sev-mid summary { color: #92400e; background: #fffbeb; }
+  .xai-card.sev-low summary { color: var(--c-text); background: var(--c-bg); }
+  .xc-body { padding: 10px 14px 12px; font-size: 13px; line-height: 1.7; }
+  .xc-row { margin: 6px 0; }
+  .xc-fix {
+    margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    background: var(--c-primary-bg); color: #1e3a8a; font-weight: 600;
+  }
+  .xai-hint { font-size: 12px; color: var(--c-muted); margin-top: 4px; }
 
   .skeleton {
     padding: 16px;
@@ -442,6 +627,100 @@
   }
   .md ul { padding-left: 20px; }
   .md strong { color: var(--c-text); }
+  .md h1, .md h2, .md h3, .md h4 { scroll-margin-top: 16px; }
+
+  /* ---------- v1.6 · 阅读导航（结果页目录，长报告跳读） ---------- */
+  .toc-fab {
+    position: fixed; right: 22px; bottom: 24px; z-index: 60;
+    display: none; align-items: center; gap: 8px;
+    background: var(--c-card); color: var(--c-primary);
+    border: 1px solid var(--c-border); border-radius: 999px;
+    padding: 10px 16px; font-size: 13px; font-weight: 600;
+    box-shadow: var(--shadow-md); cursor: pointer;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .toc-fab:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(15, 23, 42, .14); }
+  .toc-fab.on { display: inline-flex; }
+  .toc-fab .toc-cnt {
+    background: var(--c-primary-bg); color: var(--c-primary);
+    border-radius: 999px; padding: 1px 8px; font-size: 12px;
+  }
+  .toc-panel {
+    position: fixed; right: 22px; bottom: 78px; z-index: 61;
+    width: 268px; max-height: min(62vh, 520px); overflow-y: auto;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: 12px; box-shadow: var(--shadow-md);
+    padding: 10px; display: none;
+  }
+  .toc-panel.on { display: block; }
+  .toc-panel .toc-hd {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; color: var(--c-muted); padding: 4px 8px 8px;
+    border-bottom: 1px solid var(--c-border); margin-bottom: 6px;
+  }
+  .toc-panel .toc-hd b { color: var(--c-text); font-size: 13px; }
+  .toc-link {
+    display: block; padding: 6px 10px; border-radius: 7px; margin: 1px 0;
+    font-size: 13px; color: var(--c-text); text-decoration: none;
+    cursor: pointer; line-height: 1.4; border-left: 2px solid transparent;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .toc-link.lv3 { padding-left: 22px; font-size: 12.5px; color: var(--c-muted); }
+  .toc-link:hover { background: var(--c-primary-bg); color: var(--c-primary); }
+  .toc-link.active {
+    background: var(--c-primary-bg); color: var(--c-primary);
+    font-weight: 600; border-left-color: var(--c-primary);
+  }
+  @media print { .toc-fab, .toc-panel { display: none !important; } }
+
+  /* ---------- v1.6 · 审计对话（对一条比对追问，LLM 只解释不计算） ---------- */
+  .chat-wrap { margin: 4px 0 18px; border: 1px solid var(--c-border);
+               border-radius: 12px; background: var(--c-card); overflow: hidden; }
+  .chat-hd { padding: 10px 14px; font-size: 13.5px; font-weight: 600;
+             color: var(--c-text); background: var(--c-primary-bg);
+             display: flex; justify-content: space-between; align-items: center; }
+  .chat-hd span { font-size: 12px; font-weight: 400; color: var(--c-muted); }
+  .chat-body { padding: 12px 14px; }
+  .chat-pick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chat-chip { font-size: 12.5px; padding: 5px 11px; border-radius: 999px;
+               border: 1px solid var(--c-border); background: var(--c-bg);
+               color: var(--c-text); cursor: pointer; transition: all .12s ease;
+               max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; }
+  .chat-chip:hover { border-color: var(--c-primary); color: var(--c-primary); }
+  .chat-chip.on { background: var(--c-primary); border-color: var(--c-primary);
+                  color: #fff; }
+  .chat-chip .cc-badge { font-size: 11px; opacity: .8; margin-left: 4px; }
+  .chat-ask { display: flex; gap: 8px; }
+  .chat-ask input { flex: 1; padding: 9px 12px; border: 1px solid var(--c-border);
+                    border-radius: 8px; font-size: 13px; background: var(--c-bg);
+                    color: var(--c-text); }
+  .chat-ask input:focus { outline: none; border-color: var(--c-primary); }
+  .chat-ask button { padding: 9px 16px; border-radius: 8px; border: none;
+                     background: var(--c-primary); color: #fff; font-size: 13px;
+                     cursor: pointer; white-space: nowrap; }
+  .chat-ask button:disabled { opacity: .55; cursor: default; }
+  .chat-sugg { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chat-sugg b { font-size: 12px; color: var(--c-muted); font-weight: 400;
+                 align-self: center; }
+  .chat-sugg span { font-size: 12px; color: var(--c-primary); cursor: pointer;
+                    border-bottom: 1px dashed var(--c-primary); }
+  .chat-log { margin-top: 12px; }
+  .chat-qa { margin-top: 10px; padding-top: 10px;
+             border-top: 1px dashed var(--c-border); }
+  .chat-q { font-size: 13px; color: var(--c-text); font-weight: 600;
+            margin-bottom: 6px; }
+  .chat-q::before { content: '问 · '; color: var(--c-primary); }
+  .chat-a { font-size: 13px; line-height: 1.65; color: var(--c-text);
+            background: var(--c-bg); border-radius: 8px; padding: 10px 12px; }
+  .chat-a.err { color: #92400e; background: #fffbeb;
+                border: 1px solid #fcd34d; }
+  .chat-a .md p { margin: 0 0 6px; }
+  .chat-a .md p:last-child { margin-bottom: 0; }
+  .chat-meta { margin-top: 6px; font-size: 11.5px; color: var(--c-muted); }
+  .chat-meta .cm-tag { background: var(--c-primary-bg); color: var(--c-primary);
+                       border-radius: 999px; padding: 1px 7px; margin-right: 5px; }
+  .chat-wait { font-size: 12.5px; color: var(--c-muted); padding: 8px 0; }
 
   /* ---------- Toast ---------- */
   .toast {
@@ -509,6 +788,79 @@
   .check-result .placeholder {
     color: var(--c-muted); text-align: center; padding: 60px 24px;
   }
+
+  /* ---------- v2.9 图表 AI 核查 ---------- */
+  .img-audit {
+    background: var(--c-card);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin-top: 20px;
+    box-shadow: var(--shadow-sm);
+  }
+  .img-audit .ia-hd {
+    font-size: 16px; font-weight: 600; margin-bottom: 14px;
+  }
+  .img-audit .ia-hd span {
+    display: block; font-size: 13px; font-weight: 400;
+    color: var(--c-muted); margin-top: 4px;
+  }
+  .img-audit .ia-grid {
+    display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px;
+  }
+  @media (max-width: 720px) {
+    .img-audit .ia-grid { grid-template-columns: 1fr; }
+  }
+  .img-audit .ia-drop {
+    border: 2px dashed var(--c-border);
+    border-radius: var(--radius);
+    padding: 24px 16px; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .img-audit .ia-drop:hover, .img-audit .ia-drop.over {
+    border-color: var(--c-primary); background: var(--c-bg-sub, rgba(79,70,229,.04));
+  }
+  .img-audit .ia-drop .icon { font-size: 30px; margin-bottom: 6px; }
+  .img-audit .ia-drop .hint { font-size: 12px; color: var(--c-muted); margin-top: 4px; }
+  .img-audit .ia-drop small {
+    display: block; color: var(--c-muted); margin-top: 6px; font-size: 12px;
+    word-break: break-all;
+  }
+  .img-audit .ia-label {
+    display: block; font-size: 13px; margin-bottom: 6px; font-weight: 500;
+  }
+  .img-audit textarea {
+    width: 100%; box-sizing: border-box; padding: 9px 11px;
+    border: 1px solid var(--c-border); border-radius: 8px;
+    background: var(--c-bg); color: var(--c-text);
+    font-family: inherit; font-size: 14px; resize: vertical;
+  }
+  .img-audit .ia-right button {
+    margin-top: 10px; width: 100%;
+  }
+  .img-audit .ia-note {
+    margin-top: 14px; font-size: 12px; color: var(--c-muted);
+    line-height: 1.6;
+  }
+  .img-audit .ia-verdict {
+    margin-top: 16px; padding: 14px 16px; border-radius: 8px;
+    border-left: 4px solid var(--c-border); background: var(--c-bg);
+  }
+  .img-audit .ia-verdict.ok { border-left-color: #10b981; }
+  .img-audit .ia-verdict.no { border-left-color: #ef4444; }
+  .img-audit .ia-verdict.unknown { border-left-color: #f59e0b; }
+  .img-audit .ia-verdict .v-t { font-weight: 600; margin-bottom: 6px; }
+  .img-audit .ia-issues { margin: 8px 0 0; padding-left: 20px; }
+  .img-audit .ia-issues li { margin: 3px 0; font-size: 14px; }
+  .img-audit .ia-cap {
+    margin-top: 10px; font-size: 13px; color: var(--c-muted); line-height: 1.6;
+  }
+  .img-audit .ia-tags { margin-top: 10px; }
+  .img-audit .ia-tags .cm-tag {
+    display: inline-block; font-size: 11px; padding: 2px 7px; margin-right: 6px;
+    border-radius: 4px; background: var(--c-bg); color: var(--c-muted);
+    border: 1px solid var(--c-border);
+  }
   .check-result .placeholder .icon { font-size: 40px; opacity: 0.4; }
   .upload-status {
     font-size: 13px; color: var(--c-muted);
@@ -570,7 +922,12 @@
 <header class="site" data-page-node-id="5FML9vQpLlZG2pqjG9dx8V">
   <div class="brand" data-page-node-id="VwSloBM3OjHrfkOZeb8Pz6"><span class="dot" data-page-node-id="Hw08cUN957JufppTqfTWOq"></span>智论助手</div>
   <div class="slogan" data-page-node-id="d4uuT0lMomMnApoLzw41ig">不仅是数据分析，更是你的学术副驾驶。</div>
-  <div class="badge" data-page-node-id="zHlFTVcmprdF62kUDFnbif">内测版 v0.9</div>
+  <div class="badge" data-page-node-id="zHlFTVcmprdF62kUDFnbif">内测版 v1.1</div>
+  <!-- v1.8：新手引导 / 帮助 / 模型设置（BYOK）三个全局入口 -->
+  <div class="hdr-actions" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+    <button type="button" class="hdr-btn" onclick="openHelp()" title="这个工具是干什么的？每个按钮什么意思？">📖 使用指南</button>
+    <button type="button" class="hdr-btn" onclick="openSettings()" title="填自己的大模型 API Key（可选）">⚙️ 模型设置</button>
+  </div>
 </header>
 
 <main data-page-node-id="s4EcH0PGRTTI3hlHJQIHNf">
@@ -579,6 +936,7 @@
     <div class="tabbar" id="tabbar">
       <div class="tab active" data-tab="analyze">📊 数据分析</div>
       <div class="tab" data-tab="check">📋 论文排查</div>
+      <div class="tab" data-tab="copilot">🧭 论文副驾驶</div>
     </div>
   </div>
 
@@ -682,7 +1040,7 @@
 
               <!-- v1.0：回归自变量多选（仅回归方法时显示） -->
               <div id="regXWrap" style="display:none; margin-top:10px; padding:10px 12px; border:1px solid var(--c-border); border-radius:10px; background:rgba(16,185,129,0.04);">
-                <div class="wizard-hint" style="margin-bottom:6px;">
+                <div class="wizard-hint" style="margin-bottom:6px;" id="regXTitle">
                   <strong>选自变量（X）</strong>：可多选，至少 1 个
                 </div>
                 <div id="regXList" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
@@ -713,6 +1071,7 @@
                   <optgroup label="问卷 / 实验设计（v1.1）">
                     <option value="cronbach_alpha">信度分析 Cronbach's α</option>
                     <option value="two_way_anova">双因素方差分析</option>
+                    <option value="repeated_measures_anova">重复测量方差分析（被试内）</option>
                   </optgroup>
                 </select>
                 <div class="wizard-alt" id="methodOverrideHint" style="display:none;"></div>
@@ -727,16 +1086,10 @@
                   统计结果仍由本地精确计算；勾选后额外调用国产大模型生成一段解读与写作提示（免费模型，失败自动跳过）。
                 </div>
               </div>
-              <!-- v0.5.1：BYOK（用户自带 Key） -->
-              <div class="form-group">
-                <label for="siliconflowKey">硅基流动 API Key（可选）</label>
-                <input type="password" id="siliconflowKey" placeholder="留空则用默认 Key" />
-                <div class="hint">如需用自己 Key，填入后可避免消耗默认额度</div>
-              </div>
-              <div class="form-group">
-                <label for="zhipuKey">智谱 API Key（可选）</label>
-                <input type="password" id="zhipuKey" placeholder="留空则用默认 Key" />
-                <div class="hint">如需用自己 Key，填入后可避免消耗默认额度</div>
+              <!-- v1.8：BYOK 收进统一设置弹窗（页头 ⚙️），避免每个 Tab 重复填 -->
+              <div style="margin-top:10px; font-size:12.5px; color:var(--c-muted); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                🔑 想用自己的大模型 Key（GLM / DeepSeek / 千问 / Kimi / MiMo 等）？
+                <a href="#" onclick="openSettings();return false;" style="color:var(--c-primary, #4f46e5);">打开模型设置</a>
               </div>
             </div>
           </div>
@@ -747,11 +1100,16 @@
           <button class="primary" id="runBtn" data-page-node-id="IT1hAiqqLJFGKFQf2Boyn7" disabled>开始生成分析</button>
           <button class="ghost" id="resetBtn" data-page-node-id="ypxcAhw5FnGYUYuIZKR0vS">重新上传</button>
         </div>
+        <!-- v2.10 答辩准备：跑过分析后出现（八站流程最后一站） -->
+        <button class="ghost" id="defenseBtn" style="display:none; width:100%; margin-top:8px;" onclick="openDefense()">🎓 答辩准备（Q&amp;A 预演 + 图表打包）</button>
       </aside>
 
       <!-- 右侧预览面板 -->
       <section class="panel result-panel" data-page-node-id="ZlFyp896TWNtfqCr6za0yX">
+        <!-- v2.0 产品入口：数据体检（上传后自动跑，纯本地规则） -->
+        <div id="datacheckBox"></div>
         <div id="recommendBox" data-page-node-id="Phkp3t42t0T4yXONiWhI1s"></div>
+        <div id="graphBox"></div>
         <div id="resultBox" data-page-node-id="3f2VzRepNlTjNuwKIrKWix">
           <div class="placeholder" data-page-node-id="4LxEPa85VdKEYcbItB4Qxw">
             <div class="icon" data-page-node-id="wRUQTtJCqhFxq5QUbjJ8QO">📈</div>
@@ -816,23 +1174,15 @@
         <div class="directive-hint">
           支持用「且」「和」连接多个条件。留空 = 不过滤。
         </div>
+        <!-- v1.5 学术红线实时提示（⑩红线引擎） -->
+        <div id="directiveRedLine"></div>
         <!-- v0.4.2：AI 深度审计开关（V4-Pro 付费，默认关） -->
         <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer; font-size:14px;">
           <input type="checkbox" id="useLLMCheck" style="accent-color:var(--c-primary, #4f46e5);">
           <span>🔬 <strong>AI 深度审计</strong>（DeepSeek V4-Pro，消耗少量额度，约 30-60 秒）</span>
         </label>
       </div>
-      <!-- v0.5.1：BYOK（用户自带 Key） -->
-      <div class="form-group">
-        <label for="siliconflowKey">硅基流动 API Key（可选）</label>
-        <input type="password" id="siliconflowKey" placeholder="留空则用默认 Key" />
-        <div class="hint">如需用自己 Key，填入后可避免消耗默认额度</div>
-      </div>
-      <div class="form-group">
-        <label for="zhipuKey">智谱 API Key（可选）</label>
-        <input type="password" id="zhipuKey" placeholder="留空则用默认 Key" />
-        <div class="hint">如需用自己 Key，填入后可避免消耗默认额度</div>
-      </div>
+      <!-- v1.8：BYOK 收进统一设置弹窗（页头 ⚙️）；AI 深度审计用哪家的 Key 也在那里填 -->
     </section>
 
     <div class="check-result" id="checkResult">
@@ -843,7 +1193,158 @@
       </div>
     </div>
 
+    <!-- ===== v2.9 ④图表 AI 核查（多模态）===== -->
+    <div class="img-audit" id="imgAudit">
+      <div class="ia-hd">
+        🖼 图表 AI 核查
+        <span>上传论文里的一张图表 + 对应结论句，AI 读图判断「图配得上结论吗」</span>
+      </div>
+      <div class="ia-grid">
+        <div class="ia-drop" id="iaDrop">
+          <div class="icon">📈</div>
+          <div><strong>点击</strong> 或 <strong>拖拽</strong> 上传图表</div>
+          <div class="hint">支持 .png / .jpg / .jpeg / .webp / .gif，≤ 5 MB</div>
+          <small id="iaName">未选择图片</small>
+          <input type="file" id="iaInput" accept="image/png,image/jpeg,image/webp,image/gif"
+                 style="display:none" />
+        </div>
+        <div class="ia-right">
+          <label for="iaClaim" class="ia-label">论文里与这张图对应的结论句（可选）</label>
+          <textarea id="iaClaim" rows="2" maxlength="500"
+            placeholder="例：实验组得分显著高于对照组（p&lt;0.05）"></textarea>
+          <button class="primary" id="iaBtn" disabled>开始读图核查</button>
+        </div>
+      </div>
+      <div class="ia-note">
+        🔒 图片<b>不会保存到服务器</b>，仅本次请求内送到模型；无 API Key 时会提示手动核对。
+        判断结果仅供参考，<b>请以你的原始数据为准</b>。
+      </div>
+      <div id="iaResult"></div>
+    </div>
+
   </div><!-- /#tab-check -->
+
+  <!-- ============== Tab 3: 论文副驾驶 ============== -->
+  <div id="tab-copilot" style="display:none;">
+
+    <section class="hero" style="padding:28px 24px;">
+      <h1 style="font-size:26px;">🧭 论文副驾驶</h1>
+      <div class="sub" style="margin-top:8px;">
+        从「资料调研」到「论文撰写」的六阶段流水线。每阶段有产出文件与验收标准，
+        前一阶段没通过验证，绝不进入下一阶段。论文正文受<b>证据契约</b>约束 —— 不越界、不编造。
+      </div>
+    </section>
+
+    <!-- 流水线看板 -->
+    <section style="margin-top:8px;">
+      <div class="panel" style="display:block;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <div>
+            <div style="font-weight:700; font-size:16px;">流水线进度</div>
+            <div style="font-size:13px; color:var(--c-muted); margin-top:4px;" id="cplProgressText">正在读取状态…</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cplRefreshBtn" style="width:auto; padding:8px 16px;">刷新状态</button>
+          </div>
+        </div>
+
+        <div style="height:8px; background:var(--c-border); border-radius:6px; margin-top:14px; overflow:hidden;">
+          <div id="cplProgressBar" style="height:100%; width:0%; background:linear-gradient(90deg,#3b82f6,#10b981); transition:width .4s;"></div>
+        </div>
+
+        <div id="cplPhases" style="display:flex; flex-direction:column; gap:10px; margin-top:16px;"></div>
+      </div>
+    </section>
+
+    <!-- 阶段详情 / 派发 -->
+    <section style="margin-top:18px;">
+      <div class="panel" style="display:block;">
+        <div style="font-weight:700; font-size:16px; margin-bottom:10px;">▶ 下一阶段派发</div>
+        <div style="font-size:13px; color:var(--c-muted); margin-bottom:10px;">
+          流水线不自己写研究内容 —— 它只检查产出、生成「上下文桥接串」，
+          由你（或子智能体）按该串执行，再把产出文件放回工作目录。
+        </div>
+        <div id="cplDispatch" style="background:#0f172a; color:#e2e8f0; border-radius:10px; padding:14px; font-family:ui-monospace,Consolas,monospace; font-size:13px; white-space:pre-wrap; min-height:70px;">
+（点击「刷新状态」后显示）
+        </div>
+        <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+          <button class="btn" id="cplDispatchBtn" style="width:auto; padding:8px 16px;">生成派发串</button>
+          <button class="btn" id="cplValidateBtn" style="width:auto; padding:8px 16px; background:#64748b;">校验当前阶段产出</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 论文撰写 -->
+    <section style="margin-top:18px;">
+      <div class="panel" style="display:block;">
+        <div style="font-weight:700; font-size:16px; margin-bottom:6px;">📄 生成论文初稿（证据约束）</div>
+        <div style="font-size:13px; color:var(--c-muted); margin-bottom:12px;">
+          先上传数据（在「数据分析」Tab 或下方直接上传），再选方法，一键产出带 claim 台账与写作自检的初稿。
+        </div>
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+          <div style="flex:1; min-width:200px;">
+            <div class="wizard-hint" style="margin-bottom:4px;">论文标题</div>
+            <input id="cplTitle" type="text" placeholder="例：学生成绩差异与相关研究"
+                   style="width:100%; padding:9px 11px; border:1px solid var(--c-border); border-radius:8px; font-size:14px;" />
+          </div>
+          <div>
+            <div class="wizard-hint" style="margin-bottom:4px;">模板</div>
+            <select id="cplTemplate" style="padding:9px 11px; border:1px solid var(--c-border); border-radius:8px; font-size:14px;">
+              <option value="latex">LaTeX（理工科实验论文）</option>
+              <option value="thesis">中文 / 学位论文（docx 友好）</option>
+            </select>
+          </div>
+          <div>
+            <div class="wizard-hint" style="margin-bottom:4px;">润色</div>
+            <label style="display:flex; align-items:center; gap:7px; padding:9px 11px; border:1px solid var(--c-border); border-radius:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="cplUseLlm" />
+              LLM 学术润色
+            </label>
+          </div>
+          <div>
+            <div class="wizard-hint" style="margin-bottom:4px;">&nbsp;</div>
+            <label style="display:flex; align-items:center; gap:7px; padding:9px 11px; border:1px solid var(--c-border); border-radius:8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="cplLlmForce" />
+              绕过缓存重润
+            </label>
+          </div>
+        </div>
+
+        <div style="margin-top:12px; padding:12px; border:1px dashed var(--c-border); border-radius:10px; background:rgba(59,130,246,0.04);">
+          <div class="wizard-hint" style="margin-bottom:8px;">
+            <b>数据</b>：上传后自动读取列；下面勾选要写进论文的分析。
+          </div>
+          <input type="file" id="cplFile" accept=".xlsx,.xls,.csv" style="font-size:13px;" />
+          <div id="cplFileInfo" style="font-size:13px; color:var(--c-muted); margin-top:8px;"></div>
+          <div id="cplAnalyses" style="margin-top:10px; display:flex; flex-direction:column; gap:10px;"></div>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn" id="cplGenBtn" style="width:auto; padding:9px 20px;" disabled>生成论文初稿</button>
+          <button class="btn" id="cplAddAnalysisBtn" style="width:auto; padding:9px 16px; background:#64748b;">＋ 添加一项分析</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 结果 -->
+    <section style="margin-top:18px;">
+      <div class="panel" style="display:block;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div style="font-weight:700; font-size:16px;">📋 产出</div>
+          <div id="cplLintBadge" style="font-size:13px;"></div>
+        </div>
+        <div id="cplResult" style="margin-top:12px;">
+          <div class="placeholder" style="padding:28px;">
+            <div class="icon">📄</div>
+            <div>论文初稿将在这里生成</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div><!-- /#tab-copilot -->
+
 </main>
 
 <footer data-page-node-id="UR3lbMaoSOFTznng8WpMt2">
@@ -861,7 +1362,11 @@
     rows: 0,
     columns: [],
     recommendation: null,
+    history: [],  // v2.10 答辩准备：本页会话内成功跑过的分析参数（后端重放用）
   };
+  // v2.10：全局弹窗脚本（页尾独立 <script>）需要读 state；
+  // state 会被整体重赋值（重新上传），用 getter 保证始终拿到最新对象
+  Object.defineProperty(window, 'state', { get: () => state, configurable: true });
 
   // ===== 工具函数 =====
   function $(id) { return document.getElementById(id); }
@@ -911,6 +1416,8 @@
         recommendation: data.recommendation,
       };
       renderWorkspace();
+      // v2.0：上传即体检（产品入口第一站）
+      runDataCheck();
     } catch (e) {
       toast('网络错误：' + e.message);
       renderPlaceholder();
@@ -918,12 +1425,184 @@
   }
 
   function renderPlaceholder() {
+    const dc = $('datacheckBox');
+    if (dc) dc.innerHTML = '';
     $('resultBox').innerHTML = `
       <div class="placeholder">
         <div class="icon">📈</div>
         <div>等待生成分析结果</div>
         <div style="font-size:13px; margin-top:6px;">选好列和方法后，点击左侧「开始生成分析」</div>
       </div>`;
+  }
+
+  // ===== v2.0 · 数据体检（产品入口：上传即体检）=====
+  // 设计要点：**纯本地规则引擎**（后端 datacheck.py），零 LLM、数据不出本机。
+  // 任何异常（接口失败 / 网络错误 / 契约不符）一律静默降级成空——体检是锦上添花，
+  // 绝不能挡住主流程（与知识图谱同样的护栏思路）。
+  let _dcOpen = false;
+
+  async function runDataCheck() {
+    const box = $('datacheckBox');
+    if (!box) return;
+    if (!state || !state.fileId) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="dc-wrap"><div class="dc-skel">🩺 正在给数据做体检…（本地规则计算，不上传、不调用 AI）</div></div>';
+    try {
+      const r = await fetch('/api/datacheck', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: state.fileId }),
+      });
+      const j = await r.json();
+      if (!j || !j.ok) { box.innerHTML = ''; return; }
+      renderDataCheck(j);
+    } catch (e) {
+      box.innerHTML = '';
+    }
+  }
+
+  function renderDataCheck(data) {
+    const box = $('datacheckBox');
+    if (!box) return;
+    const s = data.summary || {};
+    const issues = data.issues || [];
+    _dcOpen = issues.length > 0;
+
+    const lv = s.high > 0 ? 'lv-high' : (s.mid > 0 ? 'lv-mid' : 'lv-ok');
+    const icon = s.high > 0 ? '🔴' : (s.mid > 0 ? '🟡' : '🟢');
+    const title = s.high > 0 ? '发现 ' + s.high + ' 处高优先级问题'
+      : (s.mid > 0 ? s.mid + ' 处可疑规律待确认' : '未发现明显数据问题');
+
+    const cards = issues.map(function (it) {
+      const sev = it.level === 'high' ? '🔴 高' : (it.level === 'mid' ? '🟡 中' : '🔵 提示');
+      return '<div class="dc-issue lv-' + escapeHtml(it.level) + '">'
+        + '<div class="dc-t2">' + sev + ' · ' + escapeHtml(it.title) + '</div>'
+        + (it.evidence ? '<div class="dc-row"><b>证据：</b>' + escapeHtml(it.evidence) + '</div>' : '')
+        + (it.explain ? '<div class="dc-row"><b>意味着什么：</b>' + escapeHtml(it.explain) + '</div>' : '')
+        + (it.suggestion ? '<div class="dc-row"><b>建议：</b>' + escapeHtml(it.suggestion) + '</div>' : '')
+        + '</div>';
+    }).join('');
+
+    box.innerHTML =
+      '<div class="dc-wrap' + (_dcOpen ? ' open' : '') + '" id="dcWrap">'
+      + '<div class="dc-hd ' + lv + '" id="dcHd">'
+      + '<span class="dc-t">' + icon + ' 数据体检'
+      + '<span class="dc-tag">' + escapeHtml(String(s.rows)) + ' 行 × ' + escapeHtml(String(s.cols)) + ' 列</span>'
+      + escapeHtml(title) + '</span>'
+      + '<span class="dc-v"><span class="dc-caret">▶</span> ' + (issues.length ? issues.length + ' 条' : '展开') + '</span>'
+      + '</div>'
+      + '<div class="dc-verdict">' + escapeHtml(s.verdict || '') + '</div>'
+      + '<div class="dc-issues">' + (cards || '<div class="dc-row">逐项检查未发现问题。</div>') + '</div>'
+      + '<div class="dc-note">' + escapeHtml(s.disclaimer || '')
+      + ' · 已跑检测：' + escapeHtml((s.checks_run || []).join(' / ')) + '</div>'
+      + (issues.length
+          ? '<div class="dc-fixbar"><button class="dc-btn" id="dcFixBtn">🩹 生成清洗副本</button>'
+            + '<span class="dc-stat">自动修掉能确定的（重复行 / 反向计分），其余逐条给建议 —— 原文件绝不动。</span></div>'
+          : '')
+      + '<div class="dc-fix" id="dcFix" style="display:none"></div>'
+      + '</div>';
+
+    const hd = $('dcHd'), wrap = $('dcWrap');
+    if (!hd || !wrap) return;
+    const toggleBody = function (show) {
+      wrap.querySelectorAll('.dc-verdict, .dc-issues, .dc-note, .dc-fixbar, .dc-fix').forEach(function (el) {
+        el.style.display = show ? '' : 'none';
+      });
+    };
+    hd.addEventListener('click', function () {
+      _dcOpen = !_dcOpen;
+      wrap.classList.toggle('open', _dcOpen);
+      toggleBody(_dcOpen);
+    });
+    toggleBody(_dcOpen);
+
+    const fixBtn = $('dcFixBtn');
+    if (fixBtn) fixBtn.addEventListener('click', function () { runDataFix(); });
+  }
+
+  // ===== v2.1 · 一键清洗副本（产品入口第二站：清洗与修复建议）=====
+  // 红线：后端 propose_fix 全程 copy，**绝不改动用户原始数据**；这里只是把
+  // 生成的「副本 CSV」交给浏览器下载。异常一律降级成一行提示，绝不挡住主流程。
+  async function runDataFix() {
+    const btn = $('dcFixBtn'), out = $('dcFix');
+    if (!out || !state || !state.fileId) return;
+    if (btn) { btn.disabled = true; btn.textContent = '🧹 正在生成…'; }
+    out.style.display = '';
+    out.innerHTML = '<div class="dc-skel">正在生成清洗后副本…（本地计算，不上传、不调用 AI）</div>';
+    const restore = function () { if (btn) { btn.disabled = false; btn.textContent = '🩹 重新生成清洗副本'; } };
+    try {
+      const r = await fetch('/api/datacheck/fix', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: state.fileId }),
+      });
+      const j = await r.json();
+      if (!j || !j.ok) {
+        out.innerHTML = '<div class="dc-skel">' + escapeHtml((j && j.error) || '生成失败，请稍后重试。') + '</div>';
+        restore(); return;
+      }
+      renderDataFix(j);
+      restore();
+    } catch (e) {
+      out.innerHTML = '<div class="dc-skel">网络错误：' + escapeHtml(e.message) + '</div>';
+      if (btn) { btn.disabled = false; btn.textContent = '🩹 生成清洗副本'; }
+    }
+  }
+
+  function renderDataFix(res) {
+    const out = $('dcFix');
+    if (!out) return;
+    const acts = res.actions || [];
+    const st = res.stats || {};
+    const auto = acts.filter(function (a) { return a.auto; });
+    const manual = acts.filter(function (a) { return !a.auto; });
+
+    const listHtml = function (list, cls) {
+      return list.map(function (a) {
+        const badge = a.auto
+          ? '<span class="dc-badge auto">已自动处理</span>'
+          : '<span class="dc-badge manual">需人工确认</span>';
+        const num = a.n ? '<span class="dc-tag">' + escapeHtml(String(a.n)) + ' 处</span>' : '';
+        const cols = (a.columns || []).length
+          ? '<div class="dc-row"><b>相关列：</b>' + escapeHtml(a.columns.join('、')) + '</div>' : '';
+        return '<div class="dc-fx ' + cls + '">'
+          + '<div class="dc-t3">' + badge + escapeHtml(a.title) + num + '</div>'
+          + (a.detail ? '<div class="dc-row">' + escapeHtml(a.detail) + '</div>' : '')
+          + cols + '</div>';
+      }).join('');
+    };
+
+    let body = '';
+    if (auto.length) body += '<div class="dc-fh">✅ 已自动修复 ' + auto.length + ' 项</div>' + listHtml(auto, 'auto');
+    if (manual.length) body += '<div class="dc-fh">✋ 以下 ' + manual.length + ' 项需人工确认（未自动改）</div>' + listHtml(manual, 'manual');
+    if (!acts.length) body += '<div class="dc-row">未发现需要处理的问题，原始数据可放心使用。</div>';
+
+    out.innerHTML = '<div class="dc-fh">🩹 清洗副本已生成'
+      + '<span class="dc-tag">' + escapeHtml(String(res.rows)) + ' 行 × ' + escapeHtml(String(res.cols)) + ' 列</span>'
+      + '</div>'
+      + body
+      + '<div class="dc-stat">共改动 ' + escapeHtml(String(st.cells_changed || 0)) + ' 个单元格，删除 '
+      + escapeHtml(String(st.rows_removed || 0)) + ' 行；'
+      + (res.changes_truncated ? '改动明细超过 300 条已截断；' : '')
+      + '原文件未被修改，副本另存为 CSV。</div>'
+      + '<div class="dc-fixbar" style="padding:8px 0 0"><button class="dc-btn" id="dcDlBtn">⬇ 下载清洗副本（CSV）</button></div>';
+
+    const dlBtn = $('dcDlBtn');
+    if (dlBtn) dlBtn.addEventListener('click', function () { downloadCleanCsv(res); });
+  }
+
+  function downloadCleanCsv(res) {
+    try {
+      const csv = res.clean_csv || '';
+      const base = (state && state.filename)
+        ? String(state.filename).replace(/\.[^.]+$/, '') : 'data';
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = base + '_cleaned.csv';
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (e) {
+      toast('下载失败：' + e.message);
+    }
   }
 
   function showSkeleton(text) {
@@ -983,8 +1662,332 @@
         <div class="recommend">
           💡 <strong>系统推荐：</strong>${escapeHtml(state.recommendation.reason)}
         </div>`;
+      // v1.4：知识图谱（异步渲染，失败则静默——图谱是锦上添花，不该拖垮主流程）
+      renderMethodGraph(state.recommendation);
     }
     updateWizard();
+  }
+
+  // ===== v1.4 · ①方法学知识图谱 =====
+  // 设计要点：纯 SVG 手绘（不引 vis-network 等图库）；图谱数据硬编码可审、零 LLM；
+  // 取不到图谱时只渲染决策路径 + 候选卡片，绝不白屏。
+  let _graphCache = null;
+
+  async function getMethodGraph() {
+    if (_graphCache) return _graphCache;
+    try {
+      const resp = await fetch('/api/methods_graph');
+      const j = await resp.json();
+      if (j && j.ok && j.graph) { _graphCache = j.graph; return j.graph; }
+    } catch (e) {
+      // 静默降级
+    }
+    return null;
+  }
+
+  // 按视觉宽度切行：中文/全角算 1 个单位，西文数字算 0.55
+  function graphWrapLines(text, per, maxLines) {
+    const lines = [];
+    let cur = '', w = 0;
+    const s = String(text || '');
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      const cw = /[\u4e00-\u9fa5\uff00-\uffef\u3000-\u303f]/.test(ch) ? 1 : 0.55;
+      if (w + cw > per) { lines.push(cur); cur = ch; w = cw; }
+      else { cur += ch; w += cw; }
+    }
+    if (cur) lines.push(cur);
+    if (lines.length > maxLines) {
+      const keep = lines.slice(0, maxLines);
+      keep[maxLines - 1] = keep[maxLines - 1].slice(0, -1) + '…';
+      return keep;
+    }
+    return lines;
+  }
+
+  // BFS 求 root → endId 最短路径。
+  // 注意：图谱不是严格树（q_ngroups 同时被 a_diff 与 q_two_factor 指向），
+  // 所以不能简单沿 parent 指针回溯，否则高亮路径会绕远。
+  function graphPathFromRoot(graph, endId) {
+    const adj = {};
+    graph.nodes.forEach(function (n) {
+      adj[n.id] = (n.options || []).map(function (o) { return o.to; });
+    });
+    const prev = {};
+    const seen = {};
+    const queue = [graph.root];
+    seen[graph.root] = 1;
+    while (queue.length) {
+      const cur = queue.shift();
+      if (cur === endId) break;
+      (adj[cur] || []).forEach(function (nx) {
+        if (!seen[nx]) { seen[nx] = 1; prev[nx] = cur; queue.push(nx); }
+      });
+    }
+    const chain = [];
+    let c = endId;
+    while (c) { chain.push(c); c = prev[c]; }
+    return chain.reverse();
+  }
+
+  function buildGraphSvg(graph, hlSet) {
+    const NODE_W = 148, NODE_H = 46, GAP_Y = 14, COL_W = 176, PAD = 14;
+    const nodes = graph.nodes;
+    const byDepth = {};
+    nodes.forEach(function (n) {
+      const d = n.depth || 0;
+      (byDepth[d] = byDepth[d] || []).push(n);
+    });
+    const depths = Object.keys(byDepth).map(Number).sort(function (a, b) { return a - b; });
+    const heights = {};
+    depths.forEach(function (d) {
+      heights[d] = byDepth[d].length * NODE_H + (byDepth[d].length - 1) * GAP_Y;
+    });
+    const maxH = Math.max.apply(null, depths.map(function (d) { return heights[d]; }));
+    const pos = {};
+    depths.forEach(function (d) {
+      const arr = byDepth[d];
+      const startY = PAD + (maxH - heights[d]) / 2;
+      arr.forEach(function (n, i) {
+        pos[n.id] = { x: PAD + d * COL_W, y: startY + i * (NODE_H + GAP_Y) };
+      });
+    });
+    const W = PAD * 2 + depths[depths.length - 1] * COL_W + NODE_W;
+    const H = PAD * 2 + maxH;
+
+    let svg = '<svg class="graph-svg" width="' + W + '" height="' + H
+      + '" viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg">';
+    svg += '<defs>'
+      + '<marker id="gar" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
+      + '<path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/></marker>'
+      + '<marker id="garHL" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">'
+      + '<path d="M0,0 L0,6 L7,3 z" fill="#1e40af"/></marker></defs>';
+
+    // 先画所有边（保证节点盖在连线上）
+    nodes.forEach(function (n) {
+      (n.options || []).forEach(function (o) {
+        const a = pos[n.id], b = pos[o.to];
+        if (!a || !b) return;
+        const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
+        const x2 = b.x, y2 = b.y + NODE_H / 2;
+        const on = hlSet.has(n.id) && hlSet.has(o.to);
+        const d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + 46) + ' ' + y1
+          + ', ' + (x2 - 46) + ' ' + y2 + ', ' + (x2 - 2) + ' ' + y2;
+        svg += '<path d="' + d + '" fill="none" stroke="' + (on ? '#1e40af' : '#cbd5e1')
+          + '" stroke-width="' + (on ? 2.2 : 1.2)
+          + '" marker-end="url(#' + (on ? 'garHL' : 'gar') + ')"/>';
+        if (on && o.label) {
+          svg += '<text x="' + ((x1 + x2) / 2) + '" y="' + ((y1 + y2) / 2 - 5)
+            + '" font-size="10" fill="#1e40af" text-anchor="middle">'
+            + escapeHtml(o.label) + '</text>';
+        }
+      });
+    });
+
+    // 再画节点
+    nodes.forEach(function (n) {
+      const p = pos[n.id];
+      if (!p) return;
+      const on = hlSet.has(n.id);
+      const isMethod = n.kind === 'method';
+      let fill = '#ffffff', stroke = '#cbd5e1', tc = '#334155';
+      if (isMethod) {
+        fill = on ? '#1e40af' : '#f0fdf4';
+        stroke = on ? '#1e40af' : '#86efac';
+      } else if (n.kind === 'a') {
+        fill = on ? '#dbeafe' : '#eff6ff';
+        stroke = on ? '#1e40af' : '#bfdbfe';
+      } else {
+        fill = on ? '#1e40af' : '#ffffff';
+        stroke = on ? '#1e40af' : '#94a3b8';
+      }
+      if (on) tc = (isMethod || n.kind === 'q') ? '#ffffff' : '#1e3a8a';
+
+      svg += '<g class="graph-node" data-gid="' + escapeHtml(n.id) + '"'
+        + (isMethod ? ' data-method="' + escapeHtml(n.method || '') + '"' : '') + '>';
+      svg += '<rect x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' + NODE_H
+        + '" rx="8" fill="' + fill + '" stroke="' + stroke + '" stroke-width="'
+        + (on ? 2.2 : 1.1) + '"/>';
+      const lines = graphWrapLines(n.label, 9, 2);
+      lines.forEach(function (ln, i) {
+        const ty = p.y + (lines.length === 1 ? NODE_H / 2 + 4 : 17 + i * 14);
+        svg += '<text x="' + (p.x + NODE_W / 2) + '" y="' + ty + '" font-size="11" fill="'
+          + tc + '" text-anchor="middle">' + escapeHtml(ln) + '</text>';
+      });
+      svg += '</g>';
+    });
+
+    svg += '</svg>';
+    return svg;
+  }
+
+  function showAssumption(graph, key) {
+    const box = $('assumpBox');
+    if (!box || !graph || !graph.methods) return;
+    const m = graph.methods[key];
+    if (!m) return;
+    const items = (m.assumptions || []).map(function (a) {
+      return '<li>' + escapeHtml(a).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') + '</li>';
+    }).join('');
+    box.innerHTML = '<div class="assump"><div class="atitle">'
+      + escapeHtml(m.label) + ' · 前提假设</div>'
+      + (m.when ? '<div style="color:#64748b;margin-bottom:4px;">适用：'
+        + escapeHtml(m.when) + '</div>' : '')
+      + '<ul>' + items + '</ul></div>';
+  }
+
+  async function renderMethodGraph(rec) {
+    const box = $('graphBox');
+    if (!box) return;
+    const path = (rec && rec.decision_path) || [];
+    const cands = (rec && rec.candidates) || [];
+    if (!path.length && !cands.length) { box.innerHTML = ''; return; }
+
+    const graph = await getMethodGraph();
+
+    let html = '<div class="graph-wrap"><div class="graph-hd"><span>🧭 方法决策路径</span>'
+      + '<span class="hint">点方法节点看前提假设</span></div>';
+
+    if (path.length) {
+      html += '<div class="path-steps">';
+      path.forEach(function (s, i) {
+        if (i > 0) html += '<span class="path-arrow">→</span>';
+        html += '<span class="path-step"><span class="pq">' + escapeHtml(s.q)
+          + '</span><span class="pa">' + escapeHtml(s.a) + '</span></span>';
+      });
+      html += '</div>';
+    }
+
+    if (cands.length) {
+      html += '<div class="cand-list">';
+      cands.forEach(function (c) {
+        html += '<div class="cand' + (c.ok ? ' ok' : '') + '"><div class="cname">'
+          + escapeHtml(c.label) + '</div><div class="cneed">'
+          + escapeHtml(c.needs) + '</div></div>';
+      });
+      html += '</div>';
+    }
+
+    let hl = new Set();
+    if (graph && path.length) {
+      const endNode = path[path.length - 1].node;
+      if (endNode) hl = new Set(graphPathFromRoot(graph, endNode));
+      html += '<div class="graph-scroll">' + buildGraphSvg(graph, hl) + '</div>';
+    }
+    html += '<div id="assumpBox"></div></div>';
+    box.innerHTML = html;
+
+    const svgEl = box.querySelector('.graph-svg');
+    if (svgEl && graph) {
+      svgEl.addEventListener('click', function (ev) {
+        const t = ev.target;
+        const g = (t && t.closest) ? t.closest('.graph-node') : null;
+        if (!g) return;
+        const key = g.getAttribute('data-method');
+        if (key) showAssumption(graph, key);
+      });
+    }
+    if (rec && rec.method) showAssumption(graph, rec.method);
+  }
+
+  // ===== v1.5 · ⑩学术红线引擎 =====
+  // 真正的拦截关口在后端（/api/red_line_scan + /api/check_paper 硬拒绝）。
+  // 前端这里做两件事：①指令框实时提示 ②导出前强制诚信承诺。
+  // 原则：前端失败一律放行给后端判，绝不因为前端异常卡住用户。
+  let _rlTimer = null;
+
+  async function scanDirectiveRedLine() {
+    const ta = $('directiveInput');
+    const box = $('directiveRedLine');
+    if (!ta || !box) return;
+    const text = (ta.value || '').trim();
+    if (!text) {
+      box.innerHTML = '';
+      ta.classList.remove('redline-hit');
+      _directiveBlocked = false;
+      setCheckBtnState();
+      return;
+    }
+    try {
+      const r = await fetch('/api/red_line_scan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const j = await r.json();
+      if (j && j.blocked) {
+        const items = (j.hits || []).map(function (h) {
+          return '<li>' + escapeHtml(h) + '</li>';
+        }).join('');
+        box.innerHTML = '<div class="redline-box"><div class="rt">🚫 该指令无法执行</div>'
+          + '<ul>' + items + '</ul>'
+          + '<div class="rcu">' + escapeHtml(j.correct_usage || '') + '</div></div>';
+        ta.classList.add('redline-hit');
+        _directiveBlocked = true;
+      } else {
+        box.innerHTML = '';
+        ta.classList.remove('redline-hit');
+        _directiveBlocked = false;
+      }
+    } catch (e) {
+      // 扫描接口不可用时不阻塞用户——后端 check_paper 仍会硬拦截
+      box.innerHTML = '';
+      ta.classList.remove('redline-hit');
+      _directiveBlocked = false;
+    }
+    setCheckBtnState();
+  }
+
+  function bindDirectiveRedLine() {
+    const ta = $('directiveInput');
+    if (!ta || ta.dataset.rlBound) return;
+    ta.dataset.rlBound = '1';
+    ta.addEventListener('input', function () {
+      if (_rlTimer) clearTimeout(_rlTimer);
+      _rlTimer = setTimeout(scanDirectiveRedLine, 400);   // 防抖，边打字边查也才几百 ms
+    });
+  }
+
+  // 导出前的学术诚信承诺（本次会话只需承诺一次）
+  function ensureIntegrityPledge() {
+    if (window._integrityPledged) return Promise.resolve(true);
+    return new Promise(function (resolve) {
+      const overlay = document.createElement('div');
+      overlay.className = 'integrity-overlay';
+      overlay.innerHTML = '<div class="integrity-modal">'
+        + '<div class="im-hd">📜 学术诚信承诺</div>'
+        + '<div class="im-bd">导出的内容由本工具基于你上传的数据自动生成，'
+        + '请确认你将<b>合规使用</b>：<ul>'
+        + '<li>仅用于自查、学习与写作润色，不用于代写或买卖论文</li>'
+        + '<li>不用于规避查重或 AI 生成内容检测</li>'
+        + '<li>不伪造、篡改任何数据或统计结果</li>'
+        + '<li>最终成果由你本人修改、确认并署名</li></ul>'
+        + '<label class="im-pledge"><input type="checkbox" id="imPledgeCb">'
+        + '<span>我已知悉并承诺遵守以上各条。</span></label>'
+        + '</div>'
+        + '<div class="im-ft"><button class="ghost" id="imCancel">取消</button>'
+        + '<button class="primary" id="imOk" disabled>确认导出</button></div>'
+        + '</div>';
+      document.body.appendChild(overlay);
+
+      const cb = overlay.querySelector('#imPledgeCb');
+      const okBtn = overlay.querySelector('#imOk');
+      const cancelBtn = overlay.querySelector('#imCancel');
+
+      function close(v) {
+        if (overlay.parentNode) document.body.removeChild(overlay);
+        resolve(v);
+      }
+      cb.addEventListener('change', function () { okBtn.disabled = !cb.checked; });
+      okBtn.addEventListener('click', function () {
+        if (!cb.checked) return;
+        window._integrityPledged = true;   // 本次会话只弹一次，不反复打扰
+        close(true);
+      });
+      cancelBtn.addEventListener('click', function () { close(false); });
+      overlay.addEventListener('click', function (ev) {
+        if (ev.target === overlay) close(false);   // 点遮罩 = 取消
+      });
+    });
   }
 
   // ===== v0.6 分步向导 =====
@@ -1197,8 +2200,9 @@
       return;
     }
 
-    // 回归 / 信度方法：切换时刷新多选列表
-    if (['linear_regression', 'logistic_regression', 'cronbach_alpha'].includes(chosen)) {
+    // 回归 / 信度 / 重复测量方法：切换时刷新多选列表
+    if (['linear_regression', 'logistic_regression', 'cronbach_alpha',
+         'repeated_measures_anova'].includes(chosen)) {
       renderRegXList();
     } else {
       $('regXWrap').style.display = 'none';
@@ -1227,6 +2231,14 @@
       if (items.length < 2) return { ok: false, error: '请至少勾选 2 个题项（数值列）。' };
       return { ok: true };
     }
+    // v1.1 重复测量 ANOVA：不依赖 v1/分组，只要求勾选 >= 3 个时间点列
+    if (method === 'repeated_measures_anova') {
+      const tcols = getTimeCols();
+      if (tcols.length < 3) {
+        return { ok: false, error: '请至少勾选 3 个时间点列；只有 2 个时间点时请改用配对样本 T 检验。' };
+      }
+      return { ok: true };
+    }
     if (!v1) return { ok: false, error: '请先选变量 1。' };
     if (['independent_t', 'anova', 'mann_whitney'].includes(method)) {
       if (!g) return { ok: false, error: '该方法需要分组变量。' };
@@ -1251,6 +2263,8 @@
     const xStr = xs.length ? xs.join('、') : (v2 || '…');
     const items = getItemCols();
     const itemStr = items.length ? items.join('、') : '…';
+    const tcols = getTimeCols();
+    const timeStr = tcols.length ? tcols.join(' → ') : '…';
     const map = {
       independent_t: `分组 = ${g}，因变量 = ${v1}。比较两组均值差异。`,
       anova: `分组 = ${g}，因变量 = ${v1}。比较多组均值差异。`,
@@ -1263,6 +2277,7 @@
       logistic_regression: `因变量 = ${v1}，自变量 = ${xStr}。二元 Logistic 回归。`,
       cronbach_alpha: `题项 = ${itemStr}（共 ${items.length} 题）。检验量表内部一致性信度。`,
       two_way_anova: `因素 A = ${g}，因素 B = ${v2 || '…'}，因变量 = ${v1}。检验主效应与交互作用。`,
+      repeated_measures_anova: `时间点 = ${timeStr}（共 ${tcols.length} 个）。同一批被试的组内设计，检验时间主效应（含 Mauchly 球形度检验 + Greenhouse-Geisser 校正）。`,
     };
     return map[method] || '该方法适合当前变量组合。';
   }
@@ -1358,28 +2373,23 @@
       else if (valueCol2) payload.value_col2 = valueCol2;  // 兜底单自变量
     } else if (method === 'cronbach_alpha') {
       payload.item_cols = getItemCols();
+    } else if (method === 'repeated_measures_anova') {
+      // 后端契约：时间点列走 item_cols（与信度同通道），按勾选顺序 = 时间顺序
+      payload.item_cols = getTimeCols();
     }
     // v0.4：可选 LLM 深度解读
     const useLLM = $('useLLM') && $('useLLM').checked ? 1 : 0;
     state.lastChart = { ...payload, use_llm: useLLM };
 
-    // v0.5.1：BYOK（用户自带 Key）
-    const siliconflowKey = $('siliconflowKey').value.trim();
-    const zhipuKey = $('zhipuKey').value.trim();
-    if (siliconflowKey) payload.siliconflow_key = siliconflowKey;
-    if (zhipuKey) payload.zhipu_key = zhipuKey;
+    // v1.8：BYOK（用户自带 Key，六家平台统一从设置弹窗收集）
+    Object.assign(payload, collectByok());
 
     $('runBtn').disabled = true;
     // v0.8：直接用流式 SSE，runBtn 不再先 showSkeleton 假装耗时，
     // 由后端真实阶段消息驱动进度条
     renderStreamPlaceholder();
     try {
-      const siliconflowKey = $('siliconflowKey').value.trim();
-      const zhipuKey = $('zhipuKey').value.trim();
-      const headers = { 'Content-Type': 'application/json' };
-      if (siliconflowKey) headers['X-Siliconflow-Key'] = siliconflowKey;
-      if (zhipuKey) headers['X-Zhipu-Key'] = zhipuKey;
-      await runAnalyzeStream({ ...payload, use_llm: useLLM }, headers);
+      await runAnalyzeStream({ ...payload, use_llm: useLLM });
     } catch (e) {
       toast('请求出错：' + e.message);
       renderPlaceholder();
@@ -1409,11 +2419,7 @@
   }
 
   async function runAnalyzeStream(payload, headers = {}) {
-    const siliconflowKey = $('siliconflowKey').value.trim();
-    const zhipuKey = $('zhipuKey').value.trim();
     const reqHeaders = { 'Content-Type': 'application/json' };
-    if (siliconflowKey) reqHeaders['X-Siliconflow-Key'] = siliconflowKey;
-    if (zhipuKey) reqHeaders['X-Zhipu-Key'] = zhipuKey;
     Object.assign(reqHeaders, headers);  // 合并传入的 headers
 
     const r = await fetch('/api/analyze', {
@@ -1430,11 +2436,11 @@
     const decoder = new TextDecoder('utf-8');
     let buf = '';
     let curEvent = '';
-    let curData: string[] = [];
+    let curData = [];
 
     const flush = () => {
       if (!curEvent) return;
-      let data: any = curData.join('\n');
+      let data = curData.join('\n');
       try { data = JSON.parse(data); } catch { /* keep as string */ }
       handleStreamEvent(curEvent, data);
       curEvent = '';
@@ -1456,7 +2462,124 @@
     flush();
   }
 
-  function handleStreamEvent(event: string, data: any) {
+  // ===== v1.6 · 阅读导航（结果页目录，长报告跳读）=====
+  // 设计要点：从**已渲染的 Markdown 标题**自动生成锚点，浮动侧边导航（FAB + 面板）。
+  // 不依赖后端、不改布局；标题不足 3 个不出现，绝不干扰短报告；
+  // 后端异常 / 无标题时静默不显示，永不影响主流程。
+  const ReadingNav = (function () {
+    let headings = [];   // [{id, el, text, lv}]
+    let fab = null, panel = null, open = false, raf = null;
+
+    function ensure() {
+      if (fab) return;
+      fab = document.createElement('button');
+      fab.type = 'button';
+      fab.className = 'toc-fab';
+      fab.innerHTML = '📑 目录 <span class="toc-cnt">0</span>';
+      fab.addEventListener('click', function (e) { e.stopPropagation(); toggle(); });
+      panel = document.createElement('div');
+      panel.className = 'toc-panel';
+      panel.addEventListener('click', function (e) { e.stopPropagation(); });
+      document.body.appendChild(fab);
+      document.body.appendChild(panel);
+      document.addEventListener('click', function () { if (open) toggle(false); });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && open) toggle(false); });
+      window.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('resize', onScroll, { passive: true });
+    }
+
+    // 只认「区块级标题」：markdown 的 h1/h2/h3，以及各面板自绘的 [data-sec] 小标题。
+    // 不做模糊文本猜测，避免把普通加粗行误当目录项。
+    function scan(rootEl) {
+      headings = [];
+      if (!rootEl) return;
+      const hs = rootEl.querySelectorAll('h1, h2, h3, [data-sec]');
+      const seen = new Set();
+      let n = 0;
+      hs.forEach(function (h) {
+        const text = (h.textContent || '').trim();
+        if (!text) return;
+        // [data-sec] 允许带层级 data-sec-lv（默认 2），用于非 markdown 面板
+        let lv = h.tagName.length === 2 ? Number(h.tagName.slice(1))
+                                       : Number(h.getAttribute('data-sec-lv') || 2);
+        if (!(lv >= 1 && lv <= 3)) lv = 2;
+        // 跳过被 h1 包住的节点，避免重复
+        if (h.closest && h.parentElement && h.parentElement.hasAttribute
+            && h.parentElement.hasAttribute('data-sec') && h.tagName.length === 2) return;
+        n += 1;
+        const id = 'rn-sec-' + n;
+        if (!seen.has(id)) { h.id = id; seen.add(id); }
+        headings.push({ id: id, el: h, text: text, lv: lv });
+      });
+    }
+
+    function buildPanel() {
+      if (!panel) return;
+      let html = '<div class="toc-hd"><b>阅读导航</b><span>' + headings.length + ' 节 · Esc 关闭</span></div>';
+      headings.forEach(function (h) {
+        html += '<a class="toc-link' + (h.lv >= 3 ? ' lv3' : '')
+          + '" data-target="' + h.id + '">' + escapeHtml(h.text) + '</a>';
+      });
+      panel.innerHTML = html;
+      panel.querySelectorAll('.toc-link').forEach(function (a) {
+        a.addEventListener('click', function () {
+          const el = document.getElementById(a.getAttribute('data-target'));
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          toggle(false);
+        });
+      });
+    }
+
+    function setActive(id) {
+      if (!panel) return;
+      panel.querySelectorAll('.toc-link').forEach(function (a) {
+        a.classList.toggle('active', a.getAttribute('data-target') === id);
+      });
+      const act = panel.querySelector('.toc-link.active');
+      if (act && open) {
+        const pr = panel.getBoundingClientRect(), ar = act.getBoundingClientRect();
+        if (ar.top < pr.top || ar.bottom > pr.bottom) act.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function onScroll() {
+      if (raf || !headings.length) return;
+      raf = requestAnimationFrame(function () {
+        raf = null;
+        if (!headings.length) return;
+        let cur = headings[0].id;
+        for (let i = 0; i < headings.length; i++) {
+          if (headings[i].el.getBoundingClientRect().top <= 90) cur = headings[i].id;
+          else break;
+        }
+        setActive(cur);
+      });
+    }
+
+    function toggle(v) {
+      ensure();
+      open = (typeof v === 'boolean') ? v : !open;
+      panel.classList.toggle('on', open);
+      fab.style.background = open ? 'var(--c-primary)' : '';
+      fab.style.color = open ? '#ffffff' : '';
+      if (open) onScroll();
+    }
+
+    function attach(rootEl) {
+      ensure();
+      scan(rootEl);
+      const enough = headings.length >= 3;
+      fab.classList.toggle('on', enough);
+      if (!enough) { open = false; panel.classList.remove('on'); return; }
+      fab.querySelector('.toc-cnt').textContent = headings.length;
+      buildPanel();
+      onScroll();
+    }
+
+    return { attach: attach, close: function () { if (open) toggle(false); } };
+  })();
+
+  function handleStreamEvent(event, data) {
     if (event === 'stage') {
       $('streamStatus').textContent = data.message || '...';
       $('streamBar').style.width = (data.progress || 0) + '%';
@@ -1481,6 +2604,8 @@
         <div class="md">${md.render(data.markdown || '')}</div>`;
       window._lastMarkdown = data.markdown;
       window._lastMethod = data.method || '';
+      // v1.6：长报告自动生成阅读目录（标题不足 3 个则不出现）
+      ReadingNav.attach(mdEl);
       // 图表事件到达后再显示导出按钮（带图导出更完整）
     } else if (event === 'llm') {
       // v0.4：AI 深度解读段（追加到 markdown 后；失败给提示不阻断）
@@ -1493,6 +2618,8 @@
         div.innerHTML = md.render(data.section);
         mdEl.appendChild(div);
         window._lastMarkdown = (window._lastMarkdown || '') + '\n\n' + data.section;
+        // v1.6：AI 解读段可能引入新标题，重扫目录
+        ReadingNav.attach(mdEl);
       } else {
         const tip = document.createElement('div');
         tip.style.cssText = 'margin-top:8px; padding:8px 12px; font-size:12px; color:var(--c-muted); border:1px dashed var(--c-border); border-radius:8px;';
@@ -1521,6 +2648,7 @@
         $('streamStatus').textContent = '✓ 分析完成';
         $('streamBar').style.width = '100%';
         $('streamBar').style.background = 'var(--c-success, #10b981)';
+        rememberRun();  // v2.10 答辩准备：成功一次记一笔（后端重放拿数字）
       }
     }
   }
@@ -1546,8 +2674,94 @@
     $('streamStatus').textContent = '✓ 分析完成';
     $('streamBar').style.width = '100%';
     $('streamBar').style.background = 'var(--c-success, #10b981)';
+    ReadingNav.attach($('streamMarkdown'));
     if (state.lastChart) loadChart(state.lastChart);
+    rememberRun();  // v2.10 非流式回退路径同样记录
   }
+
+  // v2.10 答辩准备：把本次成功分析的参数存进 state.history（同方法同列去重）。
+  // 只存"做了什么"，不存结果数字——数字由 /api/defense_pack 后端重放实算。
+  function rememberRun() {
+    const p = state.lastChart;
+    if (!p || !p.method) return;
+    const sig = [p.method, p.group_col || '', p.value_col || '',
+                 p.value_col2 || '', (p.item_cols || []).join('|')].join('§');
+    state.history = state.history.filter(r => r._sig !== sig);
+    state.history.push({
+      _sig: sig,
+      method: p.method,
+      group_col: p.group_col || null,
+      value_col: p.value_col || null,
+      value_col2: p.value_col2 || null,
+      item_cols: p.item_cols || null,
+      label: methodLabel(p.method),
+    });
+    if (state.history.length > 20) state.history.shift();
+    const dBtn = $('defenseBtn');
+    if (dBtn) dBtn.style.display = '';
+  }
+
+  // ── 答辩准备弹窗（onclick 需要全局可见，故挂 window）──
+  window.openDefense = function () {
+    const runs = state.history || [];
+    const box = $('defenseRuns');
+    if (!box) return;
+    if (!runs.length) {
+      box.innerHTML = '<div style="font-size:13px; color:var(--c-muted);">还没分析过。先在左边跑一次分析（成功后自动记一笔），再来生成预演题。</div>';
+    } else {
+      box.innerHTML = '<div style="font-size:12.5px; color:var(--c-muted); margin-bottom:6px;">已记录 ' + runs.length +
+        ' 次分析：</div><div style="display:flex; flex-wrap:wrap; gap:6px;">' +
+        runs.map(r => '<span style="font-size:12px; padding:3px 10px; border-radius:999px; background:var(--c-primary-bg, rgba(79,70,229,.08)); color:var(--c-primary, #4f46e5);">' +
+          escapeHtml(r.label || r.method) + '</span>').join('') + '</div>';
+    }
+    $('defenseQaBox').innerHTML = '';
+    $('zlDefense').classList.add('on');
+  };
+
+  window.genDefenseQA = async function () {
+    if (!state.fileId || !(state.history || []).length) { toast('先完成一次分析再来生成'); return; }
+    const box = $('defenseQaBox');
+    box.innerHTML = '<div style="font-size:13px; color:var(--c-muted);">⏳ 正在用你的数据实算统计量并生成预演题…</div>';
+    try {
+      const r = await fetch('/api/defense_pack', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: state.fileId, runs: state.history, include_datacheck: true }),
+      });
+      const d = await r.json();
+      if (!d.ok) { box.innerHTML = '<div style="font-size:13px; color:var(--c-danger,#b91c1c);">' + escapeHtml(d.error || '生成失败') + '</div>'; return; }
+      box.innerHTML = d.qa.map((q, i) =>
+        '<details style="border:1px solid var(--c-border,#e2e2ea); border-radius:10px; padding:10px 14px; margin-bottom:8px; font-size:13.5px;"' +
+        (i === 0 ? ' open' : '') + '><summary style="cursor:pointer; font-weight:600;">' + escapeHtml(q.question) + '</summary>' +
+        '<ul style="margin:8px 0 0 18px; padding:0; color:var(--c-text,#55505e); line-height:1.8;">' +
+        q.points.map(p => '<li>' + escapeHtml(p) + '</li>').join('') +
+        '</ul></details>').join('') +
+        '<div style="font-size:12px; color:var(--c-muted); margin-top:6px;">' + escapeHtml(d.note || '') + '</div>';
+    } catch (e) {
+      box.innerHTML = '<div style="font-size:13px; color:var(--c-danger,#b91c1c);">请求出错：' + escapeHtml(e.message) + '</div>';
+    }
+  };
+
+  window.downloadDefenseCharts = async function () {
+    if (!state.fileId || !(state.history || []).length) { toast('先完成一次分析再来打包'); return; }
+    try {
+      const r = await fetch('/api/defense_charts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: state.fileId, runs: state.history }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        toast(d.error || '打包失败'); return;
+      }
+      const miss = r.headers.get('X-Missing-Charts');
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '答辩图表包.zip';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      if (miss) toast('已下载；有 ' + miss.split(',').length + ' 张图没生成成功');
+    } catch (e) { toast('打包出错：' + e.message); }
+  };
 
   async function loadChart(p) {
     const section = $('chartSection');
@@ -1592,36 +2806,52 @@
       logistic_regression: '二元 Logistic 回归',
       cronbach_alpha: '信度分析（Cronbach\'s α）',
       two_way_anova: '双因素方差分析',
+      repeated_measures_anova: '重复测量方差分析',
     })[key] || key;
   }
 
-  // v1.0：回归自变量多选
+  // v1.0：回归自变量多选；v1.1：同一块 UI 复用为「信度题项」与「重复测量时间点」
   function renderRegXList() {
     const wrap = $('regXWrap');
     const list = $('regXList');
     const hint = $('regXHint');
+    const title = $('regXTitle');
     const method = $('method').value;
     const isReg = ['linear_regression', 'logistic_regression'].includes(method);
     const isAlpha = method === 'cronbach_alpha';
-    if (!isReg && !isAlpha) { wrap.style.display = 'none'; return; }
+    const isRM = method === 'repeated_measures_anova';
+    if (!isReg && !isAlpha && !isRM) { wrap.style.display = 'none'; return; }
     wrap.style.display = '';
     list.innerHTML = '';
     const v1 = $('valueCol').value;
-    // 信度分析：题项候选 = 所有数值列（含 1-5 量表题）；
+    // 信度 / 重复测量：候选 = 所有数值列（含 1-5 量表题、离散数值题）；
     // 回归：自变量候选 = 除因变量外的连续列
-    const candidates = isAlpha
+    const candidates = (isAlpha || isRM)
       ? state.columns.filter(c => c.is_numeric !== false && (c.type === 'continuous' || c.is_numeric_discrete))
       : state.columns.filter(c => c.name !== v1 && c.type === 'continuous');
+    if (title) {
+      title.innerHTML = isAlpha
+        ? '<strong>选量表题项</strong>：可多选，至少 2 题'
+        : (isRM ? '<strong>选时间点 / 条件列</strong>：按时间先后顺序勾选，至少 3 个'
+                : '<strong>选自变量（X）</strong>：可多选，至少 1 个');
+    }
     if (!candidates.length) {
       hint.style.display = '';
-      hint.textContent = isAlpha ? '没有可用的数值题项列。' : '没有可用的数值列作为自变量。';
+      hint.textContent = isAlpha
+        ? '没有可用的数值题项列。'
+        : (isRM ? '没有可用的数值列作为时间点。' : '没有可用的数值列作为自变量。');
       return;
     }
     hint.style.display = '';
-    hint.textContent = isAlpha
-      ? '勾选参与信度计算的题项（至少 2 个），通常是一个量表的全部题目。'
-      : '勾选参与回归的自变量（至少 1 个）。';
-    const cls = isAlpha ? 'reg-x-cb item-cb' : 'reg-x-cb';
+    if (isAlpha) {
+      hint.textContent = '勾选参与信度计算的题项（至少 2 个），通常是一个量表的全部题目。';
+    } else if (isRM) {
+      hint.textContent = '勾选同一批被试在不同时间点/条件下的测量列（至少 3 个），顺序即"时间顺序"。'
+        + '每行代表一名被试，缺失值会被整行剔除。';
+    } else {
+      hint.textContent = '勾选参与回归的自变量（至少 1 个）。';
+    }
+    const cls = isAlpha ? 'reg-x-cb item-cb' : (isRM ? 'reg-x-cb rm-cb' : 'reg-x-cb');
     candidates.forEach(c => {
       const label = document.createElement('label');
       label.style.cssText = 'display:inline-flex; align-items:center; gap:4px; padding:4px 8px; border:1px solid var(--c-border); border-radius:6px; background:var(--c-card); cursor:pointer; font-size:13px;';
@@ -1644,6 +2874,11 @@
     return Array.from(document.querySelectorAll('.item-cb:checked')).map(cb => cb.value);
   }
 
+  // v1.1 重复测量：按 DOM 顺序（= 列顺序 = 时间顺序）取勾选的时间点列
+  function getTimeCols() {
+    return Array.from(document.querySelectorAll('.rm-cb:checked')).map(cb => cb.value);
+  }
+
   function copyMarkdown() {
     if (!window._lastMarkdown) return;
     navigator.clipboard.writeText(window._lastMarkdown).then(
@@ -1656,6 +2891,8 @@
   // ===== v0.9 导出 Word =====
   async function exportWord() {
     if (!window._lastMarkdown) { toast('请先运行一次分析'); return; }
+    // v1.5：导出前强制学术诚信承诺
+    if (!(await ensureIntegrityPledge())) return;
     const btn = $('exportBtn');
     const original = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
@@ -1700,6 +2937,8 @@
   // ===== v0.9.5 论文排查报告导出 Word =====
   async function exportAuditWord() {
     if (!window._lastAuditMarkdown) { toast('请先运行一次核查'); return; }
+    // v1.5：导出前强制学术诚信承诺
+    if (!(await ensureIntegrityPledge())) return;
     const btn = $('exportAuditBtn');
     const original = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
@@ -1741,7 +2980,7 @@
 
   // ===== 重新上传 =====
   $('resetBtn').addEventListener('click', () => {
-    state = { fileId: null, filename: '', rows: 0, columns: [], recommendation: null };
+    state = { fileId: null, filename: '', rows: 0, columns: [], recommendation: null, history: [] };
     fileInput.value = '';
     show($('landing'));
     hide($('workspace'));
@@ -1757,13 +2996,14 @@
       const target = t.dataset.tab;
       document.querySelectorAll('#tabbar .tab').forEach(x => x.classList.remove('active'));
       t.classList.add('active');
-      if (target === 'analyze') {
-        show($('tab-analyze'));
-        hide($('tab-check'));
-      } else {
-        hide($('tab-analyze'));
-        show($('tab-check'));
-      }
+      ['analyze', 'check', 'copilot'].forEach(k => {
+        const el = $('tab-' + k);
+        if (!el) return;
+        if (k === target) show(el); else hide(el);
+      });
+      // v1.6：切换 Tab 时收起阅读目录，避免指向已隐藏的报告
+      ReadingNav.close();
+      if (target === 'copilot') cplRefresh();
     });
   });
 
@@ -1775,8 +3015,10 @@
     dataFile: null,
   };
 
+  // v1.5：指令命中红线时也禁用「开始核查」（后端仍有硬拦截，这里只是前置提示）
+  let _directiveBlocked = false;
   function setCheckBtnState() {
-    const ok = !!(checkState.paperFile && checkState.dataFile);
+    const ok = !!(checkState.paperFile && checkState.dataFile) && !_directiveBlocked;
     $('checkBtn').disabled = !ok;
   }
 
@@ -1812,6 +3054,8 @@
   }
   bindDrop('drop-paper', 'paperInput', 'paperFile', 'paperStatus', '论文');
   bindDrop('drop-data', 'dataInput', 'dataFile', 'dataStatus', '数据');
+  // v1.5：指令框学术红线实时扫描
+  bindDirectiveRedLine();
 
   $('checkBtn').addEventListener('click', async () => {
     if (!checkState.paperFile || !checkState.dataFile) return;
@@ -1843,11 +3087,9 @@
       fd.append('use_llm', '1');
       document.getElementById('checkProgress').textContent = '🔬 AI 深度审计中（V4-Pro，约 30-60 秒）…';
     }
-    // v0.5.1：BYOK（用户自带 Key）
-    const siliconflowKey = $('siliconflowKey').value.trim();
-    const zhipuKey = $('zhipuKey').value.trim();
-    if (siliconflowKey) fd.append('siliconflow_key', siliconflowKey);
-    if (zhipuKey) fd.append('zhipu_key', zhipuKey);
+    // v1.8：BYOK（用户自带 Key，六家平台统一从设置弹窗收集）
+    const byok = collectByok();
+    for (const [k, v] of Object.entries(byok)) fd.append(k, v);
     try {
       const r = await fetch('/api/check_paper', { method: 'POST', body: fd });
       const data = await r.json();
@@ -1864,6 +3106,341 @@
       $('checkBtn').disabled = false;
     }
   });
+
+  // v1.5 · ③人话解释卡片：把方法误用讲成人话（规则引擎产出，零 LLM）
+  function renderExplanations(exps) {
+    if (!exps || !exps.length) return '';
+    const sevIcon = { high: '🔴', mid: '🟡', low: '🔵' };
+    const escMd = function (s) {
+      return escapeHtml(s || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    };
+    const cards = exps.map(function (e) {
+      const sev = e.severity || 'mid';
+      return '<details class="xai-card sev-' + sev + '">'
+        + '<summary>' + (sevIcon[sev] || '') + ' ' + escapeHtml(e.text || '') + '</summary>'
+        + '<div class="xc-body">'
+        + (e.why_wrong ? '<div class="xc-row"><b>为什么错：</b>' + escMd(e.why_wrong) + '</div>' : '')
+        + (e.counter_example ? '<div class="xc-row"><b>硬用会怎样：</b>' + escMd(e.counter_example) + '</div>' : '')
+        + (e.fix_label ? '<div class="xc-fix">建议改用：' + escapeHtml(e.fix_label) + '</div>' : '')
+        + '</div></details>';
+    }).join('');
+    return '<div class="xai-wrap"><div class="xai-title">💬 人话解释 · 你哪里可能用错了</div>'
+      + cards + '<div class="xai-hint">卡片由规则引擎基于已算出的统计量生成，未调用 LLM。</div></div>';
+  }
+
+  // ---------------------------------------------------------------------
+  // v1.6 · 审计对话：对「一条统计比对」追问
+  // LLM 只解释已算好的统计量，绝不参与计算；失败回退模板结论，不白屏。
+  // ---------------------------------------------------------------------
+  const AuditChat = (function () {
+    let cmps = [];        // 带 summary 的比对条目
+    let curIdx = -1;      // 当前选中的条目
+
+    const SUGGEST = ['为什么会对不上？', '这个差异算严重吗？',
+                     '那我在论文里该怎么改？', '是不是样本量的问题？'];
+
+    function comparable() {
+      // 只保留有 summary 的（后端已保证，这里防御性过滤）
+      return (cmps || []).filter(function (c) { return c && c.summary; });
+    }
+
+    function chipLabel(c, i) {
+      const s = c.summary || {};
+      const st = s.status || '';
+      const icon = st === 'ok' ? '✅' : st === 'minor_diff' ? '🟡'
+                 : st === 'mismatch' ? '🔴' : '⚪';
+      const name = (s.method_cn || '') + ' · ' + (s.kind_cn || '');
+      return '<button type="button" class="chat-chip' + (i === curIdx ? ' on' : '')
+        + '" data-i="' + i + '">' + icon + ' ' + escapeHtml(name)
+        + '<span class="cc-badge">' + escapeHtml(s.status_cn || '') + '</span></button>';
+    }
+
+    function renderPick() {
+      const el = document.getElementById('chatPick');
+      if (!el) return;
+      el.innerHTML = comparable().map(chipLabel).join('');
+      el.querySelectorAll('.chat-chip').forEach(function (b) {
+        b.addEventListener('click', function () {
+          curIdx = Number(b.getAttribute('data-i'));
+          el.querySelectorAll('.chat-chip').forEach(function (x) {
+            x.classList.toggle('on', Number(x.getAttribute('data-i')) === curIdx);
+          });
+        });
+      });
+    }
+
+    function ask(q, onDone) {
+      const list = comparable();
+      if (curIdx < 0 || curIdx >= list.length) {
+        toast('请先选一条要比对的结果'); return;
+      }
+      if (!q) { toast('请先输入问题'); return; }
+      const summary = list[curIdx].summary;
+      const logEl = document.getElementById('chatLog');
+      const wait = document.createElement('div');
+      wait.className = 'chat-wait';
+      wait.textContent = '⏳ 正在基于这条比对作答…';
+      logEl.appendChild(wait);
+      logEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      fetch('/api/audit_chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary: summary, question: q }),
+      }).then(function (r) { return r.json().then(function (d) { return { r: r, d: d }; }); })
+        .then(function (o) {
+          wait.remove();
+          const d = o.d || {};
+          let body, cls = '', metaHtml = '';
+          if (!o.r.ok || !d.ok) {
+            // 红线拒绝 / 参数错误 → 直接展示后端文案
+            body = escapeHtml(d.error || '问答失败');
+            cls = ' err';
+          } else {
+            body = '<div class="md">' + md.render(d.answer || '（无内容）') + '</div>';
+            const tags = [];
+            if (d.llm_cached) tags.push('命中缓存');
+            if (d.fallback) tags.push('规则兜底（LLM 未参与）');
+            if (d.llm_model) tags.push(d.llm_model);
+            const cited = d.cited || {};
+            let citeTxt = '';
+            if (cited['论文值'] !== undefined && cited['实算值'] !== undefined) {
+              citeTxt = ' · 依据：论文 ' + escapeHtml(String(cited['论文值']))
+                      + ' / 实算 ' + escapeHtml(String(cited['实算值']));
+            }
+            metaHtml = '<div class="chat-meta">'
+              + tags.map(function (t) {
+                  return '<span class="cm-tag">' + escapeHtml(t) + '</span>';
+                }).join('')
+              + escapeHtml(citeTxt) + '</div>';
+          }
+          const qa = document.createElement('div');
+          qa.className = 'chat-qa';
+          qa.innerHTML = '<div class="chat-q">' + escapeHtml(q) + '</div>'
+            + '<div class="chat-a' + cls + '">' + body + '</div>' + metaHtml;
+          logEl.appendChild(qa);
+          // 详细回答可能带标题，重扫阅读目录
+          ReadingNav.attach($('checkResult'));
+          if (onDone) onDone();
+        }).catch(function (e) {
+          wait.remove();
+          const qa = document.createElement('div');
+          qa.className = 'chat-qa';
+          qa.innerHTML = '<div class="chat-q">' + escapeHtml(q) + '</div>'
+            + '<div class="chat-a err">请求失败：' + escapeHtml(e.message) + '</div>';
+          logEl.appendChild(qa);
+          if (onDone) onDone();
+        });
+    }
+
+    function render(comparisons) {
+      cmps = comparisons || [];
+      curIdx = -1;
+      const list = comparable();
+      if (!list.length) return '';
+      // 默认选中第一条「有问题」的（mismatch > minor_diff > 其它）
+      const order = { mismatch: 0, minor_diff: 1, unknown: 2, no_real: 3, ok: 4 };
+      let best = 0;
+      list.forEach(function (c, i) {
+        const a = order[c.summary.status] === undefined ? 9 : order[c.summary.status];
+        const b = order[list[best].summary.status] === undefined ? 9
+                : order[list[best].summary.status];
+        if (a < b) best = i;
+      });
+      curIdx = best;
+
+      const defSummary = list[best].summary || {};
+      return '<div class="chat-wrap">'
+        + '<div class="chat-hd">🗣 追问这条比对'
+        + '<span>AI 只解释已算出的统计量，不会改动结论</span></div>'
+        + '<div class="chat-body">'
+        + '<div class="chat-pick" id="chatPick"></div>'
+        + '<div class="chat-ask">'
+        + '<input id="chatInput" type="text" maxlength="500" '
+        + 'placeholder="就这条结果提问，例如：为什么会对不上？" '
+        + 'onkeydown="if(event.key===\'Enter\'){AuditChat.submit();}">'
+        + '<button id="chatSend" type="button">提问</button></div>'
+        + '<div class="chat-sugg"><b>试试：</b>'
+        + SUGGEST.map(function (s) {
+            return '<span data-q="' + escapeHtml(s) + '">' + escapeHtml(s) + '</span>';
+          }).join('')
+        + '</div>'
+        + '<div class="chat-log" id="chatLog">'
+        // 先展示规则引擎的结论摘要，保证「即使 LLM 全挂也有内容」
+        + '<div class="chat-qa"><div class="chat-q">规则引擎结论</div>'
+        + '<div class="chat-a">' + escapeHtml(defSummary.verdict || '')
+        + (defSummary.hint ? '<br><span style="color:var(--c-muted);">'
+            + escapeHtml(defSummary.hint) + '</span>' : '')
+        + '</div></div>'
+        + '</div></div></div>';
+    }
+
+    function mount() {
+      renderPick();
+      const btn = document.getElementById('chatSend');
+      const inp = document.getElementById('chatInput');
+      if (btn) btn.addEventListener('click', submit);
+      document.querySelectorAll('.chat-sugg span').forEach(function (s) {
+        s.addEventListener('click', function () {
+          if (inp) inp.value = s.getAttribute('data-q');
+          submit();
+        });
+      });
+    }
+
+    function submit() {
+      const inp = document.getElementById('chatInput');
+      const btn = document.getElementById('chatSend');
+      const q = inp ? inp.value.trim() : '';
+      if (!q) { toast('请先输入问题'); return; }
+      btn.disabled = true;
+      ask(q, function () {
+        btn.disabled = false;
+        if (inp) inp.value = '';
+      });
+    }
+
+    return { render: render, mount: mount, submit: submit };
+  })();
+
+  // ===== v2.9 ④图表 AI 核查（多模态，独立于 AuditChat）=====
+  const ImageAudit = (function () {
+    let file = null;
+
+    function $(id) { return document.getElementById(id); }
+
+    function setBtn() {
+      const b = $('iaBtn');
+      if (b) b.disabled = !file;
+    }
+
+    function setName(f) {
+      const el = $('iaName');
+      if (!el) return;
+      el.textContent = f ? (f.name + '（' + (f.size / 1024).toFixed(0) + ' KB）')
+                         : '未选择图片';
+    }
+
+    function pick(f) {
+      if (!f) return;
+      if (!/^image\/(png|jpeg|jpg|webp|gif)$/.test(f.type || '')) {
+        toast('请上传 PNG / JPEG / WebP / GIF 格式的图片');
+        return;
+      }
+      if (f.size > 5 * 1024 * 1024) {
+        toast('图片超过 5 MB，请先压缩');
+        return;
+      }
+      file = f;
+      setName(f);
+      setBtn();
+    }
+
+    function esc(s) { return escapeHtml(String(s == null ? '' : s)); }
+
+    function renderResult(d) {
+      const box = $('iaResult');
+      if (!box) return;
+      // 降级 / 失败：明确告知，不白屏也不假装成功
+      if (!d.ok) {
+        const hint = d.hint ? '<div class="ia-cap">' + esc(d.hint) + '</div>' : '';
+        const why = d.llm_error
+          ? '<div class="ia-cap">原因：' + esc(d.llm_error) + '</div>' : '';
+        box.innerHTML = '<div class="ia-verdict unknown">'
+          + '<div class="v-t">⚠️ 未能完成读图</div>'
+          + '<div>' + esc(d.error || '请手动核对图与结论是否一致。') + '</div>'
+          + hint + why + '</div>';
+        return;
+      }
+      const mc = d.matches_conclusion;
+      let cls = 'unknown', title = '❓ 图信息不足，无法判断';
+      if (mc === true) { cls = 'ok'; title = '✅ 图与结论相符'; }
+      else if (mc === false) { cls = 'no'; title = '❌ 图与结论不符 / 不支持'; }
+
+      const issues = (d.issues || []).filter(function (x) { return x; });
+      const issuesHtml = issues.length
+        ? '<ul class="ia-issues">' + issues.map(function (s) {
+            return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
+        : '';
+      const cap = d.caption
+        ? '<div class="ia-cap"><b>AI 读到的图：</b>' + esc(d.caption) + '</div>' : '';
+      const tags = [];
+      if (d.llm_cached) tags.push('命中缓存');
+      if (d.llm_model) tags.push(d.llm_model);
+      if (d.fallback && d.llm_error) tags.push('已降级');
+      const tagHtml = tags.length
+        ? '<div class="ia-tags">' + tags.map(function (t) {
+            return '<span class="cm-tag">' + esc(t) + '</span>'; }).join('') + '</div>'
+        : '';
+
+      box.innerHTML = '<div class="ia-verdict ' + cls + '">'
+        + '<div class="v-t">' + title + '</div>'
+        + esc(d.claim ? ('你的结论：' + d.claim) : '')
+        + issuesHtml + cap + tagHtml + '</div>';
+    }
+
+    function submit() {
+      if (!file) { toast('请先选择一张图表'); return; }
+      const btn = $('iaBtn');
+      const claim = (($('iaClaim') || {}).value || '').trim();
+      const fd = new FormData();
+      fd.append('image', file);
+      if (claim) fd.append('claim', claim);
+
+      const box = $('iaResult');
+      if (box) {
+        box.innerHTML = '<div class="ia-verdict unknown">'
+          + '<div class="v-t">⏳ 正在读图…</div>'
+          + '<div>多模态模型分析中，通常 5-20 秒。</div></div>';
+      }
+      if (btn) { btn.disabled = true; btn.textContent = '读图中…'; }
+
+      fetch('/api/audit_image', { method: 'POST', body: fd })
+        .then(function (r) { return r.json().then(function (d) { return { r: r, d: d }; }); })
+        .then(function (o) {
+          const d = o.d || {};
+          if (o.r.status === 400 || o.r.status === 413) {
+            // 参数/体积错误：后端已给明确文案
+            renderResult({ ok: false, error: d.error || '请求被拒绝' });
+          } else {
+            renderResult(d);
+          }
+        })
+        .catch(function (e) {
+          renderResult({ ok: false, error: '网络错误：' + e });
+        })
+        .then(function () {
+          if (btn) { btn.disabled = false; btn.textContent = '开始读图核查'; }
+          setBtn();
+        });
+    }
+
+    function mount() {
+      const drop = $('iaDrop'), inp = $('iaInput'), btn = $('iaBtn');
+      if (!drop || !inp) return;
+      drop.addEventListener('click', function () { inp.click(); });
+      inp.addEventListener('change', function () { pick(inp.files && inp.files[0]); });
+      ['dragenter', 'dragover'].forEach(function (ev) {
+        drop.addEventListener(ev, function (e) {
+          e.preventDefault(); drop.classList.add('over');
+        });
+      });
+      ['dragleave', 'drop'].forEach(function (ev) {
+        drop.addEventListener(ev, function (e) {
+          e.preventDefault(); drop.classList.remove('over');
+        });
+      });
+      drop.addEventListener('drop', function (e) {
+        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        pick(f);
+      });
+      if (btn) btn.addEventListener('click', submit);
+      setBtn();
+    }
+
+    return { mount: mount, submit: submit };
+  })();
+
+  window.ImageAudit = ImageAudit;
 
   function renderCheckResult(data) {
     const html = md.render(data.audit.markdown || '');
@@ -1905,12 +3482,17 @@
       样本量: data.rows || '',
     };
     if (directiveBadge) window._lastAuditMeta.核查指令 = data.directive.trim();
-    $('checkResult').innerHTML = meta + `<div class="md">${html}</div>` +
+    const chatHtml = AuditChat.render(data.audit.comparisons);
+    $('checkResult').innerHTML = meta + renderExplanations(data.audit.explanations)
+      + chatHtml + `<div class="md">${html}</div>` +
       // v0.4.2：AI 审计失败降级提示（不阻断规则报告）
       (data.llm_error && !data.llm_enhanced
         ? `<div style="margin-top:10px; padding:10px 14px; background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; font-size:13px; color:#92400e;">🔬 AI 深度审计本次未生成（${escapeHtml(data.llm_error)}），以上为规则引擎结果。</div>`
         : '');
     window._lastAuditMarkdown = data.audit.markdown;
+    if (chatHtml) AuditChat.mount();
+    // v1.6：核查报告同享阅读目录（长报告跳读）
+    ReadingNav.attach($('checkResult'));
   }
 
   function copyAuditMarkdown() {
@@ -1921,6 +3503,576 @@
     );
   }
   window.copyAuditMarkdown = copyAuditMarkdown;
+
+  // ============================================================
+  // Tab 3: 论文副驾驶（流水线 + 证据约束写作）
+  // ============================================================
+  const CPL_METHODS = [
+    { v: 'independent_t', t: '独立样本 T 检验', need: ['group', 'value'] },
+    { v: 'anova', t: '单因素方差分析', need: ['group', 'value'] },
+    { v: 'correlation', t: 'Pearson 相关分析', need: ['value', 'value2'] },
+    { v: 'chi_square', t: '卡方检验', need: ['group', 'value'] },
+    { v: 'paired_t', t: '配对样本 T 检验', need: ['value', 'value2'] },
+    { v: 'mann_whitney', t: 'Mann-Whitney U 检验', need: ['group', 'value'] },
+    { v: 'wilcoxon', t: 'Wilcoxon 符号秩检验', need: ['value', 'value2'] },
+    { v: 'linear_regression', t: '多元线性回归', need: ['value', 'xcols'] },
+    { v: 'logistic_regression', t: '二元 Logistic 回归', need: ['value', 'xcols'] },
+    { v: 'cronbach_alpha', t: "Cronbach's α 信度分析", need: ['itemcols'] },
+    { v: 'two_way_anova', t: '双因素方差分析', need: ['group', 'value2', 'value'] },
+    { v: 'repeated_measures_anova', t: '重复测量方差分析', need: ['itemcols'] },
+  ];
+  let cplState = { columns: [], numeric: [], categorical: [], fileId: null };
+
+  async function cplRefresh() {
+    try {
+      const r = await fetch('/api/copilot/status', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '读取失败');
+      cplRenderPhases(d);
+    } catch (e) {
+      $('cplProgressText').textContent = '读取失败：' + e.message;
+    }
+  }
+
+  function cplRenderPhases(d) {
+    const pct = Math.round((d.progress || 0) * 100);
+    $('cplProgressBar').style.width = pct + '%';
+    $('cplProgressText').textContent =
+      `已完成 ${d.done} / ${d.total} 阶段（${pct}%）` +
+      (d.next_phase ? ` · 下一阶段：${d.next_phase}` : ' · 全部完成 🎉');
+
+    const colorOf = s => ({
+      done: ['#10b981', '✅'], in_progress: ['#3b82f6', '⏳'],
+      pending: ['#f59e0b', '▶'], blocked: ['#94a3b8', '🔒'],
+    }[s] || ['#94a3b8', '•']);
+    const labelOf = s => ({
+      done: '已完成', in_progress: '进行中', pending: '可执行', blocked: '等待前置',
+    }[s] || s);
+
+    $('cplPhases').innerHTML = (d.phases || []).map(p => {
+      const [c, icon] = colorOf(p.status);
+      return `<div style="display:flex; gap:12px; align-items:flex-start; padding:12px 14px;
+                 border:1px solid var(--c-border); border-left:4px solid ${c}; border-radius:10px;">
+        <div style="font-size:20px;">${p.emoji}</div>
+        <div style="flex:1;">
+          <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+            <b>${escapeHtml(p.name)}</b>
+            <span style="font-size:12px; color:${c};">${icon} ${labelOf(p.status)}</span>
+          </div>
+          <div style="font-size:13px; color:var(--c-muted); margin-top:4px;">${escapeHtml(p.goal)}</div>
+          <div style="font-size:12px; color:var(--c-muted); margin-top:6px;">
+            产出：${(p.outputs || []).map(o => `<code>${escapeHtml(o)}</code>`).join('、')}
+            ${p.outputs_found && p.outputs_found.length ? ` · 已找到 ${p.outputs_found.length} 个` : ''}
+          </div>
+          <div style="font-size:12px; color:#94a3b8; margin-top:4px;">验收：${escapeHtml(p.validator || '')}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  async function cplDispatch() {
+    try {
+      const r = await fetch('/api/copilot/dispatch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const d = await r.json();
+      $('cplDispatch').textContent = d.done ? '（流水线已全部完成）' : (d.context || '（无）');
+    } catch (e) {
+      $('cplDispatch').textContent = '生成失败：' + e.message;
+    }
+  }
+
+  async function cplValidate() {
+    const r0 = await fetch('/api/copilot/status', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const d0 = await r0.json();
+    const key = d0.next_phase;
+    if (!key) { toast('流水线已全部完成'); return; }
+    const r = await fetch('/api/copilot/validate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phase: key }),
+    });
+    const d = await r.json();
+    toast(d.ok ? `「${key}」产出齐备 ✅` : `「${key}」还缺：${(d.outputs_missing || []).join('、')}`);
+  }
+
+  // ---- 论文生成 ----
+  $('cplFile').addEventListener('change', async (ev) => {
+    const f = ev.target.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '上传失败');
+      cplState.fileId = d.file_id;
+      cplState.columns = d.columns || [];
+      cplState.numeric = cplState.columns.filter(c => c.type === 'continuous')
+        .map(c => c.name);
+      cplState.categorical = cplState.columns.filter(c => c.type === 'categorical')
+        .map(c => c.name);
+      $('cplFileInfo').textContent =
+        `已读取 ${d.columns.length} 列 · ${d.rows} 行 · 数值列 ${cplState.numeric.length} / 分类列 ${cplState.categorical.length}`;
+      cplState.analyses = [{ method: 'independent_t' }];
+      cplRenderAnalyses();
+      $('cplGenBtn').disabled = false;
+    } catch (e) {
+      $('cplFileInfo').textContent = '上传失败：' + e.message;
+    }
+  });
+
+  function cplOpts(list) {
+    return ['<option value="">— 选择列 —</option>']
+      .concat(list.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)).join('');
+  }
+
+  function cplRenderAnalyses() {
+    if (!cplState.analyses) cplState.analyses = [{ method: 'independent_t' }];
+    $('cplAnalyses').innerHTML = cplState.analyses.map((a, i) => {
+      const def = CPL_METHODS.find(m => m.v === a.method) || CPL_METHODS[0];
+      let fields = '';
+      if (def.need.includes('group'))
+        fields += `<label style="font-size:12px;">分组列<select data-i="${i}" data-k="group_col">${cplOpts(cplState.categorical)}</select></label>`;
+      if (def.need.includes('value'))
+        fields += `<label style="font-size:12px;">数值列<select data-i="${i}" data-k="value_col">${cplOpts(cplState.numeric)}</select></label>`;
+      if (def.need.includes('value2'))
+        fields += `<label style="font-size:12px;">第二列<select data-i="${i}" data-k="value_col2">${cplOpts(cplState.categorical.concat(cplState.numeric))}</select></label>`;
+      if (def.need.includes('xcols') || def.need.includes('itemcols'))
+        fields += `<label style="font-size:12px;">${def.v === 'repeated_measures_anova' ? '时间点列（按时间顺序，逗号分隔，≥3 个）' : (def.need.includes('itemcols') ? '题项列（逗号分隔）' : '自变量列（逗号分隔）')}<input data-i="${i}" data-k="${def.need.includes('itemcols') ? 'item_cols' : 'x_cols'}" placeholder="col1,col2" /></label>`;
+      return `<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+                padding:10px; border:1px solid var(--c-border); border-radius:9px;">
+        <select data-i="${i}" data-k="method" style="font-size:13px;">
+          ${CPL_METHODS.map(m => `<option value="${m.v}" ${m.v === a.method ? 'selected' : ''}>${m.t}</option>`).join('')}
+        </select>
+        ${fields}
+        <button type="button" data-remove="${i}" style="font-size:12px; color:#ef4444; background:none; border:none; cursor:pointer;">删除</button>
+      </div>`;
+    }).join('');
+
+    $('cplAnalyses').querySelectorAll('select,input').forEach(el => {
+      el.addEventListener('change', () => {
+        const i = +el.dataset.i, k = el.dataset.k;
+        cplState.analyses[i][k] = el.value;
+        if (k === 'method') cplRenderAnalyses();
+      });
+    });
+    $('cplAnalyses').querySelectorAll('button[data-remove]').forEach(b => {
+      b.addEventListener('click', () => {
+        cplState.analyses.splice(+b.dataset.remove, 1);
+        cplRenderAnalyses();
+      });
+    });
+  }
+
+  $('cplAddAnalysisBtn').addEventListener('click', () => {
+    if (!cplState.fileId) { toast('请先上传数据'); return; }
+    cplState.analyses.push({ method: 'correlation' });
+    cplRenderAnalyses();
+  });
+
+  $('cplGenBtn').addEventListener('click', async () => {
+    if (!cplState.fileId) { toast('请先上传数据'); return; }
+    const analyses = (cplState.analyses || []).filter(a => {
+      const def = CPL_METHODS.find(m => m.v === a.method);
+      if (!def) return false;
+      return def.need.every(k => {
+        const map = { group: 'group_col', value: 'value_col', value2: 'value_col2' };
+        if (k === 'xcols' || k === 'itemcols') return !!(a[k]);
+        return !!(a[map[k]]);
+      });
+    });
+    if (!analyses.length) { toast('请至少配置一项完整的分析（选好列）'); return; }
+
+    $('cplGenBtn').disabled = true;
+    $('cplResult').innerHTML = '<div class="placeholder" style="padding:24px;"><div class="icon">⏳</div><div>正在用真实数据计算并撰写初稿…</div></div>';
+    try {
+      const r = await fetch('/api/copilot/paper', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_id: cplState.fileId,
+          title: $('cplTitle').value.trim() || '未命名研究',
+          template: $('cplTemplate').value,
+          analyses,
+          use_llm: $('cplUseLlm').checked ? 1 : 0,
+          llm_force: $('cplLlmForce').checked ? 1 : 0,
+        }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '生成失败');
+      cplRenderResult(d);
+      cplRefresh();
+    } catch (e) {
+      $('cplResult').innerHTML = `<div style="color:#ef4444; padding:12px;">生成失败：${escapeHtml(e.message)}</div>`;
+    } finally {
+      $('cplGenBtn').disabled = false;
+    }
+  });
+
+  function cplRenderResult(d) {
+    const errs = (d.lint || []).filter(x => x.level === 'error').length;
+    const warns = (d.lint || []).filter(x => x.level === 'warn').length;
+    $('cplLintBadge').innerHTML = errs
+      ? `<span style="color:#ef4444;">⚠️ 写作自检：${errs} 处违规 / ${warns} 处提醒</span>`
+      : `<span style="color:#10b981;">✅ 写作自检通过（${warns} 处提醒）</span>`;
+
+    // 润色元数据徽标
+    const pm = d.polish || {};
+    let polishBadge = '';
+    if (pm.llm_used) {
+      const tag = pm.primary && pm.primary.rejected
+        ? `<span style="color:#f59e0b;">🛡️ 润色稿触发证据闸门被丢弃，已保留零幻觉底稿</span>`
+        : `<span style="color:#6366f1;">✨ LLM 润色已应用${pm.primary && pm.primary.cached ? '（命中缓存）' : ''}${pm.primary && pm.primary.model ? ' · ' + escapeHtml(pm.primary.model) : ''}</span>`;
+      polishBadge = `<div style="font-size:12.5px; margin-top:4px;">${tag}</div>`;
+    } else if (d.polish) {
+      polishBadge = `<div style="font-size:12.5px; margin-top:4px; color:#64748b;">ℹ️ 未启用 / LLM 不可用，输出为零幻觉底稿</div>`;
+    }
+
+    const claims = (d.claims || []).map(c => `
+      <tr>
+        <td style="font-family:monospace; font-size:12px;">${escapeHtml(c.claim_id)}</td>
+        <td style="font-size:13px;">${escapeHtml(c.claim_text)}</td>
+        <td style="font-size:12px;">${escapeHtml(c.baseline || '—')}</td>
+        <td style="font-size:12px;">${c.confidence === 'high' ? '🟢 high' : (c.confidence === 'medium' ? '🟡 medium' : '🔴 low')}</td>
+      </tr>`).join('');
+
+    const lintList = (d.lint || []).length
+      ? `<div style="margin-top:14px;"><b style="font-size:14px;" data-sec data-sec-lv="2">写作自检明细</b>
+          <ul style="margin:8px 0 0 18px; font-size:13px;">
+            ${d.lint.map(x => `<li>[${x.level === 'error' ? '❌' : '⚠️'}] ${escapeHtml(x.rule)} — <span style="color:#64748b;">${escapeHtml(x.excerpt)}</span></li>`).join('')}
+          </ul></div>`
+      : '';
+
+    $('cplResult').innerHTML = `
+      <div style="font-size:13px; color:var(--c-muted); margin-bottom:10px;">
+        已写入工作目录：${(d.written || []).map(w => `<code>${escapeHtml(w)}</code>`).join('、')}
+      </div>
+      ${polishBadge}
+      <div style="margin-top:6px;"><b style="font-size:14px;" data-sec data-sec-lv="2">Claim 台账（${d.claim_count} 条）</b>
+        <table style="width:100%; border-collapse:collapse; margin-top:8px; font-size:13px;">
+          <thead><tr style="text-align:left; border-bottom:2px solid var(--c-border);">
+            <th style="padding:6px;">ID</th><th style="padding:6px;">结论</th>
+            <th style="padding:6px;">对比基线</th><th style="padding:6px;">置信度</th>
+          </tr></thead>
+          <tbody>${claims}</tbody>
+        </table>
+      </div>
+      ${lintList}
+      <div style="margin-top:16px;"><b style="font-size:14px;" data-sec data-sec-lv="2">初稿预览</b>
+        <pre style="margin-top:8px; max-height:420px; overflow:auto; background:#f8fafc; border:1px solid var(--c-border); border-radius:10px; padding:14px; font-size:12.5px; white-space:pre-wrap;">${escapeHtml(d.preview || '')}</pre>
+      </div>`;
+    // v1.6：副驾驶结果也可能是长报告，接入同一套阅读导航（标题不足 3 个自动不出现）
+    ReadingNav.attach($('cplResult'));
+  }
+
+  $('cplRefreshBtn').addEventListener('click', cplRefresh);
+  $('cplDispatchBtn').addEventListener('click', cplDispatch);
+  $('cplValidateBtn').addEventListener('click', cplValidate);
+
+  // v2.9 图表 AI 核查：面板常驻在论文排查 Tab 内，页面加载即绑定一次事件
+  if (window.ImageAudit) ImageAudit.mount();
+</script>
+
+<!-- v2.6 · PWA：注册 Service Worker（失败静默，不影响网页使用） -->
+<script>
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+  // 只在 http(s) 下注册；file:// 打开时 SW 不可用
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/static/sw.js').catch(function () {
+      // 注册失败（如浏览器隐私模式）不应影响正常使用
+    });
+  });
+})();
+</script>
+
+<!-- ── ④ 答辩准备（v2.10：Q&A 预演 + 图表打包）──────── -->
+<div class="zl-overlay" id="zlDefense">
+  <div class="zl-modal">
+    <button class="zl-close" onclick="closeModal('zlDefense')" title="关闭">×</button>
+    <h3>🎓 答辩准备</h3>
+    <div class="zl-sub">
+      老师最常问的问题，答题要点里全是<b>你自己算出来的数字</b>（后端重新实算，不是抄屏幕）。
+      本页每成功跑一次分析就多记一笔，多跑几种方法，预演题就更全。
+    </div>
+    <div id="defenseRuns" style="margin-bottom:12px;"></div>
+    <div class="zl-actions" style="justify-content:flex-start;">
+      <button class="zl-btn primary" onclick="genDefenseQA()">生成 Q&amp;A 预演</button>
+      <button class="zl-btn ghost" onclick="downloadDefenseCharts()">📦 打包下载全部图表</button>
+    </div>
+    <div id="defenseQaBox" style="margin-top:14px;"></div>
+  </div>
+</div>
+
+<!-- ================================================== -->
+<!-- v1.8 · 全局弹窗三件套：模型设置（BYOK）/ 首次引导 / 帮助中心 -->
+<!-- 大白话原则：每个选项读一句就知道是干什么的，不堆术语 -->
+<style>
+  .hdr-btn {
+    padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--c-border, #e2e2ea);
+    background: var(--c-card, #fff); color: var(--c-text, #26232f);
+    font-size: 12.5px; white-space: nowrap;
+  }
+  .hdr-btn:hover { border-color: var(--c-primary, #4f46e5); color: var(--c-primary, #4f46e5); }
+  .zl-overlay {
+    position: fixed; inset: 0; background: rgba(20, 18, 30, .45);
+    z-index: 90; display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .zl-overlay.on { display: flex; }
+  .zl-modal {
+    background: var(--c-card, #fff); border-radius: 14px;
+    width: min(680px, 96vw); max-height: 88vh; overflow-y: auto;
+    box-shadow: 0 18px 50px rgba(0,0,0,.28); padding: 22px 24px;
+  }
+  .zl-modal h3 { margin: 0 0 4px; font-size: 18px; }
+  .zl-modal .zl-sub { font-size: 13px; color: var(--c-muted, #77717f); margin-bottom: 14px; }
+  .zl-close {
+    float: right; border: none; background: none; font-size: 20px;
+    cursor: pointer; color: var(--c-muted, #77717f); line-height: 1;
+  }
+  .zl-close:hover { color: var(--c-text, #26232f); }
+  .zl-keyrow { margin-bottom: 12px; }
+  .zl-keyrow label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+  .zl-keyrow .zl-why { font-size: 12px; color: var(--c-muted, #77717f); margin-bottom: 4px; }
+  .zl-keyrow input {
+    width: 100%; box-sizing: border-box; padding: 8px 10px;
+    border: 1px solid var(--c-border, #e2e2ea); border-radius: 8px;
+    font-size: 13px; background: var(--c-bg, #faf9fc); color: var(--c-text, #26232f);
+  }
+  .zl-keyrow input:focus { outline: none; border-color: var(--c-primary, #4f46e5); }
+  .zl-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .zl-btn {
+    padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 13.5px;
+  }
+  .zl-btn.primary { background: var(--c-primary, #4f46e5); color: #fff; }
+  .zl-btn.ghost { background: none; border: 1px solid var(--c-border, #e2e2ea); color: var(--c-text, #26232f); }
+  .zl-steps { counter-reset: zl; }
+  .zl-step { display: flex; gap: 12px; margin-bottom: 14px; align-items: flex-start; }
+  .zl-step .zl-num {
+    flex: 0 0 30px; height: 30px; border-radius: 50%;
+    background: var(--c-primary, #4f46e5); color: #fff; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; font-size: 15px;
+  }
+  .zl-step b { font-size: 14px; }
+  .zl-step p { margin: 3px 0 0; font-size: 13px; color: var(--c-muted, #77717f); line-height: 1.6; }
+  .zl-faq details {
+    border: 1px solid var(--c-border, #e2e2ea); border-radius: 10px;
+    padding: 10px 14px; margin-bottom: 8px; font-size: 13.5px;
+  }
+  .zl-faq summary { cursor: pointer; font-weight: 600; }
+  .zl-faq details p { margin: 8px 0 0; color: var(--c-muted, #77717f); line-height: 1.7; }
+  @media print { .hdr-actions, .zl-overlay { display: none !important; } }
+</style>
+
+<!-- ── ① 模型设置（BYOK）────────────────────────────── -->
+<div class="zl-overlay" id="zlSettings">
+  <div class="zl-modal">
+    <button class="zl-close" onclick="closeModal('zlSettings')" title="关闭">×</button>
+    <h3>⚙️ 模型设置</h3>
+    <div class="zl-sub">
+      <b>不填也能正常用</b>——工具默认走免费模型（智谱 GLM-4.7-Flash 等）。
+      填上自己的 Key 后，AI 解读 / 深度审计会优先用你自己的额度，回答风格也随你选的模型走。
+      Key 只保存在<b>你自己的浏览器</b>里，发请求时直接交给本机服务，不经任何第三方转手。
+    </div>
+
+    <div class="zl-keyrow">
+      <label>智谱 GLM（推荐，有永久免费模型）</label>
+      <div class="zl-why">glm-4.7-flash 永久免费，够日常解读用。领 Key：bigmodel.cn → 右上角「API Key」</div>
+      <input type="password" id="settingsKey_zhipu" placeholder="不填 = 用默认免费额度" autocomplete="off">
+    </div>
+    <div class="zl-keyrow">
+      <label>硅基流动（一个 Key 用多家模型）</label>
+      <div class="zl-why">里面有 DeepSeek / GLM / 千问等，注册送额度。领 Key：cloud.siliconflow.cn → 账号 → API 密钥</div>
+      <input type="password" id="settingsKey_sf" placeholder="不填 = 用默认免费额度" autocomplete="off">
+    </div>
+    <div class="zl-keyrow">
+      <label>DeepSeek 官方</label>
+      <div class="zl-why">深度审计质量最好的档位（付费但便宜）。领 Key：platform.deepseek.com</div>
+      <input type="password" id="settingsKey_deepseek" placeholder="填了后 AI 深度审计优先用它" autocomplete="off">
+    </div>
+    <div class="zl-keyrow">
+      <label>阿里云百炼（通义千问）</label>
+      <div class="zl-why">千问全系列。领 Key：bailian.console.aliyun.com → API-KEY 管理</div>
+      <input type="password" id="settingsKey_dashscope" placeholder="不填 = 用默认免费额度" autocomplete="off">
+    </div>
+    <div class="zl-keyrow">
+      <label>Kimi（月之暗面）</label>
+      <div class="zl-why">超长上下文，整篇论文都放得下。领 Key：platform.kimi.com</div>
+      <input type="password" id="settingsKey_kimi" placeholder="填了后长文审计可走 Kimi" autocomplete="off">
+    </div>
+    <div class="zl-keyrow">
+      <label>小米 MiMo</label>
+      <div class="zl-why">新平台，注册有赠送额度。领 Key：platform.xiaomimimo.com</div>
+      <input type="password" id="settingsKey_mimo" placeholder="不填 = 不使用" autocomplete="off">
+    </div>
+
+    <div class="zl-actions">
+      <button class="zl-btn ghost" onclick="clearKeys()">清空全部</button>
+      <button class="zl-btn ghost" onclick="closeModal('zlSettings')">取消</button>
+      <button class="zl-btn primary" onclick="saveKeys()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ② 首次引导（第一次打开自动弹一次）────────────── -->
+<div class="zl-overlay" id="zlOnboard">
+  <div class="zl-modal" style="width:min(560px,96vw);">
+    <button class="zl-close" onclick="closeModal('zlOnboard')" title="关闭">×</button>
+    <h3>👋 第一次用？30 秒看懂这个工具</h3>
+    <div class="zl-sub">一句话：把数据丢进来，它帮你算对、看懂、写好论文的数据部分。</div>
+    <div class="zl-steps">
+      <div class="zl-step">
+        <div class="zl-num">1</div>
+        <div><b>丢数据，先体检</b>
+          <p>把 Excel/CSV 拖进「📊 数据分析」，工具先自动检查数据有没有硬伤（总分对不上、取值越界、重复行……），再告诉你该用什么统计方法，跟着 1→2→3 点几下就出报告和图。</p>
+        </div>
+      </div>
+      <div class="zl-step">
+        <div class="zl-num">2</div>
+        <div><b>论文写完，来核对</b>
+          <p>切到「🔍 论文排查」，把论文初稿和数据一起上传，工具会把论文里写的每个数字（均值、p 值……）用你的数据重算一遍，告诉你哪里对不上。</p>
+        </div>
+      </div>
+      <div class="zl-step">
+        <div class="zl-num">3</div>
+        <div><b>进阶（可选）</b>
+          <p>想要更强的 AI 解读或用自己的大模型？点右上角「⚙️ 模型设置」填自己的 Key 就行。不填也完全能用。</p>
+        </div>
+      </div>
+    </div>
+    <div class="zl-actions">
+      <button class="zl-btn ghost" onclick="closeModal('zlOnboard');openHelp()">看更详细的说明</button>
+      <button class="zl-btn primary" onclick="closeModal('zlOnboard')">明白了，开始用</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ③ 帮助中心（随时从页头打开）──────────────────── -->
+<div class="zl-overlay" id="zlHelp">
+  <div class="zl-modal">
+    <button class="zl-close" onclick="closeModal('zlHelp')" title="关闭">×</button>
+    <h3>📖 使用指南</h3>
+    <div class="zl-sub">都是大白话。还想问的，把问题带给开发的同学就行。</div>
+    <div class="zl-faq">
+      <details>
+        <summary>这工具到底帮我干什么？</summary>
+        <p>三件事：① 数据体检——找出数据里的录入错误和可疑规律；② 统计分析——帮你选对方法、算准数字、看懂结果；③ 论文核查——把你论文里写的数字逐个跟真实计算对一遍。所有统计计算都在你电脑本地完成，结果精确可信。</p>
+      </details>
+      <details>
+        <summary>我的数据会被上传到网上吗？</summary>
+        <p>不会。统计计算 100% 在你电脑本地完成，原始数据不出机器。只有当你主动勾选「AI 深度解读 / AI 深度审计」时，才会把<b>算好的统计结果数字</b>（如均值、p 值）发给大模型让它写解读——发的是结果，不是你的原始数据。</p>
+      </details>
+      <details>
+        <summary>「✨ AI 深度解读」开关是干嘛的？</summary>
+        <p>不勾：报告由内置模板生成，零成本、秒出、永远可用。勾上：额外请一个大模型把结果写成更口语化的解读和写作建议，走免费模型，失败会自动跳回模板版——两种都不会影响统计数字本身。</p>
+      </details>
+      <details>
+        <summary>「🔬 AI 深度审计」和「✨ 深度解读」有什么区别？</summary>
+        <p>解读是给「数据分析」的结果加一段人话说明；审计是「论文排查」里请更强的模型通读你的论文找逻辑和方法问题，耗时约 30-60 秒，建议论文改完最后一稿前用一次。</p>
+      </details>
+      <details>
+        <summary>为什么要填 API Key？填了有什么好处？</summary>
+        <p>不填：工具用自带的免费模型额度，所有人都能用。填了：AI 功能优先消耗<b>你自己的</b>额度，不跟别人抢，还能选自己偏好的模型（GLM / DeepSeek / 千问 / Kimi / MiMo 都支持）。Key 只存在你浏览器里，点右上角「⚙️ 模型设置」随时改、随时清。</p>
+      </details>
+      <details>
+        <summary>统计方法选错了怎么办？</summary>
+        <p>工具按你选的列自动推荐方法，而且每个方法都带「什么时候用」的一句话说明；论文排查还会反过来检查你论文里用的方法跟数据合不匹配（比如 3 组却用了 T 检验）并给出改法。</p>
+      </details>
+      <details>
+        <summary>它会帮我代写论文吗？</summary>
+        <p>不会，这是底线。工具定位是「学术搭子」：帮你算对、看懂、指出问题，输出可核对的数字和证据。任何代写、绕过查重类的请求会被红线拦截。</p>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ── 模型设置（BYOK）：Key 存 localStorage，只在本机浏览器 ──
+  var LS = 'zhilun_keys';
+  // 输入框 id → 请求字段名（与后端 app._BYOK_FIELDS 对齐）
+  var FIELD_MAP = {
+    settingsKey_sf:        'siliconflow_key',
+    settingsKey_zhipu:     'zhipu_key',
+    settingsKey_deepseek:  'deepseek_key',
+    settingsKey_dashscope: 'dashscope_key',
+    settingsKey_kimi:      'kimi_key',
+    settingsKey_mimo:      'mimo_key',
+  };
+
+  window.collectByok = function () {
+    var out = {};
+    try {
+      for (var id in FIELD_MAP) {
+        var el = document.getElementById(id);
+        var v = el ? el.value.trim() : '';
+        if (v) out[FIELD_MAP[id]] = v;
+      }
+    } catch (e) { /* 静默：BYOK 拿不到就不带，走默认额度 */ }
+    return out;
+  };
+
+  function loadKeys() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(LS) || '{}');
+      for (var id in FIELD_MAP) {
+        var el = document.getElementById(id);
+        if (el && saved[FIELD_MAP[id]]) el.value = saved[FIELD_MAP[id]];
+      }
+    } catch (e) { /* 损坏就当没存过 */ }
+  }
+
+  window.saveKeys = function () {
+    var saved = {};
+    var byok = window.collectByok();
+    for (var field in byok) saved[field] = byok[field];
+    try { localStorage.setItem(LS, JSON.stringify(saved)); } catch (e) {}
+    closeModal('zlSettings');
+    toast('模型设置已保存' + (Object.keys(saved).length ? '（' + Object.keys(saved).length + ' 家）' : '（未填 Key，走默认免费额度）'));
+  };
+
+  window.clearKeys = function () {
+    for (var id in FIELD_MAP) {
+      var el = document.getElementById(id);
+      if (el) el.value = '';
+    }
+    try { localStorage.removeItem(LS); } catch (e) {}
+    toast('已清空全部 Key，之后走默认免费额度');
+  };
+
+  // ── 弹窗通用开关 ──
+  window.closeModal = function (id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.remove('on');
+  };
+  window.openSettings = function () { loadKeys(); document.getElementById('zlSettings').classList.add('on'); };
+  window.openHelp = function () { document.getElementById('zlHelp').classList.add('on'); };
+  window.openOnboard = function () { document.getElementById('zlOnboard').classList.add('on'); };
+
+  // 点遮罩关闭 + Esc 关闭
+  document.addEventListener('click', function (e) {
+    if (e.target.classList && e.target.classList.contains('zl-overlay')) e.target.classList.remove('on');
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') document.querySelectorAll('.zl-overlay.on').forEach(function (m) { m.classList.remove('on'); });
+  });
+
+  // 首次访问自动弹引导（记住选择，之后不再打扰）
+  loadKeys();
+  try {
+    if (!localStorage.getItem('zhilun_onboarded')) {
+      localStorage.setItem('zhilun_onboarded', '1');
+      window.openOnboard();
+    }
+  } catch (e) { window.openOnboard(); }
+})();
 </script>
 
 </body>

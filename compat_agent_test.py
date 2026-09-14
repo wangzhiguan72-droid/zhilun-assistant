@@ -18,7 +18,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 假 Key（逗号分隔两个，测轮转）；测试全程不碰真实 API
 os.environ["SILICONFLOW_API_KEY"] = "sf-key-1,sf-key-2"
@@ -26,7 +26,8 @@ os.environ["ZHIPU_API_KEY"] = "zhipu-key-1,zhipu-key-2"
 os.environ.pop("DEEPSEEK_API_KEY", None)
 
 from agents import (PROVIDER_REGISTRY, AgentError, SiliconFlowAgent,
-                    ZhipuAgent, DeepSeekAgent, QwenAgent, Router)
+                    ZhipuAgent, DeepSeekAgent, QwenAgent, MaasAgent, Router,
+                    redact_secrets)
 from agents.openai_compat import parse_keys
 from agents.router import STATE_TO_MODEL, FREE_MODELS
 
@@ -107,31 +108,54 @@ class ScriptedClient:
 
 
 print('=== 1. PROVIDER_REGISTRY 注册完整性 ===')
-check('四平台已注册', set(PROVIDER_REGISTRY) == {"sf", "zhipu", "deepseek", "dashscope"},
-      f'实际: {set(PROVIDER_REGISTRY)}')
+# 注意：不断言"平台集合恰好等于某快照"——平台会随版本增加（mimo / kimi 等），
+# 快照式断言会误报。这里只断言契约：核心平台必须存在，且 MaaS 仍为专属端点。
+_REQUIRED_PLATFORMS = {"sf", "zhipu", "deepseek", "dashscope", "maas"}
+check('核心平台均已注册（含 v0.5.4 MaaS 专属端点）',
+      _REQUIRED_PLATFORMS <= set(PROVIDER_REGISTRY),
+      f'缺失: {_REQUIRED_PLATFORMS - set(PROVIDER_REGISTRY)} 实际: {set(PROVIDER_REGISTRY)}')
 check('deepseek 官方 base_url',
       PROVIDER_REGISTRY["deepseek"].base_url == "https://api.deepseek.com/v1")
 check('dashscope 百炼 base_url',
       PROVIDER_REGISTRY["dashscope"].base_url ==
       "https://dashscope.aliyuncs.com/compatible-mode/v1")
+check('maas 专属端点 base_url + Key 环境变量',
+      PROVIDER_REGISTRY["maas"].base_url.endswith("/compatible-mode/v1")
+      and PROVIDER_REGISTRY["maas"].env_var == "MAAS_API_KEY",
+      f'实际: {PROVIDER_REGISTRY["maas"]}')
 check('router 也注册了 deepseek provider',
       "deepseek" in sys.modules["agents.router"]._PROVIDERS)
 check('router 注册了 dashscope provider（v0.5.2 四平台齐备）',
       "dashscope" in sys.modules["agents.router"]._PROVIDERS)
-check('recommend 链尾位是百炼（第三道保险）',
-      STATE_TO_MODEL["recommend"][-1] == ("dashscope", "qwen3.7-flash", 0.5),
+check('router 注册了 maas provider（v0.5.4 五平台）',
+      "maas" in sys.modules["agents.router"]._PROVIDERS)
+def _tail_is_maas_before_byok(chain):
+    """链尾契约（v1.8）：MaaS 是「免费兜底尾位」；
+    kimi / mimo 是 v1.8 新增的付费 BYOK 尾部备胎，允许排在 MaaS 之后。
+    故断言：kimi/mimo 之前最后一个候选必须是 MaaS。
+    """
+    byok = {"kimi", "mimo"}
+    free_part = [c for c in chain if c[0] not in byok]
+    return bool(free_part) and free_part[-1][0] == "maas"
+
+
+check('recommend 链的免费兜底尾位是 MaaS（v1.8 后允许 BYOK 备胎跟进）',
+      _tail_is_maas_before_byok(STATE_TO_MODEL["recommend"]),
       f'实际: {STATE_TO_MODEL["recommend"]}')
-check('paper_check 链：付费档优先 + 免费兜底（v0.5.3）',
-      STATE_TO_MODEL["paper_check"] == [("deepseek", "deepseek-flash", 0.3),
-                                        ("sf", "deepseek-v4-pro", 0.3),
-                                        ("zhipu", "glm-4.7-flash", 0.3)],
+check('paper_check 链：付费优先 + 免费兜底 + MaaS 免费尾位（v1.8）',
+      # 契约：付费平台在前；免费部分以 MaaS 收尾；新增 BYOK 备胎允许跟进。
+      STATE_TO_MODEL["paper_check"][0][0] in ("deepseek", "sf", "zhipu")
+      and ("deepseek", "deepseek-flash", 0.3) in STATE_TO_MODEL["paper_check"]
+      and ("sf", "deepseek-v4-pro", 0.3) in STATE_TO_MODEL["paper_check"]
+      and _tail_is_maas_before_byok(STATE_TO_MODEL["paper_check"]),
       f'实际: {STATE_TO_MODEL["paper_check"]}')
-check('write_text 链尾位是百炼（v0.5.3）',
-      STATE_TO_MODEL["write_text"][-1] == ("dashscope", "qwen3.7-flash", 0.5),
+check('write_text 链的免费兜底尾位是 MaaS（v1.8）',
+      _tail_is_maas_before_byok(STATE_TO_MODEL["write_text"]),
       f'实际: {STATE_TO_MODEL["write_text"]}')
-check('FREE_MODELS 白名单覆盖三家免费模型',
+check('FREE_MODELS 白名单覆盖各平台免费模型',
       {("zhipu", "glm-4.7-flash"), ("sf", "glm-z1-9b"),
-       ("dashscope", "qwen3.7-flash")} <= set(FREE_MODELS),
+       ("dashscope", "qwen3.7-flash"),
+       ("maas", "qwen-plus-2025-07-28"), ("maas", "glm-5")} <= set(FREE_MODELS),
       f'实际: {FREE_MODELS}')
 
 print()
@@ -284,6 +308,51 @@ try:
     check('QwenAgent 缺 Key 报 AgentError', False)
 except AgentError:
     check('QwenAgent 缺 Key 报 AgentError', True)
+
+print()
+print('=== 11. MaasAgent 专属端点 + Key 防泄露（v0.5.4） ===')
+_FAKE_MAAS = "sk-ws-H.FAKEMAASKEY.FAKEFAKE"
+os.environ["MAAS_API_KEY"] = _FAKE_MAAS
+ma = MaasAgent(model="glm-5")
+check('MaaS base_url 指向专属端点',
+      ma.base_url.endswith("maas.aliyuncs.com/compatible-mode/v1"),
+      f"实际={ma.base_url}")
+check('MaaS 模型别名原样透传（glm-5）', ma.model_name == "glm-5")
+check('MaaS qwen-plus 友好名映射到带日期 ID',
+      MaasAgent(model="qwen-plus").model_name == "qwen-plus-2025-07-28")
+check('MaaS VL 模型名不被硅基流动表改写',
+      MaasAgent(model="qwen3-vl-32b-thinking").model_name == "qwen3-vl-32b-thinking")
+check('MaaS 默认 max_tokens 4096（思考模型）',
+      MaasAgent(model="glm-5").default_max_tokens == 4096)
+ma._build_client = ScriptedClient(ma, [(_FAKE_MAAS, FakeResp("glm ok", usage=FakeUsage(cached=512)))])
+out = ma.complete("hi")
+check('MaaS 调用 + usage 采集', out == "glm ok" and ma.last_usage["cached_tokens"] == 512)
+check('MaaS 空内容抛 AgentError（思考 token 耗尽保护）',
+      MaasAgent(model="glm-5").__class__ is not None)
+_empty = MaasAgent(model="glm-5")
+_empty._build_client = ScriptedClient(_empty, [(_FAKE_MAAS, FakeResp(""))])
+try:
+    _empty.complete("hi")
+    check('MaaS 空内容抛 AgentError', False)
+except AgentError:
+    check('MaaS 空内容抛 AgentError', True)
+# —— Key 防泄露三连 ——
+check('repr 不含 Key', _FAKE_MAAS not in repr(ma))
+check('repr 不含私有端点地址', "maas.aliyuncs.com" not in repr(ma))
+_err = AgentError(f"调用失败：Authorization: Bearer {_FAKE_MAAS} 无效")
+check('AgentError.__str__ 自动擦除 Key', _FAKE_MAAS not in str(_err),
+      f"实际={str(_err)[:80]}")
+check('redact 按形态兜底擦 sk- Key',
+      "sk-abcdefghijklmnop" not in redact_secrets("key=sk-abcdefghijklmnop"))
+check('redact 擦智谱式 hex.Key',
+      "0123456789abcdef0123456789abcdef.AAAA1111" not in
+      redact_secrets("k=0123456789abcdef0123456789abcdef.AAAA1111"))
+del os.environ["MAAS_API_KEY"]
+try:
+    MaasAgent(model="glm-5")
+    check('MaasAgent 缺 Key 报 AgentError', False)
+except AgentError:
+    check('MaasAgent 缺 Key 报 AgentError', True)
 
 print()
 print(f'====== 结果：{PASS} PASS / {FAIL} FAIL ======')

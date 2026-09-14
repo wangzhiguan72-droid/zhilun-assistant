@@ -137,6 +137,16 @@ def _auto_pick_group_value(paper_methods: list[dict], columns: list[dict],
         items = matched_items if len(matched_items) >= 2 else numeric_items
         return None, "|".join(items)
 
+    # v1.1 重复测量优先于配对 T：论文若声称"重复测量/被试内/多时间点"，
+    # 需要 ≥3 个数值列做时间点（配对 T 只吃 2 列，不足以表达该设计）。
+    # 优先用论文匹配到的数值列，其余按列顺序补齐；用 | 连接供下游拆分。
+    if "repeated_measures_anova" in method_keys and len(numeric_items) >= 3:
+        ordered = [n for n in matched_items if n in numeric_items]
+        rest = [n for n in numeric_items if n not in ordered]
+        cols = (ordered + rest)[:12]          # 上限 12 个时间点，避免过宽
+        if len(cols) >= 3:
+            return None, "|".join(cols)
+
     if ("independent_t" in method_keys or "paired_t" in method_keys or "anova" in method_keys) \
             and cat and cont:
         group = (matched_cat[0] if matched_cat else sorted(cat, key=lambda c: c["n_unique"])[0]["name"])
@@ -299,6 +309,20 @@ def _run_real_analysis(df: pd.DataFrame, group_col: str | None, value_col: str |
                         "p_a": s["p_a"], "p_b": s["p_b"], "p_ab": s["p_ab"],
                         "eta2_a": s["eta2_a"], "eta2_b": s["eta2_b"],
                         "eta2_ab": s["eta2_ab"]})
+        elif method_key == "repeated_measures_anova":
+            # v1.1 重复测量真跑：时间点列由 _auto_pick_group_value 用 | 打包在 value_col
+            from app import run_repeated_measures_anova
+            time_cols = [c for c in (value_col or "").split("|") if c]
+            time_cols = [c for c in time_cols if c in df.columns]
+            if len(time_cols) < 3:
+                raise ValueError("重复测量方差分析需要至少 3 个时间点列（数值列）。")
+            res = run_repeated_measures_anova(df, time_cols)
+            s = res["summary"]
+            out.update({"ok": True, "n": s["n"], "k": s["k"],
+                        "f": s["f"], "p": s["p"], "eta2": s["eta2"],
+                        "gg_epsilon": s["gg_epsilon"],
+                        "mauchly_p": s["mauchly_p"],
+                        "sphericity_ok": s["sphericity_ok"]})
         else:
             # v0.9.2：识别层认得回归/双因素/Spearman 等方法，但计算层未实装
             friendly = {
@@ -307,7 +331,6 @@ def _run_real_analysis(df: pd.DataFrame, group_col: str | None, value_col: str |
                 "one_sample_t": "单样本 T 检验",
                 "non_parametric": "非参数检验",
                 "kruskal_wallis": "Kruskal-Wallis 检验",
-                "repeated_measures_anova": "重复测量方差分析",
             }
             label = friendly.get(method_key, method_key)
             out["error"] = (
@@ -322,6 +345,307 @@ def _run_real_analysis(df: pd.DataFrame, group_col: str | None, value_col: str |
 # -----------------------------------------------------------------------------
 # 3) 比对声称 vs 实际
 # -----------------------------------------------------------------------------
+# ===========================================================================
+# GRIM 交叉核查（v2.1 · 论文侧数据取证）
+# ===========================================================================
+# 一句话：论文写「均值 = 3.47，样本 30 人」，而问卷是整数计分 ——
+# 那么 30 × 3.47 = 104.1，不可能是任何 30 个整数之和。GRIM 检验就查这件事。
+#
+# 与 `datacheck` 的分工：
+#   datacheck 查「数据文件内部」的矛盾；这里查「论文声称值 × 样本量」的矛盾。
+#   两边复用同一个纯函数 `datacheck.grim_check`，保证口径一致。
+#
+# 红线（与 datacheck 同源）：只说「该均值在给定样本量下不可能出现」，
+# **绝不推论造假** —— 可能是四舍五入、加权、剔除缺失，或 n 指的是别的口径。
+
+
+# ---------------------------------------------------------------------------
+# v2.11 · P3 论文表格数字 vs 原始数据交叉核查
+# ---------------------------------------------------------------------------
+_NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
+_MSD_RE = re.compile(r"^(-?\d+(?:\.\d+)?)\s*[±]\s*(\d+(?:\.\d+)?)$")
+_TABLE_MAX_TABLES = 3   # 每份论文最多核对 3 张表（防大论文刷屏）
+_TABLE_MAX_ROWS = 6     # 每张表最多核对 6 行
+
+
+def _parse_table_row(cells: list[str]) -> dict[str, Any] | None:
+    """把表格数据行解析成 {label, n, mean, sd}（解析不出返回 None）。
+
+    认得的行形（label 之外的单元格）：
+        n | M | SD   → 3 个数：整数 n + 两个小数
+        n | M        → 2 个数：整数 n + 一个小数
+        M | SD       → 2 个数：两个小数
+        M±SD         → 1 个「M±SD」合并格
+    """
+    label: str | None = None
+    nums_raw: list[str] = []
+    for c in cells:
+        t = (c or "").strip()
+        if not t:
+            continue
+        m = _MSD_RE.match(t)
+        if m:
+            nums_raw.extend([m.group(1), m.group(2)])
+            continue
+        if _NUM_RE.match(t):
+            nums_raw.append(t)
+        elif label is None and len(t) <= 20 and not t.startswith(("表", "Table", "注")):
+            label = t
+    if label is None or len(nums_raw) < 2:
+        return None
+    try:
+        vals = [float(x) for x in nums_raw]
+    except ValueError:
+        return None
+
+    def _is_n(v: float, raw: str) -> bool:
+        return "." not in raw and 1 <= v <= 1000
+
+    rec: dict[str, Any] = {"label": label, "n": None, "mean": None, "sd": None}
+    if len(vals) == 2 and not _is_n(vals[0], nums_raw[0]):
+        rec["mean"], rec["sd"] = vals[0], vals[1]
+    else:
+        idx = 0
+        if idx < len(vals) and _is_n(vals[idx], nums_raw[idx]):
+            rec["n"] = int(vals[idx])
+            idx += 1
+        if idx < len(vals):
+            rec["mean"] = vals[idx]
+            idx += 1
+        if idx < len(vals):
+            rec["sd"] = vals[idx]
+    if rec["mean"] is None and rec["n"] is None:
+        return None
+    return rec
+
+
+def _find_group_column(labels: set[str], df: pd.DataFrame,
+                       exclude: str | None = None) -> str | None:
+    """找「唯一值集合与表格组标签完全一致」的列——**唯一候选才返回**。
+
+    这是表格交叉核查的核心误报防线：两列都可能匹配时不猜（返回 None）。
+    """
+    if not labels:
+        return None
+    hits: list[str] = []
+    for col in df.columns:
+        if not isinstance(col, str) or col == exclude:
+            continue
+        s = df[col].dropna()
+        if s.nunique() != len(labels) or s.nunique() > 10:
+            continue
+        vals = {str(v).strip() for v in s.unique()}
+        if vals == labels:
+            hits.append(col)
+    return hits[0] if len(hits) == 1 else None
+
+
+def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
+                        value_col: str | None = None) -> dict[str, Any]:
+    """把论文 docx 里的描述统计表和原始数据逐格核对（v2.11 · P3）。
+
+    返回：
+        mismatches: 不一致条目（进 comparisons / 建议，结构与 _compare_quantity 兼容）
+        notes:      过程说明（核对了几张表、哪些没核成——透明但安静）
+        checked:    实际比对的格数（n / mean / sd 各算一格）
+    核对口径：
+        n    → 分组计数，必须相等（硬指标，零歧义）
+        mean → 分组均值，|差| ≤ max(0.011, 0.5%×论文值) 视为舍入一致
+        sd   → 分组标准差，同上
+    **红线**：分组标签对不到唯一数据列的表只写 note，绝不硬猜硬报。
+    """
+    mismatches: list[dict[str, Any]] = []
+    notes: list[str] = []
+    checked = 0
+
+    for ti, rows in enumerate((tables or [])[:_TABLE_MAX_TABLES], 1):
+        parsed: list[dict[str, Any]] = []
+        for cells in rows[1:]:  # 第一行当表头跳过
+            rec = _parse_table_row(cells)
+            if rec is not None:
+                parsed.append(rec)
+            if len(parsed) >= _TABLE_MAX_ROWS:
+                break
+        if len(parsed) < 2:
+            continue
+        labels = {r["label"] for r in parsed}
+        gcol = _find_group_column(labels, df, exclude=value_col)
+        if gcol is None:
+            notes.append(f"第 {ti} 张表的分组（{'、'.join(sorted(labels))}）"
+                         "没有唯一对应的数据列，未核对。")
+            continue
+
+        for r in parsed:
+            mask = df[gcol].astype(str).str.strip() == r["label"]
+            sub = df.loc[mask]
+            if sub.empty:
+                continue
+            if r["n"] is not None:
+                checked += 1
+                real_n = int(len(sub))
+                if real_n != r["n"]:
+                    mismatches.append({
+                        "status": "mismatch", "kind": "table_n",
+                        "paper": f"表格「{r['label']}」行 n={r['n']}",
+                        "real": f"按列「{gcol}」实算 n={real_n}",
+                        "diff": str(r["n"] - real_n),
+                    })
+            if value_col and value_col in df.columns:
+                nums = pd.to_numeric(sub[value_col], errors="coerce").dropna()
+                if nums.empty:
+                    continue
+                if r["mean"] is not None:
+                    checked += 1
+                    real_m = float(nums.mean())
+                    tol = max(0.011, abs(r["mean"]) * 0.005)
+                    if abs(real_m - r["mean"]) > tol:
+                        mismatches.append({
+                            "status": "mismatch", "kind": "table_mean",
+                            "paper": (f"表格「{r['label']}」行 M={r['mean']:g}"
+                                      f"（列「{value_col}」）"),
+                            "real": f"实算 M={real_m:.3f}",
+                            "diff": f"{abs(real_m - r['mean']):.3f}",
+                        })
+                if r["sd"] is not None:
+                    checked += 1
+                    real_sd = float(nums.std())
+                    tol = max(0.011, abs(r["sd"]) * 0.005)
+                    if abs(real_sd - r["sd"]) > tol:
+                        mismatches.append({
+                            "status": "mismatch", "kind": "table_sd",
+                            "paper": (f"表格「{r['label']}」行 SD={r['sd']:g}"
+                                      f"（列「{value_col}」）"),
+                            "real": f"实算 SD={real_sd:.3f}",
+                            "diff": f"{abs(real_sd - r['sd']):.3f}",
+                        })
+        notes.append(f"第 {ti} 张表按列「{gcol}」分组核对完成。")
+
+    return {"mismatches": mismatches, "notes": notes, "checked": checked}
+
+
+def grim_cross_check(paper_quantities: list[dict], n: int, *,
+                     items: int = 1, decimals: int = 2) -> list[dict[str, Any]]:
+    """对论文里声称的每个「均值」做 GRIM 检验。
+
+    入参：
+        paper_quantities: `extract_paper.extract_quantities` 的输出
+        n:                真实样本量（**由数据算出，不采信论文写的 n** ——
+                           论文写的 n 本身可能就是错的，用实算值更硬）
+    返回：
+        [{"kind": "grim", "mean": float, "n": int, "passed": bool,
+          "raw": str, "product": float, "explain": str}, ...]
+    """
+    from datacheck import grim_check  # 延迟导入：与 datacheck 共用同一口径
+
+    out: list[dict[str, Any]] = []
+    try:
+        n_int = int(n)
+    except (TypeError, ValueError):
+        return out
+    if n_int <= 0:
+        return out
+
+    for q in paper_quantities or []:
+        if q.get("kind") != "mean":
+            continue
+        try:
+            mean = float(q.get("value"))
+        except (TypeError, ValueError):
+            continue
+        passed = bool(grim_check(mean, n_int, items=items, decimals=decimals))
+        prod = mean * n_int
+        if passed:
+            explain = (f"n={n_int} 时，{mean:g} × {n_int} = {prod:g}，"
+                       f"与整数计分一致 —— 该均值**可能**出现。")
+        else:
+            explain = (f"n={n_int} 时，{mean:g} × {n_int} = {prod:g}，不是整数 —— "
+                       f"若每个得分都是整数，这个均值**不可能**由 {n_int} 个观测得到。")
+        out.append({
+            "kind": "grim", "mean": mean, "n": n_int, "passed": passed,
+            "raw": str(q.get("raw", "")), "product": round(prod, 6),
+            "explain": explain,
+        })
+    return out
+
+
+def grimmer_cross_check_reported(paper_quantities: list[dict], n: int,
+                                 *, items: int = 1,
+                                 value_range: tuple[int, int] | None = None
+                                 ) -> list[dict[str, Any]]:
+    """对论文里声称的 (均值, 标准差, 样本量) 三元组做 GRIMMER 检验。
+
+    与 `grim_cross_check` 的区别：GRIM 只查均值，GRIMMER 进一步查**标准差**
+    —— 即使均值可能，SD 也可能落在整数数据不可达的区间里。
+
+    做法：把同一条上下文里出现的 `mean` 与 `sd` 配对（论文通常写成
+    "M = 3.47, SD = 0.52"），配合**实算样本量**送 `grimmer.grimmer_check`。
+
+    入参：
+        paper_quantities: `extract_paper.extract_quantities` 的输出
+        n:                真实样本量（实算，不采信论文写的 n）
+        value_range:      单题取值域 (lo, hi)，如 Likert 量表传 (1, 5)。
+                          **强烈建议传** —— 不传时 SD 上界会被高估 → 漏报。
+    返回：
+        [{"kind": "grimmer", "mean", "sd", "n", "passed",
+          "raw", "sd_min", "sd_max", "explain"}, ...]
+    """
+    from grimmer import grimmer_check  # 延迟导入：与 grimmer 共用同一口径
+
+    out: list[dict[str, Any]] = []
+    try:
+        n_int = int(n)
+    except (TypeError, ValueError):
+        return out
+    if n_int <= 0:
+        return out
+
+    lo, hi = (value_range if value_range else (None, None))
+
+    # --- 配对：把上下文相邻的 mean 与 sd 组成三元组 ---
+    means = [q for q in (paper_quantities or []) if q.get("kind") == "mean"]
+    sds = [q for q in (paper_quantities or []) if q.get("kind") == "sd"]
+    if not means or not sds:
+        return out
+
+    pairs: list[tuple[dict, dict]] = []
+    for mq in means:
+        mctx = str(mq.get("context", ""))
+        # 优先找同一上下文里的 SD
+        same_ctx = [sq for sq in sds
+                    if str(sq.get("context", "")) == mctx and mctx]
+        if same_ctx:
+            pairs.append((mq, same_ctx[0]))
+        elif len(sds) == len(means):
+            # 退而求其次：一一对应（按出现顺序）
+            idx = means.index(mq)
+            if idx < len(sds):
+                pairs.append((mq, sds[idx]))
+
+    for mq, sq in pairs:
+        try:
+            mean = float(mq.get("value"))
+            sd = float(sq.get("value"))
+        except (TypeError, ValueError):
+            continue
+        res = grimmer_check(mean, sd, n_int, items=items, lo=lo, hi=hi)
+        if not res.get("applicable"):
+            continue
+        passed = bool(res.get("possible"))
+        explain = (
+            f"n={n_int} 时，(均值 {mean:g}, SD {sd:g}) 落在整数数据的可达区间 "
+            f"[{res['sd_min']:.4f}, {res['sd_max']:.4f}] 内 —— **可能**出现。"
+            if passed else
+            f"n={n_int} 时，{res['reason']}"
+        )
+        out.append({
+            "kind": "grimmer", "mean": mean, "sd": sd, "n": n_int,
+            "passed": passed, "raw": f"{mq.get('raw','')} / {sq.get('raw','')}",
+            "sd_min": res["sd_min"], "sd_max": res["sd_max"],
+            "explain": explain,
+        })
+    return out
+
+
 def _compare_quantity(paper_q: dict, real: dict) -> dict[str, Any]:
     """单条声称统计量 vs 实际跑出来的同类型量。"""
     kind = paper_q["kind"]
@@ -372,6 +696,99 @@ def _compare_quantity(paper_q: dict, real: dict) -> dict[str, Any]:
     return {"status": status, "kind": kind,
             "paper": paper_q["raw"], "real": f"{real_val:.3f}",
             "diff": f"{diff:.3f}"}
+
+
+# -----------------------------------------------------------------------------
+# 3.5) 单条比对摘要（v1.6 · ②审计对话的数据底座）
+# -----------------------------------------------------------------------------
+# 目的：把「一条 comparison」压缩成一小段**自包含、可审、无原始数据**的文本，
+# 作为 /api/audit_chat 唯一的上下文来源。
+# 铁律②：这里产出的文本不会包含任何 df 单元格 / 原始观测，只有统计量本身。
+_STATUS_CN = {
+    "ok": "一致",
+    "minor_diff": "略有出入",
+    "mismatch": "不一致",
+    "unknown": "无法比对",
+    "no_real": "未能复算",
+}
+
+# 统计量 → 中文名（供解释时引用）
+_KIND_CN = {
+    "p": "p 值", "t": "t 值", "F": "F 值", "r": "相关系数 r",
+    "chi2": "卡方值 χ²", "df": "自由度", "r2": "R²",
+    "pseudo_r2": "伪 R²", "beta": "回归系数 β", "or": "优势比 OR",
+    "alpha": "信度系数 α", "u": "U 统计量", "w": "W 统计量",
+}
+
+
+def _attach_comparison_summaries(comparisons: list[dict], real: dict,
+                                 methods: list[dict]) -> list[dict]:
+    """就地给每条 comparison 挂 summary 子字典；返回同一列表。
+
+    summary 字段（前端 / 对话端点共用）：
+        method_key : 论文声称的方法 key（可能为空）
+        method_cn  : 方法中文名（可能为空）
+        kind_cn    : 统计量中文名
+        status     : 原样状态
+        status_cn  : 中文状态
+        paper      : 论文写的值（字符串）
+        real       : 实算的值（字符串）
+        diff       : 差值（字符串或 None）
+        verdict    : 一句话人话结论（模板，零 LLM）
+        hint       : 可选的方向性提示（为什么会不一致）
+    """
+    method_key = real.get("method") or ""
+    # 论文声称的方法：取第一条（通常也是唯一一条）用于措辞
+    paper_key = ""
+    if methods:
+        first = methods[0]
+        paper_key = first.get("key") or first.get("method") or ""
+    method_cn = _xai_method_label(method_key or paper_key) if (
+        method_key or paper_key) else ""
+
+    out: list[dict] = []
+    for c in comparisons or []:
+        st = c.get("status", "unknown")
+        kind = c.get("kind") or ""
+        kind_cn = _KIND_CN.get(kind, kind or "统计量")
+        paper_s = c.get("paper")
+        real_s = c.get("real")
+        diff_s = c.get("diff")
+
+        if st == "ok":
+            verdict = f"论文写的 {kind_cn} 与实算结果一致，这项没问题。"
+            hint = ""
+        elif st == "minor_diff":
+            verdict = (f"{kind_cn} 与实算有出入（论文 {paper_s} / 实算 {real_s}），"
+                       f"差 {diff_s}——可能是四舍五入，建议核对原始输出。")
+            hint = "差值处于四舍五入范围，通常不算错误，但最好与原软件输出核对一遍。"
+        elif st == "mismatch":
+            verdict = (f"{kind_cn} 对不上：论文写 {paper_s}，用你上传的数据实算是 "
+                       f"{real_s}（差 {diff_s}）。")
+            hint = ("常见原因：①论文用的样本/分组与本次上传的不完全一致；"
+                    "②缺失值处理方式不同（删行 vs 填补）；"
+                    "③论文上报的是别的统计量或做了手动换算。")
+        elif st == "no_real":
+            verdict = "这次没能复算成功，建议先确认数据列选对了。"
+            hint = c.get("reason") or ""
+        else:  # unknown
+            verdict = f"这条（{kind_cn}）无法比对——论文值或实算值缺一个。"
+            hint = ""
+
+        c["summary"] = {
+            "method_key": method_key or paper_key,
+            "method_cn": method_cn,
+            "kind_cn": kind_cn,
+            "status": st,
+            "status_cn": _STATUS_CN.get(st, st),
+            "paper": paper_s,
+            "real": real_s,
+            "diff": diff_s,
+            "verdict": verdict,
+            "hint": hint,
+        }
+        out.append(c)
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -575,6 +992,40 @@ def _generate_suggestions(real: dict, paper_methods: list[dict],
                     f"实测 Levene 方差齐性检验 p = {real['levene_p']:.4f} < 0.05，"
                     "单元格方差不齐，F 检验可能偏乐观，建议对因变量做变换或改用稳健方法。"
                 )
+
+    if "repeated_measures_anova" in method_keys:
+        out.append(
+            "重复测量 ANOVA 必须报告**球形度检验（Mauchly's W）**结果；"
+            "若球形度假定不成立，应报告 Greenhouse-Geisser 校正后的自由度与 p 值，"
+            "而不是未校正的 F 检验结果。"
+        )
+        out.append(
+            "被试内设计**不能**用普通单因素/双因素 ANOVA 代替——后者会把"
+            "「被试」的个体差异误并入误差项，导致 F 值被人为放大、p 值偏小。"
+        )
+        if real.get("ok"):
+            if real.get("sphericity_ok") is False:
+                eps = real.get("gg_epsilon")
+                eps_txt = f"（ε = {eps:.3f}）" if eps is not None else ""
+                out.append(
+                    f"实测球形度假定**不成立**{eps_txt}：论文报告 p 值时"
+                    "必须使用 Greenhouse-Geisser 校正，否则会高估显著性。"
+                )
+            elif real.get("sphericity_ok") is True:
+                out.append(
+                    "实测球形度假定成立，可直接报告未校正的 F 检验结果，"
+                    "但建议在方法部分说明已做 Mauchly 检验。"
+                )
+            if real.get("f") is not None and real.get("p") is not None:
+                out.append(
+                    f"实测时间/条件主效应：F = {real['f']:.3f}，p = {real['p']:.4f}"
+                    + (f"，偏 η² = {real['eta2']:.3f}" if real.get("eta2") is not None else "")
+                    + "。请核对该值与论文所报是否一致。"
+                )
+            out.append(
+                "建议绘制各时间点的均值折线图（带标准误误差条），"
+                "并报告事后两两比较的 Bonferroni 校正 p 值与效应量（Cohen's d_z）。"
+            )
         out.append(
             "若同一批被试在多水平 / 多时间点上重复测量，应改用重复测量 ANOVA"
             "（本工具后续版本支持），而非独立样本双因素 ANOVA。"
@@ -626,7 +1077,34 @@ _METHOD_ALIASES = {
     "alpha": "cronbach_alpha", "克隆巴赫": "cronbach_alpha", "内部一致性": "cronbach_alpha",
     # v1.1 双因素
     "双因素": "two_way_anova", "two-way": "two_way_anova",
+    # v1.1 重复测量
+    "重复测量": "repeated_measures_anova", "被试内": "repeated_measures_anova",
+    "组内设计": "repeated_measures_anova", "重复测量方差分析": "repeated_measures_anova",
+    "repeated measures": "repeated_measures_anova", "rm-anova": "repeated_measures_anova",
+    "rm anova": "repeated_measures_anova",
 }
+
+# 论文声称多方法时的"真跑"优先级（列表顺序 = 优先级，靠前者先跑）。
+# 取值理由：
+#   - cronbach_alpha 优先：信度是"量表整体"分析，独立可跑，与其它方法不冲突
+#   - repeated_measures_anova 次之：被试内设计需 ≥3 列，优先于只会吃 2 列的配对 T
+#   - 回归类先于方差类：回归能给出更多可对比统计量（R²/F/t）
+#   - 非参数垫底：参数方法能满足时核查价值更高
+# v1.3：从 _run_real_analysis 的局部变量提升为模块级常量，供 registry_test 断言覆盖度。
+_METHOD_PRIORITY = [
+    "cronbach_alpha",           # 信度 = 量表整体，独立可跑，优先
+    "repeated_measures_anova",  # 被试内设计，需 ≥3 列；优先于配对 T
+    "linear_regression",
+    "logistic_regression",
+    "two_way_anova",
+    "independent_t",
+    "anova",
+    "paired_t",
+    "correlation",
+    "chi_square",
+    "mann_whitney",
+    "wilcoxon",
+]
 
 # 变量别名 → 关键词集合（任一命中即视为匹配）
 _VAR_FILTER_ALIASES = {
@@ -799,12 +1277,17 @@ def apply_user_directive(paper_claims: dict[str, Any], real: dict[str, Any],
 # -----------------------------------------------------------------------------
 def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
                         columns: list[dict[str, Any]],
-                        directive: str = "") -> dict[str, Any]:
+                        directive: str = "",
+                        paper_tables: list[list[list[str]]] | None = None) -> dict[str, Any]:
     """paper_claims 期望包含 keys: methods, quantities, variables, raw_text（可选）
 
     directive（v0.4 新增）：用户输入的过滤指令字符串，例如
       "只看 T 检验 且 p<0.05" / "只看男组" / ""（不过滤）
     传入后报告会按指令过滤；空串等价于不过滤。
+
+    paper_tables（v2.11 · P3 新增）：docx 结构化表格
+      （extract_paper.read_paper_tables 的输出）。非空时对描述统计表
+      逐格核对（组标签匹配到唯一数据列才核对，n/mean/sd）。
     """
     methods = paper_claims.get("methods", [])
     quantities = paper_claims.get("quantities", [])
@@ -832,19 +1315,8 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         # v1.1：方法选择不再简单取 methods[0]，而是优先挑"能真跑且统计量可对比"的方法。
         # 背景：一篇论文常同时声称多种方法（如信度 + T 检验），methods[0] 只是
         # 文本中最早出现的那句，未必是核查价值最高的。这里给出显式优先级。
-        _METHOD_PRIORITY = [
-            "cronbach_alpha",        # 信度 = 量表整体，独立可跑，优先
-            "linear_regression",
-            "logistic_regression",
-            "two_way_anova",
-            "independent_t",
-            "anova",
-            "paired_t",
-            "correlation",
-            "chi_square",
-            "mann_whitney",
-            "wilcoxon",
-        ]
+        # v1.3：提升为模块级常量 `_METHOD_PRIORITY`（定义见文件上方），
+        # 便于 registry_test.py 做"注册表 ↔ 优先级表"覆盖度断言。
         claimed_keys = [m["method_key"] for m in methods]
         method_key = next(
             (k for k in _METHOD_PRIORITY if k in claimed_keys),
@@ -861,8 +1333,61 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     else:
         comparisons = [{"status": "no_real", "reason": real.get("error")}]
 
+    # 3.5) v2.1 GRIM 交叉核查：论文声称的均值 × 真实样本量 → 这个均值可能出现吗？
+    #      样本量取**实算值**（不采信论文写的 n）：论文里的 n 本身可能就是错的。
+    grim = grim_cross_check(quantities, int(len(df)))
+    # 3.6) v2.10 GRIMMER 交叉核查：进一步查 (均值, 标准差, n) 三元组是否可能。
+    #      只在论文同时写了 mean 与 sd 时才产出（没写就不制造噪音）。
+    grimmer = grimmer_cross_check_reported(quantities, int(len(df)))
+    # 3.7) v2.11 P3 表格交叉核查：docx 描述统计表 vs 按同样分组实算。
+    #      标签匹配不到唯一数据列的表只记 note，绝不硬猜硬报。
+    table_check = compare_table_stats(paper_tables, df, value_col=value_col)
+    # 3.8) v2.12 P3 补充：**文本形态**的表格核对（Markdown 表 / docx 转文本的管道行）。
+    #      compare_table_stats 吃的是 docx 结构化表格；.md 论文、以及从文本流
+    #      进来的管道表它看不到。table_check 按"行标签 → 数据列名"直接配对，
+    #      容差按论文报告位数动态定（写 60.90 用 0.005，写 60.9 用 0.05）。
+    #      两者互补、互不覆盖：各自只在解析到表时才产出内容。
+    from table_check import (  # 延迟导入：与 table_check 共用同一口径
+        render_table_section, table_cross_check,
+    )
+    table_check_text = table_cross_check(paper_claims.get("raw_text", "") or "", df)
+
     # 4) 改进建议
     suggestions = _generate_suggestions(real, methods, quantities)
+    # 4.05) GRIM 未通过 → 直接进建议列表（用户最容易看到的地方）
+    for g in grim:
+        if not g["passed"]:
+            suggestions.append(
+                f"[数据体检] 论文写的均值 {g['mean']:g}（原文「{g['raw']}」）在 n={g['n']} 下"
+                f"不可能由整数计分得到（{g['mean']:g} × {g['n']} = {g['product']:g}），"
+                f"请核对样本量口径（是否剔除缺失 / 分组报告）或计分方式。"
+            )
+    # 4.06) GRIMMER 未通过 → 同样直接进建议
+    for g in grimmer:
+        if not g["passed"]:
+            suggestions.append(
+                f"[数据体检] 论文写的「{g['raw']}」在 n={g['n']} 下不可能："
+                f"{g['explain']} 请核对该组的标准差与样本量口径。"
+            )
+    # 4.07) v2.11 P3 表格核对不一致 → 直接进建议（用户最容易看到）
+    for tm in table_check["mismatches"]:
+        suggestions.append(
+            f"[表格核对] {tm['paper']}，但{tm['real']}。"
+            "论文表格数字与你的数据对不上，请核对该行口径"
+            "（样本范围 / 剔除缺失 / 分组定义）。"
+        )
+    # 4.08) v2.12 P3 文本表核对不一致 → 同样进建议
+    for tm in table_check_text.get("mismatches", []):
+        kind_cn = "均值" if tm["kind"] == "mean" else "标准差"
+        suggestions.append(
+            f"[表格核对] 表格「{tm['table'] or tm['label']}」行的{kind_cn}"
+            f"写的是 {tm['raw']}，用原始数据实算（列「{tm['column']}」，n={tm['n']}）"
+            f"得到 {tm['real']:.4f}，相差 {tm['diff']:.4f}（超出容差 {tm['tol']:g}）。"
+            "请核对是否换过数据、复制错行，或该行样本量口径不同。"
+        )
+    # 4.1) v1.5 ③人话解释卡片：结构化 explanations 与 suggestions 并行输出
+    #      （suggestions 保持 list[str] 原样，旧前端 / 报告正文不受影响）
+    explanations = _explain_suggestions(real, methods, quantities, columns)
 
     # 4.5 应用用户指令过滤（v0.4）
     applied_directive = directive.strip()
@@ -882,6 +1407,15 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     if applied_directive:
         var_names_kept = {v["name"] for v in variables}
         matched = [m for m in matched if m["paper_var"] in var_names_kept]
+
+    # 4.9) v1.6 ②审计对话：给每条 comparison 补一个 summary 子字典，
+    #      供 /api/audit_chat 单条问答直接取用（**只喂这一小段给 LLM，
+    #      绝不传 df / 原始数据**，铁律②）。
+    #      放在指令过滤之后，保证用户看到的条目与可追问的条目一致。
+    #      v2.11：表格核对的不一致条目也在这里合并（不受指令过滤影响——
+    #      它们是另一类核查），同样能被追问。
+    comparisons = comparisons + table_check["mismatches"]
+    comparisons = _attach_comparison_summaries(comparisons, real, methods)
 
     # 5) 渲染 Markdown
     md_lines: list[str] = []
@@ -1024,6 +1558,75 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     else:
         md_lines.append("没有可对比的统计量（论文未给出具体数值，或实际跑失败）。")
 
+    # 5.5b GRIM 一致性检验（v2.1 · 论文侧数据取证）
+    #      只在论文确实写了"均值"时才出现 —— 没写就不制造噪音。
+    if grim:
+        md_lines.append("\n**GRIM 一致性检验（均值 × 样本量是否可能）：**\n")
+        md_lines.append("| 论文写法 | 均值 | 实算样本量 n | 均值 × n | 结论 |")
+        md_lines.append("| --- | ---: | ---: | ---: | --- |")
+        for g in grim:
+            flag = "✅ 可能" if g["passed"] else "🔴 不可能"
+            md_lines.append(f"| {g['raw']} | {g['mean']:g} | {g['n']} | {g['product']:g} | {flag} |")
+        failed = [g for g in grim if not g["passed"]]
+        if failed:
+            md_lines.append(
+                f"\n> ⚠️ 有 {len(failed)} 个均值在实算样本量下**不可能**出现。请核对："
+                "样本量口径（是否剔除缺失 / 分组报告）、计分粒度、或是否存在四舍五入。"
+                "**这不等于造假**，只说明这个数字需要解释。"
+            )
+
+    # 5.5c GRIMMER 一致性检验（v2.10 · 查标准差是否可能）
+    #       只在论文同时写了均值与标准差时才出现。
+    if grimmer:
+        md_lines.append("\n**GRIMMER 一致性检验（均值 + 标准差 × 样本量是否可能）：**\n")
+        md_lines.append("| 论文写法 | 均值 | SD | n | 可达 SD 区间 | 结论 |")
+        md_lines.append("| --- | ---: | ---: | ---: | --- | --- |")
+        for g in grimmer:
+            flag = "✅ 可能" if g["passed"] else "🔴 不可能"
+            md_lines.append(
+                f"| {g['raw']} | {g['mean']:g} | {g['sd']:g} | {g['n']} | "
+                f"[{g['sd_min']:.4f}, {g['sd_max']:.4f}] | {flag} |")
+        failed_g = [g for g in grimmer if not g["passed"]]
+        if failed_g:
+            md_lines.append(
+                f"\n> ⚠️ 有 {len(failed_g)} 组「均值 + 标准差」在实算样本量下**不可能**。"
+                "请核对：该组的样本量口径、计分粒度、取值域（如 Likert 1–5）、"
+                "或是否存在四舍五入 / 手算错误。"
+                "**这不等于造假**，只说明这组数字需要解释。"
+            )
+
+    # 5.5d 论文表格交叉核对（v2.11 · P3：docx 描述统计表 vs 原始数据）
+    #      有 docx 表格才出现本节；没核成的表也如实说明（透明但安静）。
+    if paper_tables:
+        md_lines.append("\n**表格交叉核对（论文 docx 表格 vs 你的数据）：**\n")
+        if table_check["checked"] == 0:
+            md_lines.append(
+                "未找到可核对的表格行（需要形如「组别 | n | M | SD」的描述统计表，"
+                "且分组标签与数据列取值能对上）。")
+        else:
+            tc_note = (f"共核对 **{table_check['checked']}** 格"
+                       f"（跨 {len(table_check['notes'])} 张表）。")
+            if table_check["mismatches"]:
+                md_lines.append(tc_note + " 发现以下不一致：\n")
+                md_lines.append("| 论文表格写的 | 用你的数据实算 | 差异 |")
+                md_lines.append("| --- | --- | --- |")
+                for tm in table_check["mismatches"]:
+                    md_lines.append(
+                        f"| 🔴 {tm['paper']} | {tm['real']} | {tm.get('diff', '-')} |")
+                md_lines.append(
+                    "\n> 表格数字与数据对不上时，优先核对：该行的样本范围"
+                    "（是否剔除缺失）、分组定义（如「男」是否含其他编码）。")
+            else:
+                md_lines.append(tc_note + " ✅ 全部一致——表格数字与你的数据吻合。")
+        for note in table_check["notes"]:
+            if "没有唯一对应" in note:
+                md_lines.append(f"- ⚪ {note}")
+
+    # 5.5e 论文表格交叉核对 · 文本形态（v2.12 · P3 补充：Markdown 表 / 管道表）
+    #      与 5.5d 互补：docx 走上面，.md / 文本流走这里。解析不到表则整节不出现。
+    _tct = render_table_section(table_check_text) if table_check_text else []
+    md_lines.extend(_tct)
+
     # 5.6 改进建议
     md_lines.append("\n### 六、改进建议（按优先级）\n")
     for i, s in enumerate(suggestions, 1):
@@ -1050,8 +1653,312 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         "real": real,
         "matched_vars": matched,
         "comparisons": comparisons,
+        # v2.1 GRIM 交叉核查（论文声称均值 × 实算样本量）
+        "grim": grim,
+        "grimmer": grimmer,
+        "table_check": table_check,
+        # v2.12 P3 补充：文本形态表格核对（Markdown 表 / docx 转文本的管道行）
+        "table_check_text": table_check_text,
+        # v2.11 P3 表格交叉核对（docx 描述统计表 vs 分组实算）
+        "table_check": table_check,
         "suggestions": suggestions,
+        "explanations": explanations,
         "markdown": "\n".join(md_lines),
         "applied_directive": applied_directive,
         "parsed_directive": parsed_directive,
     }
+
+
+# ===========================================================================
+# 学术红线自检（v1.5 · ⑩红线引擎）
+# ===========================================================================
+# 把「合规红线」从营销文档变成代码：解析用户指令 / 生成报告前先扫一遍，
+# 命中明确的学术不端意图就拦截，并给出正确用法。
+#
+# 设计原则（护栏，改动前务必读）：
+#   1. 拦的是**学术不端**，不是"写作"本身。本工具的论文副驾驶本来就基于真实
+#      数据生成初稿，那是合规的产品功能，绝不能误伤。
+#   2. 因此分两类：
+#        core    代写 / 买卖 / 规避查重 / 规避 AI 检测 / 伪造数据 → 无条件拦截
+#        writing 整段整篇代写 → 拦截，但遇到明确的润色 / 改语病意图时豁免
+#   3. 正则宁可保守：拿不准的不拦。误伤比漏拦伤害更大（漏拦可以后续补规则，
+#      误伤会直接赶走正常用户）。
+#   4. 纯正则、零 LLM、无副作用 —— 任何入口都能安全调用。
+
+# 每条：(正则, 命中说明, 类别)
+RED_LINE_PATTERNS: list[tuple[str, str, str]] = [
+    # ---- core：学术不端，无条件拦截 ----
+    (r"(代写|代笔|枪手|替写|找人写|代人写|请写手|代做|包写)",
+     "代写 / 枪手：本工具不参与任何形式的代写服务", "core"),
+
+    (r"(买|卖|购买|出售|收购|定制|求购).{0,6}(论文|毕设|毕业论文|学位论文|作业|文稿)"
+     r"|(论文|毕设|毕业论文).{0,4}(交易|买卖|代做|包过)",
+     "论文买卖：属于学术不端，且可能涉及违法违规", "core"),
+
+    # 只拦"规避"动词（绕过/躲过/降重…），不拦"通过查重"这类陈述结果的合规说法
+    (r"(绕过|躲过|规避|逃避|骗过|逃过|避开).{0,8}(查重|重复率|知网|维普|万方|turnitin|相似度)"
+     r"|降重|(重复率|查重率|相似度).{0,4}(降|改|压|做)",
+     "规避查重：本工具不提供任何规避查重的服务", "core"),
+
+    (r"(去除|去掉|消除|洗掉|洗去|降低|伪装|隐藏).{0,8}(aigc|ai|人工智能).{0,6}(痕迹|味|率|检测|特征|标记)"
+     r"|(绕过|躲过|骗过|规避|逃避).{0,8}(aigc|ai).{0,6}(检测|审查|识别)"
+     r"|(aigc|ai).{0,4}(降重|去痕|洗稿)",
+     "规避 AI 检测：本工具不帮助伪装 AI 生成内容", "core"),
+
+    (r"(伪造|编造|造假|捏造|杜撰|篡改|瞎编|乱编|凑).{0,8}"
+     r"(数据|结果|样本|问卷|实验结果|统计量|统计结果|p\s*值|显著性)"
+     r"|(数据|结果|样本).{0,4}(造假|掺水|动手脚)"
+     r"|(把|将).{0,6}(数据|结果|p\s*值).{0,6}(改|调).{0,4}(大|小|高|低|到|成)",
+     "伪造 / 篡改数据：属于学术造假，绝对不可触碰", "core"),
+
+    # ---- writing：整段 / 整篇代写（白名单可豁免）----
+    (r"(帮我|替我|给我|请|帮).{0,6}(写|生成|产出一?篇?|来一?篇?).{0,6}"
+     r"(整段|整篇|全文|完整|一篇).{0,8}(讨论|discussion|结论|摘要|正文|章节|论文|文章|报告)?",
+     "整段 / 整篇代写：请基于你自己的真实数据与分析结果来写", "writing"),
+
+    (r"(帮我|替我|给我|请).{0,6}(写|生成).{0,4}(一篇|一整篇|完整的).{0,4}(论文|文章|毕设|毕业论文|报告)",
+     "整篇代写：本工具只能辅助你改进自己写的内容", "writing"),
+]
+
+# 明确的合规意图：出现这些词时豁免 writing 类红线（**绝不豁免 core**）
+_RED_LINE_SAFE = (
+    r"(润色|改.{0,3}语病|改.{0,3}语法|修改.{0,3}语病|调整.{0,3}结构|优化.{0,3}表达|"
+    r"翻译|校对|检查.{0,3}格式|缩写|精简|帮我看看|帮我检查|这样写.{0,3}(对吗|对不对)|"
+    r"是否合理|有没有问题)"
+)
+
+_RED_LINE_CORRECT_USAGE = (
+    "本工具可以帮你做的：用你自己的真实数据跑统计；核查论文里的统计量是否对得上；"
+    "指出方法误用与报告缺项；润色你已经写好的文字（表达、结构、语病）。\n"
+    "本工具不会做的：代写论文、买卖论文、规避查重或 AI 检测、伪造篡改数据。\n"
+    "正确用法：先在「数据分析」上传你的数据跑出结果，再用「论文副驾驶」基于这些"
+    "真实结果生成初稿，最后由你自己改写、补充并署名。"
+)
+
+
+def _red_line_scan(text: str) -> dict[str, Any]:
+    """学术安全自检。入参为**用户指令 / 备注**等自由文本。
+
+    出参：
+      blocked        bool        是否命中红线（命中即应拒绝执行）
+      hits           list[str]   命中的红线说明
+      correct_usage  str         被拦截时给出的正确用法（未拦截为空串）
+      categories     list[str]   命中类别："core"（学术不端）/ "writing"（整段代写）
+
+    纯函数、零 LLM、无副作用，可在任何入口安全调用。
+    """
+    out: dict[str, Any] = {
+        "blocked": False, "hits": [], "correct_usage": "", "categories": [],
+    }
+    if not text or not text.strip():
+        return out
+
+    tl = text.strip().lower()
+    core_hits: list[str] = []
+    writing_hits: list[str] = []
+
+    for pat, msg, cat in RED_LINE_PATTERNS:
+        try:
+            hit = re.search(pat, tl, re.IGNORECASE)
+        except re.error:
+            # 正则写错不应拖垮主流程，跳过该条
+            continue
+        if hit:
+            (core_hits if cat == "core" else writing_hits).append(msg)
+
+    safe_intent = bool(re.search(_RED_LINE_SAFE, tl, re.IGNORECASE))
+
+    if core_hits:
+        out["blocked"] = True
+        out["hits"] = core_hits
+        out["categories"] = ["core"]
+    elif writing_hits and not safe_intent:
+        out["blocked"] = True
+        out["hits"] = writing_hits
+        out["categories"] = ["writing"]
+
+    if out["blocked"]:
+        out["correct_usage"] = _RED_LINE_CORRECT_USAGE
+    return out
+
+
+# ===========================================================================
+# ③ 人话解释卡片（v1.5 · 学术诚信 XAI）
+# ===========================================================================
+# `_generate_suggestions` 给的是一句话建议（"建议改 ANOVA"），但用户真正想知道的
+# 是"**我哪里用错了**"。这里把方法误用讲成人话：为什么错、硬用会怎样、该改什么。
+#
+# 与 _generate_suggestions 的分工（**保持向后兼容**）：
+#   suggestions   list[str]  一句话建议 —— 报告正文 / 旧前端，保持原样不动
+#   explanations  list[dict] 结构化解释卡片 —— 前端展开用（本函数产出）
+#
+# 护栏：
+#   - fix 必须是**注册表里真实存在**的方法（从 methods_registry 取中文名，绝不编造）
+#   - why_wrong 只引用**已经算出来的**统计量（n_groups / mean / sd / p …）
+#   - 拿不准的不出卡片 —— 宁缺毋滥：误报比漏报更伤信任
+
+def _xai_method_label(key: str) -> str:
+    """方法中文名 —— 从注册表取，保证与下拉框 / 报告 / 图谱的措辞一致。"""
+    try:
+        from methods_registry import method_labels
+        return method_labels().get(key, key)
+    except Exception:  # noqa: BLE001
+        return key
+
+
+def _xai_paired_hint(columns: list[dict] | None) -> tuple[str, str] | None:
+    """列里是否有「前测 / 后测」这样的配对线索。返回 (前测列名, 后测列名)。
+
+    锚定列名结尾，避免把 predict 这类词误判成 pre。
+    """
+    if not columns:
+        return None
+    names = [c.get("name", "") for c in columns]
+    pre = [n for n in names if re.search(r"(前测|pre|before|基线|t1)$", n, re.I)]
+    post = [n for n in names if re.search(r"(后测|post|after|t2)$", n, re.I)]
+    if pre and post:
+        return pre[0], post[0]
+    return None
+
+
+def _explain_suggestions(real: dict, paper_methods: list[dict],
+                         paper_quantities: list[dict],
+                         columns: list[dict] | None = None) -> list[dict]:
+    """把「你哪里用错了方法」讲成人话。
+
+    入参同 `_generate_suggestions`，额外接收 columns（列类型信息，用于判断
+    变量是不是分类 / 有没有前后测线索）。
+
+    出参：list[dict]，每项
+      text            一句话结论
+      why_wrong       为什么这样用是错的
+      counter_example 硬用会有什么后果（具体到一类错误 / 检验效能）
+      fix             建议改成的方法 key（注册表里存在；空串 = 不是改方法，是补报告）
+      fix_label       建议方法的中文名（fix 为空时为空串）
+      severity        high / mid / low
+      from_method     原方法 key（可空）
+
+    纯模板、零 LLM。出参按 severity 排序（high 在前）。
+    """
+    items: list[dict] = []
+    method_keys = {m.get("method_key") for m in (paper_methods or [])}
+    col_type = {c.get("name"): c.get("type") for c in (columns or [])}
+
+    def add(text: str, why: str, counter: str, fix: str,
+            severity: str, from_method: str | None):
+        items.append({
+            "text": text,
+            "why_wrong": why,
+            "counter_example": counter,
+            "fix": fix,
+            "fix_label": _xai_method_label(fix) if fix else "",
+            "severity": severity,
+            "from_method": from_method,
+        })
+
+    # 参数检验方法的稳定取一个做 from_method（set 无序，不能直接取）
+    from_param = None
+    for k in ("independent_t", "paired_t", "anova"):
+        if k in method_keys:
+            from_param = k
+            break
+
+    n_groups = real.get("n_groups") or 0
+    gcol = real.get("group_col")
+
+    # --- R1 分组数 > 2 却用独立样本 T 检验 ---
+    if "independent_t" in method_keys and n_groups > 2:
+        pairs = n_groups * (n_groups - 1) // 2
+        inflated = 1 - 0.95 ** pairs
+        add(
+            f"【{gcol}】有 {n_groups} 个分组，不该用独立样本 T 检验",
+            f"独立样本 T 检验只用于比较 2 个独立组的均值，"
+            f"而分组变量【{gcol}】实际有 {n_groups} 个水平。",
+            f"若拆成两两比较，{n_groups} 个组要比较 {pairs} 次；每次 α=0.05，"
+            f"整体至少犯一次一类错误的概率会膨胀到约 {inflated:.0%}，远超 0.05。",
+            "anova", "high", "independent_t",
+        )
+
+    # --- R2 有前后测线索却用独立样本 T 检验 ---
+    hint = _xai_paired_hint(columns)
+    if "independent_t" in method_keys and hint and n_groups <= 2:
+        pre_col, post_col = hint
+        add(
+            f"数据里有【{pre_col}】【{post_col}】这样的前后测列，建议用配对检验",
+            "前后测是**同一批对象**被测量两次（重复测量设计），"
+            "独立样本 T 检验却假定两组互不相关，白扔掉了配对带来的信息。",
+            "配对设计下用独立 T，标准误会被高估、检验效能下降——"
+            "本来显著的差异可能变得不显著（假阴性）。",
+            "paired_t", "high", "independent_t",
+        )
+
+    # --- R3 只有 2 组却用单因素 ANOVA ---
+    if "anova" in method_keys and n_groups == 2:
+        add(
+            f"【{gcol}】只有 2 个分组，用 T 检验更贴合报告惯例",
+            "单因素 ANOVA 用于 3 组及以上；2 组时它与 T 检验在数学上完全等价（F = t²）。",
+            "不算错，但审稿人通常期待 2 组比较报告 t 值与 Cohen's d，而不是 F 与 η²。",
+            "independent_t", "low", "anova",
+        )
+
+    # --- R4 卡方用在连续变量上 ---
+    if "chi_square" in method_keys:
+        vcol = real.get("value_col")
+        if vcol and col_type.get(vcol) == "continuous":
+            add(
+                f"【{vcol}】是连续变量，不适合做卡方检验",
+                "卡方检验要求两个变量都是**分类变量**（如性别 × 是否及格），"
+                "考察的是各类别频数之间是否独立。",
+                "把连续变量拿去算卡方，等于先丢掉了数值大小信息，"
+                "结论既不稳定也难以解释。",
+                "correlation", "high", "chi_square",
+            )
+
+    # --- R5 相关分析却选了分类列 ---
+    if "correlation" in method_keys:
+        vcol = real.get("value_col")
+        if vcol and col_type.get(vcol) == "categorical":
+            add(
+                f"【{vcol}】是分类变量，Pearson 相关不适用",
+                "Pearson 相关要求两个变量都是**连续变量**且关系近似线性。",
+                "对分类变量算相关系数，得到的数值没有实际意义——"
+                "类别之间的「大小关系」本身是人为指定的。",
+                "chi_square", "high", "correlation",
+            )
+
+    # --- R6 小样本 + 参数检验，且未提非参数 ---
+    n_total = (real.get("n1", 0) + real.get("n2", 0)) or real.get("n", 0)
+    has_nonparam = bool({"mann_whitney", "wilcoxon"} & method_keys)
+    if from_param and not has_nonparam and 0 < n_total < 30:
+        add(
+            f"样本量偏小（N={n_total}），参数检验的正态性假定难以保证",
+            f"T 检验 / ANOVA 依赖「各组近似正态」的假定；N={n_total} 时"
+            f"这个假定既难检验也难成立。",
+            "假定不满足时 p 值不可靠，可能把噪声当成效应（假阳性）。",
+            "mann_whitney", "mid", from_param,
+        )
+
+    # --- R7 / R8：不是"改方法"而是"补报告"的两种常见缺项（fix 留空） ---
+    if from_param and real.get("ok"):
+        has_effect = any(q.get("kind") in ("d", "eta", "eta_sq", "r")
+                         for q in (paper_quantities or []))
+        if not has_effect:
+            add(
+                "结论只报了 p 值，建议补充效应量",
+                "p 值只回答「差异是否存在」，不回答「差异有多大」。",
+                "缺少效应量时，读者无法判断差异在实际意义上是否重要——"
+                "这也是审稿人最常见的退改意见之一。",
+                "", "mid", None,
+            )
+        add(
+            "未看到正态性 / 方差齐性检验的报告",
+            "T 检验与 ANOVA 的结论依赖前提假定，报告前提检验结果是规范做法。",
+            "若方差不齐却用了合并方差的 T 检验，p 值会有偏；"
+            "正确做法是改用 Welch 校正并在文中说明。",
+            "", "mid", None,
+        )
+
+    # 按严重度排序：high → mid → low
+    order = {"high": 0, "mid": 1, "low": 2}
+    items.sort(key=lambda it: order.get(it.get("severity"), 9))
+    return items

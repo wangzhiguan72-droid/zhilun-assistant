@@ -123,28 +123,68 @@ def main() -> int:
         agent = router._last_agent
         return text, getattr(agent, "last_usage", None)
 
+    # 限流判定：429 / 限流 / 速率限制 / 访问量过大 均属外部配额问题
+    # （连续跑多个真调测试后常见），不代表缓存契约失效 → SKIP 而非 FAIL。
+    def _is_throttle(err) -> bool:
+        s = str(err)
+        return any(k in s for k in ("429", "限流", "速率限制", "访问量过大"))
+
+    def _skip(err) -> int:
+        print(f'[SKIP] 平台限流（{str(err)[:80]}…），跳过前缀缓存实证')
+        print('       外部配额问题，非代码/契约问题；稍后重跑即可。')
+        return 0
+
+    def call_or_skip(question: str, tag: str):
+        """调用；限流则返回 None 表示应跳过整轮实证。"""
+        print(f'{tag} ｜ 问题：{question}')
+        try:
+            return call(question)
+        except AgentError as e:
+            if _is_throttle(e):
+                _skip(e)
+                return None
+            print(f'[FAIL] 调用失败：{e}')
+            return "FAIL"
+
     # 第 1 次：建立缓存
     q1 = "该研究最值得质疑的一处统计报告遗漏是什么？"
-    print(f'[调用 1] 建立缓存 ｜ 问题：{q1}')
-    try:
-        ans1, u1 = call(q1)
-    except AgentError as e:
-        print(f'[FAIL] 调用失败：{e}')
+    r1 = call_or_skip(q1, '[调用 1] 建立缓存')
+    if r1 is None:
+        return 0
+    if r1 == "FAIL":
         return 1
+    ans1, u1 = r1
     print(f'  -> {ans1[:150]}')
     print(f'  usage: {fmt_usage(u1)}')
 
     print('\n等待 5s（缓存异步写入）...\n')
     time.sleep(5)
 
+    # 判定阈值：cached_tokens > 0 不代表真命中。
+    # 平台在未命中时也会返回极少量 cached（观测到 2–3 token 的噪声，
+    # 疑似系统提示的固定前缀），若按 >0 判定会假报"命中"并错误宣称省钱。
+    # 真正的前缀缓存命中应覆盖绝大部分 prompt（智谱实测 96.8%），
+    # 这里要求 ≥ 50% 且绝对值 ≥ 64 token，才算生效。
+    HIT_RATIO, HIT_MIN_ABS = 0.50, 64
+
+    def _is_real_hit(usage) -> bool:
+        u = usage or {}
+        cached = u.get("cached_tokens", 0)
+        total = u.get("prompt_tokens", 0) or 1
+        return cached >= HIT_MIN_ABS and (cached / total) >= HIT_RATIO
+
     # 第 2 次：同前缀不同问题
     q2 = "3.4 节的 t 检验报告有什么格式上的不完整？"
-    print(f'[调用 2] 验证命中 ｜ 问题：{q2}')
-    ans2, u2 = call(q2)
+    r2 = call_or_skip(q2, '[调用 2] 验证命中')
+    if r2 is None:
+        return 0
+    if r2 == "FAIL":
+        return 1
+    ans2, u2 = r2
     print(f'  -> {ans2[:150]}')
     print(f'  usage: {fmt_usage(u2)}')
 
-    if (u2 or {}).get("cached_tokens", 0) > 0:
+    if _is_real_hit(u2):
         cached = u2["cached_tokens"]
         total = u2.get("prompt_tokens", 1)
         print(f'\n[PASS] 前缀缓存命中！命中率 {cached / total * 100:.1f}%'
@@ -152,21 +192,28 @@ def main() -> int:
         print('结论：冻结前缀契约在该平台生效，多次审计同篇论文可省大量输入费用。')
         return 0
 
-    print('\n[MISS] 第 2 次未命中（异步写入可能未完成），10s 后重试...')
+    print('\n[MISS] 第 2 次未达有效命中阈值（异步写入可能未完成），10s 后重试...')
     time.sleep(10)
     q3 = "该研究的相关分析自由度是多少？"
-    print(f'[调用 3] 重试验证 ｜ 问题：{q3}')
-    ans3, u3 = call(q3)
+    r3 = call_or_skip(q3, '[调用 3] 重试验证')
+    if r3 is None:
+        return 0
+    if r3 == "FAIL":
+        return 1
+    ans3, u3 = r3
     print(f'  -> {ans3[:150]}')
     print(f'  usage: {fmt_usage(u3)}')
-    if (u3 or {}).get("cached_tokens", 0) > 0:
+    if _is_real_hit(u3):
         cached = u3["cached_tokens"]
         total = u3.get("prompt_tokens", 1)
         print(f'\n[PASS] 前缀缓存命中（第 3 次）！命中率 {cached / total * 100:.1f}%')
         return 0
 
-    print('\n[WARN] 三次调用均未观测到命中。可能：前缀未达缓存块阈值 /')
-    print('写入延迟更长 / 该模型不支持。冻结前缀契约本身无害，保持即可。')
+    print('\n[WARN] 三次调用均未观测到**有效**命中（阈值 ≥50% 且 ≥64 token）。')
+    print('       观测到的 cached 仅为个位数 token 噪声，不构成真实缓存收益。')
+    print('       可能原因：该平台上该模型未启用前缀缓存 / 前缀未达缓存块阈值')
+    print('       / 该 Key 档位不含缓存。冻结前缀契约本身无害，保持即可，')
+    print('       但**不要**据此宣称已在该平台省钱。')
     return 0
 
 

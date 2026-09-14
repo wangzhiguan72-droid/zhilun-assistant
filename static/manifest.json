@@ -1,0 +1,61 @@
+{
+  "name": "智论助手 · 学术副驾驶",
+  "short_name": "智论助手",
+  "description": "本地运行的论文数据体检、统计核查与写作副驾。统计全部本地计算，不上传数据。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f8fafc",
+  "theme_color": "#1e40af",
+  "categories": ["education", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/static/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "数据分析",
+      "short_name": "分析",
+      "description": "上传数据，跑统计方法",
+      "url": "/?tab=analysis"
+    },
+    {
+      "name": "论文排查",
+      "short_name": "排查",
+      "description": "核查论文里的统计量",
+      "url": "/?tab=check"
+    },
+    {
+      "name": "论文副驾驶",
+      "short_name": "副驾驶",
+      "description": "六阶段流水线写作",
+      "url": "/?tab=copilot"
+    }
+  ]
+}

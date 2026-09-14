@@ -217,6 +217,47 @@ for v1, g, v2, manual, exp, label in override_cases:
     assert d['method'] == exp
     print(f"  ✓ {label:<52} → {d['method']}, p={d.get('summary', {}).get('p'):.4f}")
 
+# 6) 前端内联 JS 语法守卫
+# 背景：v1.0 起 templates/index.html 的流式渲染代码里混入了两处 TypeScript
+# 类型注解（let curData: string[] / function handleStreamEvent(event: string, data: any)），
+# 浏览器解析 <script> 时会直接抛 SyntaxError，导致**整个页面 JS 全挂**。
+# 既有测试都不读前端 JS，所以这个 bug 存活了很久。这里加一道语法守卫。
+print()
+print("--- 前端内联 JS 语法守卫 ---")
+import os as _os
+import re as _re
+import shutil as _shutil
+import subprocess as _sp
+import tempfile as _tf
+
+_html = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+_blocks = _re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", _html, _re.S)
+assert _blocks, "未找到内联 <script> 块"
+
+# 6a) 粗筛：残留的 TS 类型注解（裸 JS 里 ": string" 之类一定是写错了）
+_ts_annot = _re.findall(
+    r"^\s*(?:let|const|var|function)\s+\w+\s*(?:\([^)]*\))?\s*:\s*"
+    r"(?:string|number|boolean|any)\b",
+    "\n".join(_blocks), _re.M)
+assert not _ts_annot, f"内联 JS 里残留 TypeScript 类型注解：{_ts_annot}"
+
+# 6b) 精筛：真用 node --check 解析一遍（node 不存在时优雅跳过）
+_node = _shutil.which("node")
+if not _node:
+    for _cand in (r"C:\Users\Administrator\.workbuddy-ai\binaries\node\versions\22.22.2-2\node.exe",
+                  r"C:\Program Files\nodejs\node.exe"):
+        if _os.path.exists(_cand):
+            _node = _cand
+            break
+if _node:
+    _tmp = _tf.gettempdir() + "/_wizard_idx_check.js"
+    io.open(_tmp, "w", encoding="utf-8").write("\n".join(_blocks))
+    _r = _sp.run([_node, "--check", _tmp], capture_output=True, text=True)
+    assert _r.returncode == 0, f"内联 JS 语法错误：\n{_r.stderr[-800:]}"
+    print(f"  ✓ 内联 JS 通过 node --check（{len(_blocks)} 个块）")
+else:
+    print("  · 跳过 node --check（未找到 node，已用正则粗筛）")
+
 print()
 print("=" * 70)
 print("✅ 分步向导契约测试全部通过")

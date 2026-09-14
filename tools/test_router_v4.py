@@ -4,12 +4,13 @@ Router 升级后端到端测试（v0.4 模型分级）
 测试 STATE_TO_MODEL 中的 V4-Pro / V4-Flash / GLM-Z1-9B 三个真实模型都可用。
 Key 从 .env.tmp 临时读取，测完删除。
 """
+import pathlib
 import os
 import sys
 import tempfile
 
 # 把 .env.tmp 临时导入为环境变量（不写入源码）
-ENV_TMP = r'D:\论文排版辅助agent\.env.tmp'
+ENV_TMP = str(BASE / '.env.tmp')
 if not os.path.exists(ENV_TMP):
     print(f'[SKIP] 找不到 {ENV_TMP}，先创建再跑')
     sys.exit(0)
@@ -21,7 +22,8 @@ with open(ENV_TMP, 'r', encoding='utf-8') as f:
             k, v = line.split('=', 1)
             os.environ[k.strip()] = v.strip()
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE = pathlib.Path(__file__).resolve().parent
 
 from agents.router import Router, STATE_TO_MODEL, get_router
 

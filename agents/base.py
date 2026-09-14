@@ -14,8 +14,16 @@ class AgentError(Exception):
 
     可选属性 retry_after（秒）：429 限流时若平台响应头带 Retry-After，
     Agent 会解析后挂在这里，Router 用它替代默认冷却时长。
+
+    v0.5.4：__str__ 过一遍凭据擦除——报错文案可能一路传到前端
+    （llm_audit/_short → jsonify(error=...)），而底层 SDK 异常正文
+    有时会回显 Key。擦除只影响输出，不影响 retry_after 等属性。
     """
     retry_after: float | None = None
+
+    def __str__(self) -> str:
+        from .secrets_guard import redact
+        return redact(super().__str__())
 
 
 class BaseAgent(ABC):

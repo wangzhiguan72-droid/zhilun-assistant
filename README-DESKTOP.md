@@ -22,7 +22,7 @@
 
 两个 Tab 功能都在：
 
-- **数据分析**：9 种统计方法（T 检验 / ANOVA / 相关 / 卡方 / 配对 T / Mann-Whitney / Wilcoxon / 线性回归 / Logistic 回归）
+- **数据分析**：**12 种统计方法**（T 检验 / ANOVA / 相关 / 卡方 / 配对 T / Mann-Whitney / Wilcoxon / 线性回归 / Logistic 回归 / **Cronbach's α** / **双因素 ANOVA** / **重复测量 ANOVA**）+ 自动图表 + Word 导出
 - **论文排查**：上传论文 + 数据 → 识别方法/统计量/变量 → 规则化建议 → 可导出 Word
 
 ## 三、重新打包
@@ -43,13 +43,14 @@
 
 ## 四、LLM 功能说明
 
-数据分析的「AI 增强」和论文排查的「AI 深度审计」需要 API Key（环境变量）：
+数据分析的「AI 深度解读」需要 API Key（环境变量）：
 
 ```
-SILICONFLOW_API_KEY / ZHIPU_API_KEY / DEEPSEEK_API_KEY
+ZHIPU_API_KEY / DASHSCOPE_API_KEY / DEEPSEEK_API_KEY / SILICONFLOW_API_KEY
 ```
 
 没有 Key 时会**静默降级**为规则化输出，其余功能不受影响。
+（结果缓存命中时甚至完全不需要 Key。）
 
 > 桌面版目前读取系统环境变量；如需在 exe 内配置 Key，可在启动器里补一个设置界面（后续迭代）。
 

@@ -21,10 +21,24 @@ from llm_review import review_output
 
 
 def test_decision_layer_versions():
-    """确认两个模块的 PROMPT_VERSION 都已 bump 到 v2。"""
-    assert ENHANCE_VERSION == "v2", f"llm_enhance 版本应为 v2，实际为 {ENHANCE_VERSION}"
-    assert AUDIT_VERSION == "v2", f"llm_audit 版本应为 v2，实际为 {AUDIT_VERSION}"
-    print("[✓] 决策层优化：PROMPT_VERSION 已 bump 到 v2")
+    """确认两个模块的 PROMPT_VERSION 已 bump 到 v2 之后（当前 v3）。
+
+    契约（比"等于某个字面量"更重要）：
+      · 版本号必须是 vN 形式；
+      · 两个模块的冻结 prompt 都改过，故两者版本应**同步**（本项目一直同号）；
+      · 必须 ≥ v2（Ponytail 决策层的首次 bump）。
+    ⚠️ 不要写死成某个具体版本 —— 每次按契约改 prompt 都必须 bump，
+       写死会让"正确升级"反而测失败（本测试曾因 v3 升级而假红）。
+    """
+    import re as _re
+    for name, ver in (("llm_enhance", ENHANCE_VERSION), ("llm_audit", AUDIT_VERSION)):
+        m = _re.fullmatch(r"v(\d+)", ver or "")
+        assert m, f"{name} 的 PROMPT_VERSION 应为 vN 形式，实际为 {ver!r}"
+        assert int(m.group(1)) >= 2, f"{name} 版本应 ≥ v2，实际为 {ver}"
+    assert ENHANCE_VERSION == AUDIT_VERSION, (
+        f"两个模块的冻结 prompt 需同步升版：llm_enhance={ENHANCE_VERSION} "
+        f"vs llm_audit={AUDIT_VERSION}")
+    print(f"[✓] 决策层优化：PROMPT_VERSION 已 bump 至 {ENHANCE_VERSION}（两者同步）")
 
 
 def test_llm_review_basic():

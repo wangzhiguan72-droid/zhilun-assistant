@@ -16,7 +16,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 测试全程不需要真实 Key（mock Agent 代替）
 os.environ.pop("SILICONFLOW_API_KEY", None)
@@ -149,7 +149,12 @@ check("缺 Key 不进冷却表", ("zhipu", "glm-4.7-flash") not in r3._cooldown_
 
 print()
 print('=== 6. paper_check 降级链（官方直连 → 硅基流动 V4-Pro）===')
-check("paper_check 有 3 个候选（含免费兜底）", len(STATE_TO_MODEL["paper_check"]) == 3)
+check("paper_check 链含付费 2 个 + 免费兜底 + MaaS 免费尾位（v1.8 允许 BYOK 备胎）",
+      len(STATE_TO_MODEL["paper_check"]) >= 4
+      and ("deepseek", "deepseek-flash", 0.3) in STATE_TO_MODEL["paper_check"]
+      and ("sf", "deepseek-v4-pro", 0.3) in STATE_TO_MODEL["paper_check"]
+      and ("maas", "glm-5", 0.3) in STATE_TO_MODEL["paper_check"],
+      f'实际({len(STATE_TO_MODEL["paper_check"])}): {STATE_TO_MODEL["paper_check"]}')
 p1 = MockAgent("deepseek-flash", [E500, E500])
 p2 = MockAgent("deepseek-ai/DeepSeek-V4-Pro", ["降级成功"])
 r4 = make_router_with("paper_check", {
@@ -218,6 +223,16 @@ rf2 = make_router_with("write_text", {
 }, tier="free")
 check("_get_agent 在 free 档选免费模型",
       rf2._get_agent("write_text").model_name == "glm-4.7-flash")
+
+# v0.5.4：MaaS 专属端点属免费档（成本由项目方承担），free 档可达
+rf3 = make_router_with("paper_check", {
+    ("deepseek", "deepseek-flash"): MockAgent("deepseek-flash", ["付费"]),
+    ("sf", "deepseek-v4-pro"): MockAgent("deepseek-v4-pro", ["付费"]),
+    ("zhipu", "glm-4.7-flash"): MockAgent("glm-4.7-flash", [E500]),
+    ("maas", "glm-5"): MockAgent("glm-5", ["MaaS 兜底成功"]),
+}, tier="free")
+check("free 档可达 MaaS 尾位（v0.5.4）",
+      rf3.complete("paper_check", "x") == "MaaS 兜底成功")
 
 # set_tier 切换 + 清缓存
 rf.set_tier("pro")

@@ -11,13 +11,15 @@ v0.5 LLM 缓存层端到端测试
     4. Flask /api/analyze：llm_cached 字段 + /api/llm_stats 端点
 """
 import io
+import pathlib
 import os
 import sys
 import json
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+BASE = pathlib.Path(__file__).resolve().parent
 
-ENV_TMP = r'D:\论文排版辅助agent\.env.tmp'
+ENV_TMP = str(BASE / '.env.tmp')
 if os.path.exists(ENV_TMP):
     with open(ENV_TMP, 'r', encoding='utf-8') as f:
         for line in f:
@@ -89,6 +91,43 @@ c2.get("x"); c2.get("y"); c2.get("z")  # 1 hit, 2 miss
 st = c2.stats()
 check("stats 命中率 1/3", st["hits"] == 1 and st["misses"] == 2 and abs(st["hit_rate"] - 0.333) < 0.001)
 
+# ----------------------------------------------------------------------
+# v1.1.1 回归：容灾切换不得让缓存 key 漂移
+# ----------------------------------------------------------------------
+# 复现的 bug：write_text 首选 glm-4.7-flash 报错 → 容灾切到 qwen3.7-flash。
+# 旧实现查/写缓存时都取"当前候选"，导致：
+#   写缓存时 model="qwen3.7-flash" → key A
+#   下次查缓存时候选已恢复 model="glm-4.7-flash" → key B → 假性 miss
+# 修复后 cache_model_name() 优先返回"上次真正成功用过的模型"，key 保持稳定。
+print()
+print('=== 1b. 缓存 key 稳定性（容灾切换回归） ===')
+
+class _FakeRouter:
+    """模拟：候选漂移，但"上次成功模型"稳定。"""
+    def __init__(self):
+        self._last_ok_model = {}
+        self._cand = "glm-4.7-flash"
+    def cache_model_name(self, state="write_text"):
+        return self._last_ok_model.get(state) or self._cand
+    def _get_agent(self, state):
+        raise RuntimeError("no key")
+
+_fr = _FakeRouter()
+_before = llm_enhance._router_model_name(_fr)
+_fr._last_ok_model["write_text"] = "qwen3.7-flash"   # 实际成功落在这
+_after = llm_enhance._router_model_name(_fr)
+_fr._cand = "glm-4.7-flash"                          # 冷却结束，候选漂回
+_still = llm_enhance._router_model_name(_fr)
+
+check("调用前取候选模型（首访探测）", _before == "glm-4.7-flash", f"got={_before!r}")
+check("调用后取实际成功模型", _after == "qwen3.7-flash", f"got={_after!r}")
+check("候选漂移后模型名不变（key 稳定）", _still == "qwen3.7-flash", f"got={_still!r}")
+
+# key 确实稳定：用同一"成功模型"两次生成的 key 必须一致
+_kA = c.make_key("qwen3.7-flash", PROMPT_VERSION, "independent_t", {"t": -14.09, "p": 0.0001})
+_kB = c.make_key(_still, PROMPT_VERSION, "independent_t", {"t": -14.09, "p": 0.0001})
+check("容灾前后 key 一致（命中率不被容灾打掉）", _kA == _kB)
+
 print()
 print('=== 2. enhance_analysis 缓存集成（真实调用） ===')
 llm_cache.clear()
@@ -119,7 +158,17 @@ if sec1:
         print(f'  [SKIP] force 重生成遇外部错误（{err3}），跳过')
 
     # 无 Key + 缓存有货 → 缓存救场
-    saved = {k: os.environ.pop(k, None) for k in ("SILICONFLOW_API_KEY", "ZHIPU_API_KEY")}
+    # 【血泪】隔离清单从注册表派生，覆盖全部平台（漏 MAAS 会让真调顶掉缓存救场）。
+    try:
+        from agents.openai_compat import PROVIDER_REGISTRY as _PR
+        _ALL_KEY_ENVS = tuple(sorted({
+            e.strip() for cfg in _PR.values()
+            for e in (getattr(cfg, "env_var", "") or "").split(",") if e.strip()
+        }))
+    except Exception:  # noqa: BLE001
+        _ALL_KEY_ENVS = ("SILICONFLOW_API_KEY", "ZHIPU_API_KEY",
+                         "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "MAAS_API_KEY")
+    saved = {k: os.environ.pop(k, None) for k in _ALL_KEY_ENVS}
     sec4, err4, meta4 = enhance_analysis("independent_t", SUMMARY, "独立样本 T 检验")
     if err4 is None:
         check("无 Key 时缓存救场", sec4 is not None and meta4["cached"] is True,
@@ -129,6 +178,16 @@ if sec1:
     for k, v in saved.items():
         if v:
             os.environ[k] = v
+    # 恢复 Key 后必须重置 Router 单例：否则它仍持有"无 Key"时解析出的
+    # 降级状态，污染后续测试（llm_enhance_test 曾因此假性失败）。
+    try:
+        from agents import get_router
+        _rr = get_router()
+        _rr._agents.clear()
+        _rr._resolved.clear()
+        _rr._last_ok_model.clear()
+    except Exception:  # noqa: BLE001
+        pass
 
     # 不同 summary → 不命中
     sec5, err5, meta5 = enhance_analysis("independent_t", {"t": -1.0, "p": 0.3}, "独立样本 T 检验")
@@ -149,7 +208,7 @@ d = r.get_json()
 check("/api/llm_stats 返回", r.status_code == 200 and d.get("ok") and "hit_rate" in d["cache"])
 
 # JSON 版 analyze（第一次：真实 summary 未预热 → 合理 miss；第二次：应命中）
-with open(r'D:\论文排版辅助agent\examples\student_scores.csv', 'rb') as f:
+with open(str(BASE / 'examples' / 'student_scores.csv'), 'rb') as f:
     r = client.post('/api/upload', data={'file': (io.BytesIO(f.read()), 's.csv')},
                     content_type='multipart/form-data')
 fid = r.get_json()["file_id"]

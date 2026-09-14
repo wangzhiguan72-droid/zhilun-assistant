@@ -1,0 +1,100 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+
+    env:
+      # 本机请求不要走代理，否则测试连不上 127.0.0.1
+      NO_PROXY: "127.0.0.1,localhost"
+      no_proxy: "127.0.0.1,localhost"
+      # 刻意【不】在这里设 RATE_LIMIT_DISABLE！
+      # security_guard_test 测的就是限流器本身，全局关掉它会让该套件自相矛盾
+      # （实测 56/0 变 52/4，4 个假失败）。需要关闭限流的套件在自身文件内
+      # os.environ.setdefault(...) 设置，见 CONTRIBUTING.md「硬性纪律 7」。
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Static check (syntax)
+        run: python -m compileall -q app.py cli.py agents methods_registry.py audit.py datacheck.py extract_paper.py
+
+      - name: Start Flask server (background)
+        shell: bash
+        run: |
+          # debug=False + use_reloader=False：reloader 子进程会在 shell 退出时被回收
+          python app.py > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if python -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:5000/health',timeout=2); sys.exit(0)" 2>/dev/null; then
+              echo "server ready after ${i}s"; break
+            fi
+            sleep 1
+          done
+
+      - name: Run test suites
+        shell: bash
+        run: |
+          # 自动发现套件，避免手工清单随新增文件而漂移（本项目已因此漏跑过测试）。
+          # 真调外部 API 的脚本由白名单明确排除。
+          # 注意：wsgi_test 会自己起 waitress 子进程（本机端口），不依赖外部服务，
+          #       故**必须留在 CI 里**——它守护的是 H5 部署契约。
+          LIVE_SUITES="llm_cache_test prefix_cache_test zhipu_cache_test kimi_mimo_live_test"
+          fail=0
+          ran=0
+          for path in *_test.py; do
+            t="${path%%.py}"
+            skip=""
+            for live in $LIVE_SUITES; do
+              [ "$t" = "$live" ] && skip=1
+            done
+            # 以 --live 为门槛的脚本在 CI 里会自行 SKIP，跑它也无害；这里仍显式排除，
+            # 避免有人误删 --live 门槛后 CI 开始烧额度。
+            if [ -n "$skip" ]; then
+              echo "SKIP (真调外部 API) $t"
+              continue
+            fi
+            echo "───────── $t ─────────"
+            if python -u "$path"; then
+              echo "PASS $t"
+              ran=$((ran+1))
+            else
+              echo "::error::$t 失败"
+              fail=1
+            fi
+          done
+          echo "共运行 $ran 个套件"
+          if [ "$ran" -lt 30 ]; then
+            echo "::error::运行套件数异常偏少（$ran），疑似发现逻辑失效"
+            exit 1
+          fi
+          exit $fail
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log-${{ matrix.os }}-${{ matrix.python-version }}
+          path: server.log
+          if-no-files-found: ignore

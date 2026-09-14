@@ -8,12 +8,14 @@ v0.4.2 端到端测试：论文排查 Tab · AI 深度审计
     4. 真实 V4-Pro 调用（有 Key 时）：section 生成 + 第二次调用缓存命中（0 token）
 """
 import io
+import pathlib
 import os
 import sys
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+BASE = pathlib.Path(__file__).resolve().parent
 
-ENV_TMP = r'D:\论文排版辅助agent\.env.tmp'
+ENV_TMP = str(BASE / '.env.tmp')
 if os.path.exists(ENV_TMP):
     with open(ENV_TMP, 'r', encoding='utf-8') as f:
         for line in f:
@@ -40,8 +42,8 @@ def check(name, cond, detail=""):
         FAIL += 1
         print(f'  [FAIL] {name} {detail}')
 
-PAPER = r'D:\论文排版辅助agent\examples\sample_paper.md'
-DATA = r'D:\论文排版辅助agent\examples\student_scores.csv'
+PAPER = str(BASE / 'examples' / 'sample_paper.md')
+DATA = str(BASE / 'examples' / 'student_scores.csv')
 
 print('=== 1. llm_audit 单元 ===')
 _reset_prefix_cache()
@@ -101,7 +103,20 @@ check("规则报告有内容", rule_md_len > 100)
 print()
 print('=== 3. use_llm=1：无 Key 静默降级 ===')
 import agents.router as _ar
-saved = {k: os.environ.pop(k, None) for k in ("SILICONFLOW_API_KEY", "ZHIPU_API_KEY")}
+# 【血泪】隔离清单必须覆盖**注册表里的全部平台**，漏一个（如后来的 MAAS）
+# 容灾链就会拿到可用 Key，把「无 Key 降级」测成假失败 → 从注册表派生，永不遗漏。
+try:
+    from agents.openai_compat import PROVIDER_REGISTRY as _PR
+    _ALL_KEY_ENVS = tuple(sorted({
+        e.strip() for cfg in _PR.values()
+        for e in (getattr(cfg, "env_var", "") or "").split(",") if e.strip()
+    }))
+except Exception:  # noqa: BLE001
+    _ALL_KEY_ENVS = ("SILICONFLOW_API_KEY", "ZHIPU_API_KEY",
+                     "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "MAAS_API_KEY")
+assert _ALL_KEY_ENVS, "未能从注册表派生出任何 Key 环境变量"
+print(f"  · 本轮隔离平台 Key：{', '.join(_ALL_KEY_ENVS)}")
+saved = {k: os.environ.pop(k, None) for k in _ALL_KEY_ENVS}
 _ar._router = None  # 重置单例，强制走"缺 Key"分支
 
 r = check_paper({'use_llm': '1'})

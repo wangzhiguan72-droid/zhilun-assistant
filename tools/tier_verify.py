@@ -9,9 +9,10 @@
 只实例化 Agent、看 model_name，**不真调 API**，因此不耗额度、不受 429 影响。
 端到端真调见 write_text 真调小节（可选）。
 """
+import os
 import sys
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from env_loader import load_dotenv
 load_dotenv()

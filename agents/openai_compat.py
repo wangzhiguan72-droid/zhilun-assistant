@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .base import AgentError
+from .secrets_guard import register_many
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,35 @@ PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
         env_var="DASHSCOPE_API_KEY",
         display_name="阿里云百炼",
         extra_env={"base_url": "DASHSCOPE_BASE_URL"},
+    ),
+    "maas": ProviderConfig(
+        # 阿里云百炼 MaaS **专属工作空间**端点（私有资源，仅服务端持有 Key）。
+        # 承载 glm-5 / qwen-plus / qwen3-vl-* / qwen-math-turbo / qwen-mt-flash
+        # / deepseek-r1-distill-qwen-7b 等；模型名直接用官方 ID，无前缀。
+        # Key 只在 .env（MAAS_API_KEY），前端 / 日志一律不可见（见 secrets_guard）。
+        base_url=("https://ws-ubquyin5epzugojr.cn-beijing.maas.aliyuncs.com"
+                  "/compatible-mode/v1"),
+        env_var="MAAS_API_KEY",
+        display_name="百炼 MaaS 专属端点",
+        extra_env={"base_url": "MAAS_BASE_URL"},
+    ),
+    "kimi": ProviderConfig(
+        # Kimi 开放平台（月之暗面，v1.8 新增）。长上下文是看家本领，
+        # paper_check 整篇论文审计的长文本备胎。付费档，BYOK 用户
+        # 自带 Key 直用。国际版用 KIMI_BASE_URL 覆盖即可。
+        base_url="https://api.moonshot.cn/v1",
+        env_var="KIMI_API_KEY",
+        display_name="Kimi（月之暗面）",
+        extra_env={"base_url": "KIMI_BASE_URL"},
+    ),
+    "mimo": ProviderConfig(
+        # 小米 MiMo 开放平台（v1.8 新增）。OpenAI / Anthropic 双协议
+        # 兼容，这里走 OpenAI 协议。现役 mimo-v2.5 系列适合 recommend / write_text 尾位兜底。
+        # 付费档（新平台免费额度政策多变，不进白名单）。
+        base_url="https://api.xiaomimimo.com/v1",
+        env_var="MIMO_API_KEY",
+        display_name="小米 MiMo",
+        extra_env={"base_url": "MIMO_BASE_URL"},
     ),
 }
 

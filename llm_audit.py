@@ -33,7 +33,7 @@ from agents.prompts import PAPER_CHECK_SYSTEM, build_paper_check_prefix
 from llm_cache import llm_cache
 
 # 改 PAPER_CHECK_SYSTEM / schema / 变量区措辞时必须 bump（旧缓存自动失效）
-PROMPT_VERSION = "v2"  # v0.5.1：Ponytail 决策层优化
+PROMPT_VERSION = "v3"  # v1.7：PAPER_CHECK_SYSTEM 注入 tone_guide 语气规约
 
 # v0.5.1：Ponytail 决策层优化（参考 best-practice）
 _PONYTAIL_DECISION = (
@@ -256,6 +256,12 @@ def _router_model_name() -> str:
 
 
 def _short(msg: str, limit: int = 120) -> str:
+    """错误信息截断（v0.5.4：先擦除凭据——文案会回浏览器）。"""
+    try:
+        from agents.secrets_guard import redact
+        msg = redact(msg)
+    except Exception:  # noqa: BLE001
+        pass
     msg = msg.replace("\n", " ").strip()
     return msg if len(msg) <= limit else msg[:limit] + "…"
 

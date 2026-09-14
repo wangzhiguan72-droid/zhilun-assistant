@@ -33,11 +33,16 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # paper_check：论文审计（路由到 sf/deepseek-v4-pro，付费 → 缓存收益最大）
 # ---------------------------------------------------------------------------
+# v1.7：注入 tone_guide 的明确语气禁令。旧版只写"不输出寒暄和免责声明"，
+# 对"AI 腔"没有可判定标准，模型只能猜；现在改为逐条具体禁令。
+# ⚠️ 改动本常量 = 改变冻结前缀 → llm_audit.PROMPT_VERSION 必须 bump。
+from tone_guide import TONE_RULES_REVIEW as _TONE_RULES_REVIEW  # noqa: E402
 
 PAPER_CHECK_SYSTEM = (
     "你是论文统计部分的审稿专家。你的任务是核查统计方法、统计量与结论的"
     "一致性，并给出可操作的改进建议。只输出与统计审计相关的内容，"
-    "不输出寒暄和免责声明。"
+    "不输出寒暄和免责声明。\n\n"
+    + _TONE_RULES_REVIEW
 )
 
 _PAPER_HEADER = "以下是待审计的论文文本：\n<<<PAPER\n"

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>智论助手 · 当前离线</title>
+<style>
+  :root {
+    --c-primary: #1e40af;
+    --c-text: #0f172a;
+    --c-muted: #64748b;
+    --c-border: #e2e8f0;
+    --c-bg: #f8fafc;
+    --c-card: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--c-bg); color: var(--c-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    padding: 24px;
+  }
+  .card {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: 14px; padding: 36px 32px; max-width: 460px; width: 100%;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08); text-align: center;
+  }
+  .icon { font-size: 44px; line-height: 1; margin-bottom: 14px; }
+  h1 { font-size: 19px; margin: 0 0 10px; }
+  p { color: var(--c-muted); font-size: 14px; line-height: 1.7; margin: 0 0 18px; }
+  code {
+    background: var(--c-bg); border: 1px solid var(--c-border);
+    border-radius: 5px; padding: 2px 7px; font-size: 13px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  ol { text-align: left; color: var(--c-muted); font-size: 14px; line-height: 1.9;
+       margin: 0 0 22px; padding-left: 20px; }
+  button {
+    background: var(--c-primary); color: #fff; border: 0; border-radius: 9px;
+    padding: 11px 26px; font-size: 14px; cursor: pointer; font-weight: 500;
+  }
+  button:hover { opacity: .92; }
+  .hint { margin-top: 18px; font-size: 12.5px; color: var(--c-muted); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔌</div>
+    <h1>连不上智论助手服务</h1>
+    <p>页面外壳已离线可用，但统计与核查必须连到本地服务才能运行
+       —— 你的数据不会离开这台机器。</p>
+    <ol>
+      <li>确认服务已启动：在项目目录执行 <code>python app.py</code></li>
+      <li>确认访问的是 <code>http://127.0.0.1:5000</code></li>
+      <li>若刚改过代码，重启服务后重试</li>
+    </ol>
+    <button onclick="location.reload()">重新加载</button>
+    <div class="hint">离线时不会显示任何缓存的统计结果，以免你看到过期结论。</div>
+  </div>
+</body>
+</html>

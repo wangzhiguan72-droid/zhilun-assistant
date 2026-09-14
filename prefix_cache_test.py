@@ -96,6 +96,16 @@ def fmt_usage(u) -> str:
 
 
 def main() -> int:
+    # v2.23：真调开关。本脚本会真调 DeepSeek / 智谱 / 百炼，单轮 3 次调用加等待，
+    # 被 `for f in *_test.py` 扫进全量回归时会把整轮拖死（实测 7 分钟零输出被杀），
+    # 还会因上游额度/限流产生与代码无关的失败。与 `kimi_mimo_live_test.py` 同一约定：
+    # **必须显式 --live 才发起网络请求**，否则 SKIP 并 exit 0。
+    # （CI 的 LIVE_SUITES 黑名单也列了它，但黑名单只救 CI，救不了本地全量。）
+    if "--live" not in sys.argv:
+        print('[SKIP] 未指定 --live：本脚本会真调外部 API（前缀缓存实证），已跳过。')
+        print('[SKIP] 如需实测请运行：python prefix_cache_test.py --live')
+        return 0
+
     # 选平台
     chosen = None
     for provider, model, env_var in _CANDIDATES:

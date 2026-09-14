@@ -2501,6 +2501,64 @@ def _clamp_num(raw: Any, default: float, lo: float, hi: float, kind: str) -> tup
     return (int(clamped) if kind == "int" else float(clamped)), changed
 
 
+@app.route("/api/local_open", methods=["POST"])
+def api_local_open():
+    """拖拽数据文件到 exe 图标 → 自动加载（v2.22，桌面端专用）。
+
+    安全设计（改动前必读）：
+        - 文件路径**只来自桌面启动器设置的进程环境变量**
+          （ZL_DESKTOP_OPEN_FILE），**绝不接受 HTTP 参数里的路径** ——
+          否则内网/公网部署时，任何访问者都能让服务器读任意文件。
+        - 双重保险：只处理**回环地址**来的请求 + 必须存在桌面模式环境变量
+          （ZL_DESKTOP_LOCAL_OPEN=1，由启动器设置；网页部署的服务没有）。
+        - **一次性**：路径读出即从环境变量移除，刷新页面不会反复触发。
+    """
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return jsonify({"ok": False, "error": "仅限本机使用。"}), 403
+    if os.environ.get("ZL_DESKTOP_LOCAL_OPEN") != "1":
+        return jsonify({"ok": False,
+                        "error": "当前不是桌面模式（未从 exe 拖拽文件启动）。"}), 403
+
+    # 一次性取走路径：无论成功失败都不留第二次触发机会
+    path = os.environ.pop("ZL_DESKTOP_OPEN_FILE", None)
+    os.environ.pop("ZL_DESKTOP_LOCAL_OPEN", None)
+    if not path or not Path(path).is_file():
+        return jsonify({"ok": False, "error": "待打开的数据文件不存在或已被移动。"}), 400
+    if Path(path).suffix.lower() not in ALLOWED_EXT:
+        return jsonify({"ok": False,
+                        "error": "仅支持 .csv / .xlsx / .xls 数据文件。"}), 400
+
+    class _LocalFile:  # 与 FileStorage 的 filename/read 契约对齐
+        filename = Path(path).name
+        @staticmethod
+        def read():
+            with open(path, "rb") as fh:
+                return fh.read()
+
+    try:
+        df = _read_any(_LocalFile())
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"读取文件失败：{e}"}), 400
+    if df.empty or len(df.columns) == 0:
+        return jsonify({"ok": False, "error": "文件无有效数据。"}), 400
+
+    columns = [_summarize_column(df[c]) for c in df.columns]
+    file_id = uuid.uuid4().hex[:12]
+    _SESSION[file_id] = df
+    return jsonify({
+        "ok": True,
+        "file_id": file_id,
+        "filename": _LocalFile.filename,
+        "rows": int(len(df)),
+        "columns": columns,
+        "recommendation": _recommend_method(columns),
+        "available_methods": _registry_available_methods(),
+        "opened_from": "local_drag",
+    })
+
+
 @app.route("/api/simulate", methods=["GET", "POST"])
 def api_simulate():
     """生成可复现的模拟数据 + 真值（纯 numpy，零 LLM）。

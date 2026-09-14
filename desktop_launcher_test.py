@@ -306,8 +306,30 @@ class _SyncThread:
             self._t(*self._a)
 
 
-def run_main(*, our_app: bool, port_free, app_mod=None, run_raises=None):
-    """在完全隔离的假环境下跑一遍 main()，返回 (FakeApp, FakeBrowser, 输出文本)。"""
+@contextlib.contextmanager
+def _empty_stdin():
+    """把 stdin 换成空流。
+
+    v2.23：main() 收尾会调 `_wait_for_enter()` → `input()`，而 `input()` 读的是
+    **stdin** 不是 stdout（`contextlib` 只有 redirect_stdout/stderr，没有 stdin 的）。
+    只重定向 stdout 的话，在 CI / 后台批处理里 stdin 是空管道，`input()` 会
+    **永久阻塞** —— 实测把整轮全量回归挂死 12 分钟。
+    换成空 StringIO 后 input() 立刻 EOF，顺带也覆盖了 v2.19「无控制台不许炸」的修复。
+    """
+    old = sys.stdin
+    sys.stdin = io.StringIO("")
+    try:
+        yield
+    finally:
+        sys.stdin = old
+
+
+def run_main(*, our_app: bool, port_free, app_mod=None, run_raises=None,
+             try_tray: bool = False):
+    """在完全隔离的假环境下跑一遍 main()，返回 (FakeApp, FakeBrowser, 输出文本)。
+
+    try_tray=True 时打桩 `_try_tray` 返回 True（模拟托盘可用，接管主线程）。
+    """
     FakeBrowser.opened = []
     fake_app = FakeApp()
     if run_raises:
@@ -327,15 +349,21 @@ def run_main(*, our_app: bool, port_free, app_mod=None, run_raises=None):
         "open_browser_delayed": dl.open_browser_delayed,
         "webbrowser": dl.webbrowser,
         "threading": dl.threading,
+        "_try_tray": dl._try_tray,
     }
     dl.is_our_app = lambda *a, **k: our_app
     dl.port_is_free = port_free
     dl.open_browser_delayed = lambda url, delay=2.0: FakeBrowser.opened.append(url)
     dl.webbrowser = FakeBrowser()
     dl.threading = types.SimpleNamespace(Thread=_SyncThread)
+    # v2.23：必须打桩。`_try_tray` 一旦成功就会用 pystray 的 icon.run() 占住
+    # **主线程**（Windows 托盘的要求），测试里真调它会永久阻塞 —— 实测把整轮
+    # 全量回归挂死 12 分钟。默认让它接管失败，走控制台分支；
+    # 需要测托盘时用 try_tray 参数覆盖。
+    dl._try_tray = (lambda *a, **k: True) if try_tray else (lambda *a, **k: False)
     buf = io.StringIO()
     try:
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf), _empty_stdin():
             dl.main()
     finally:
         for k, v in old.items():
@@ -365,6 +393,12 @@ check("5000 被占：自动顺延", app_f.calls and app_f.calls[0]["port"] == 50
 check("5000 被占：日志告知换端口", "5001" in out, out[:300])
 check("5000 被占：浏览器打开的是新端口",
       browser_f.opened == ["http://127.0.0.1:5001"], str(browser_f.opened))
+
+# v2.23：托盘可用时接管主线程，**不再走控制台的 app.run**（否则两套主循环打架）。
+# 这条同时是护栏：谁把 `if _try_tray(...): return` 删了，这里立刻红。
+app_f, browser_f, out = run_main(our_app=False, port_free=lambda p: True, try_tray=True)
+check("托盘接管：不再调 app.run", app_f.calls == [], str(app_f.calls))
+check("托盘接管：浏览器照样打开", browser_f.opened == ["http://127.0.0.1:5000"], str(browser_f.opened))
 
 broken = types.ModuleType("app")  # 没有 app 属性 → from app import app 抛 ImportError
 app_f, browser_f, out = run_main(our_app=False, port_free=lambda p: True, app_mod=broken)

@@ -258,7 +258,7 @@ def main() -> None:
     print(f"  用法：双击运行，自动打开浏览器（默认 http://127.0.0.1:5000）")
     print()
     print("  建议再跑一次功能验证：")
-    print("      .venv/Scripts/python.exe _exe_e2e.py")
+    print("      .venv/Scripts/python.exe scripts/exe_e2e.py")
     print("=" * 52)
 
 

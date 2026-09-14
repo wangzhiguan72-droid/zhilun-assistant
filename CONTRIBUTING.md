@@ -137,8 +137,18 @@ python smoke_test.py
 python paper_check_test.py
 ```
 
-前端**逻辑**正确性（不是语法）需要另写 DOM mock 探针，放在 `_syntaxcheck/` 下。
-`node --check` 查不出「选条优先级算错」这类问题。
+前端**逻辑**正确性（不是语法）需要另写 DOM mock 探针，放在 `_syntaxcheck/` 下，
+命名 `*_probe.js`。`node --check` 查不出「选条优先级算错」这类问题。
+
+```bash
+# 跑全部前端探针（CI 也会跑，自动发现，不用维护清单）
+for p in _syntaxcheck/*_probe.js; do node "$p"; done
+```
+
+探针验的是**契约**，不是像素：该发什么请求、守门有没有生效（`ensureIntegrityPledge`
+未签时一个字节都不能发出去）、失败后按钮有没有复原、后端文本有没有转义。
+写探针时记住：在 mock 里能过不代表在真实页面能过——`escapeHtml` / `toast`
+这类依赖要回头 grep 源码确认它们确实是全局函数，否则 XSS 断言是假绿。
 
 > ⚠️ `_syntaxcheck/` 是多人共用的探针目录，**不要整体删除**。
 

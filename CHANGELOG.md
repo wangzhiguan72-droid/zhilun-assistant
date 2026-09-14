@@ -27,6 +27,39 @@ attachment; filename=_independent_t_1234567890.docx; filename*=UTF-8''%E6%99%BA%
 用户下载到的每个 Word 都叫 `_independent_t_1757xxxxx.docx`，看不出是什么报告。
 探针里留了**反向守卫**：断言旧正则确实只会拿到 `_independent_t_...`，别让人改回去。
 
+**顺带修掉一个会让 CI 挂死的测试缺陷。** 并发会话给启动器加了系统托盘后，
+`desktop_launcher_test.py` 的「新起实例」分支会真的走进 `_try_tray` ——
+它用 pystray 的 `icon.run()` 占住**主线程**（Windows 托盘的要求），
+于是整个回归卡死 12 分钟没有任何输出。修法是给 `_try_tray` 打桩，
+并补一条新契约断言：**托盘接管时不再调 `app.run`**（两套主循环会打架）。
+同一处还补了 stdin 重定向：`_wait_for_enter()` 里的 `input()` 读的是 stdin
+不是 stdout，后台批处理里 stdin 是空管道时会永久阻塞
+（`contextlib` 只有 `redirect_stdout/stderr`，没有 stdin 的，得自己换 `sys.stdin`）。
+
+顺带补上 `prefix_cache_test.py` 缺的 `--live` 开关（与 `kimi_mimo_live_test.py`
+同一约定）：它会真调 DeepSeek / 智谱 / 百炼，项目 `.env` 里有 Key 时会被
+`for f in *_test.py` 扫进去，**7 分钟零输出**把整轮回归拖死。
+CI 的 `LIVE_SUITES` 黑名单只救得了 CI，救不了本地全量——脚本自己不长开关，
+黑名单一漏就是又一次"回归跑到一半不动了"。
+
+⚠️ 另需记录：本轮收尾时发现 `_syntaxcheck/` **被整目录清空**（只剩一个
+`datacheck_probe.js`），`simulate` / `review_share` / `plugin_methods` 三个探针
+**源码已不可恢复**。本轮的 `defense_export_probe.js`(82) 与 `image_audit_probe.js`(47)
+已按源码 / 断言清单重建。`_syntaxcheck/` 是各会话共享目录，且未纳入 git ——
+**不要整体清理**。CI 里新加的"探针数 < 3 报警"就是为这种情况准备的。
+
+**顺带：v2.21 那道打包预检守卫第一次真的拦到了人。** 本轮回归跑到一半时
+`build_desktop_test` 红了——不是我的改动，是并发会话新增了 `version.py`
+（`desktop_launcher.py` 引用它）却没同步 `desktop.spec`。预检当场报：
+
+```
+[预检失败] desktop.spec 的 datas 清单缺少以下本地模块：
+    - version                     (被 desktop_launcher.py 引用)
+```
+
+已补 datas + hiddenimports（26 → 28 个模块）。**这就是把守卫接进日常回归的意义**：
+它会在别人手滑的当天报警，而不是等到用户双击 exe 闪退才发现。
+
 探针覆盖：守门（未签学术诚信承诺 → **一个字节都不许发出去**，防失败开放）、
 请求体契约（`include_datacheck=true`——答辩前必须过数据体检）、三态渲染、
 `X-Missing-Charts` 部分失败提示、XSS 转义、以及**失败路径按钮必须复原**

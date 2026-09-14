@@ -1,0 +1,45 @@
+# 智论助手 Docker 部署忽略文件
+# 避免把大文件 / 敏感文件打进镜像
+
+.git
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.db
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+模板论文/
+freellmapi/
+.workbuddy/
+.workbuddy-ai/
+
+# 测试与开发工具：运行镜像时不需要，排除以缩小体积
+*_test.py
+tools/
+_syntaxcheck/
+.github/
+CONTRIBUTING.md
+CHANGELOG.md
+docs/

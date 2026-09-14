@@ -1,0 +1,40 @@
+# 智论助手私有化部署（数据不出实验室）
+# 用法：docker-compose up -d
+
+version: '3.8'
+
+services:
+  zhilun:
+    build: .
+    container_name: zhilun-assistant
+    # 仅绑定内网（127.0.0.1 或局域网 IP），不暴露公网
+    ports:
+      - "127.0.0.1:5000:5000"
+    # 不挂载任何卷 —— 数据全内存，容器重启即清空（隐私保护）
+    restart: unless-stopped
+    # 资源限制（防止单用户占满）
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # 健康检查：容器内用 /health（返回服务名 + 限流统计），比 / 更轻
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # 环境变量（可选，覆盖默认配置）
+    environment:
+      # 容器内必须绑 0.0.0.0（Dockerfile 已设默认值，这里显式重申）
+      - HOST=0.0.0.0
+      - PORT=5000
+      # 生产环境务必保持 debug 关闭
+      - DEBUG=0
+      # 若部署在 Nginx / Cloudflare 之后，设为 1 才会采信 X-Forwarded-For
+      # ⚠️ 直连公网时设 1 = 可被伪造头绕过限流
+      - TRUST_PROXY=0

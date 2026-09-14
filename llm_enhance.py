@@ -30,12 +30,14 @@ import json
 from typing import Any
 
 from llm_cache import llm_cache
+from tone_guide import TONE_RULES as _TONE_RULES
 
 # ---------------------------------------------------------------------------
 # 冻结前缀（v0.5 前缀缓存的关键：这部分字节级不变，永不修改措辞）
 # ⚠️ 修改任何措辞 = 改变 prompt → 必须 bump PROMPT_VERSION（缓存失效）
+# v1.7：注入 tone_guide.TONE_RULES（把"避免 AI 腔"讲成可判定的具体禁令）
 # ---------------------------------------------------------------------------
-PROMPT_VERSION = "v2"  # v0.5.1：Ponytail 决策层优化
+PROMPT_VERSION = "v3"  # v1.7：注入明确语气规约（旧缓存失效）
 
 FROZEN_SYSTEM = (
     "你是「智论助手」的学术解读引擎。你的任务：基于给定的统计检验结果（JSON），"
@@ -47,7 +49,8 @@ FROZEN_SYSTEM = (
     "4. 若 JSON 中有前提条件信息（如方差齐性、正态性 p 值），结合它给适用性提醒\n"
     "5. 输出纯 Markdown 正文，不要代码块，不要重复标题\n"
     "6. 最后单独一行写一条「写作提示：…」的短建议\n\n"
-    "生成前决策（参考 Ponytail 最佳实践）：\n"
+    + _TONE_RULES
+    + "\n生成前决策（参考 Ponytail 最佳实践）：\n"
     "在输出解读前，先快速判断：\n"
     "- 统计结果是否已经一目了然？（如 p<0.001 且效应量显著，结论明确）\n"
     "- 是否需要额外解释？（用户只要结论还是需要理论依据？）\n"
@@ -78,11 +81,13 @@ def enhance_analysis(method: str, summary: dict[str, Any], label: str,
         return None, f"统计量序列化失败：{e}", {"cached": False, "model": ""}
 
     # ---- v0.5：查缓存（force=True 时绕过）----
-    # 模型名先从 Router 解析（进 key，双平台切换不串缓存）
+    # 模型名从 Router 解析（进 key，双平台切换不串缓存）。
+    # v1.1.1：用 cache_model_name()——它优先返回该状态**上次真正成功**的模型，
+    # 避免容灾切换导致"查缓存时的候选"与"写缓存时的候选"不一致而假性 miss。
     model_name = ""
     try:
         from agents import get_router
-        model_name = _router_model_name(get_router())
+        model_name = _router_model_name(get_router(), "write_text")
     except Exception:  # noqa: BLE001
         pass  # 拿不到模型名也能继续（Key 缺失在下面报）
 
@@ -123,15 +128,32 @@ def enhance_analysis(method: str, summary: dict[str, Any], label: str,
         return None, "LLM 返回空内容", {"cached": False, "model": model_name}
 
     # ---- v0.5：写缓存 ----
+    # v1.1.1：若实际服务模型与查缓存时用的不同（发生了容灾切换），
+    # 则按实际模型再写一份，保证"下次用同一模型查时能命中"。
+    try:
+        from agents import get_router
+        actual = _router_model_name(get_router(), "write_text")
+    except Exception:  # noqa: BLE001
+        actual = model_name
+    if actual and actual != model_name:
+        llm_cache.put(llm_cache.make_key(actual, PROMPT_VERSION, method, clean), text)
+        model_name = actual
     llm_cache.put(cache_key, text)
     section = "### 六、AI 深度解读（实验功能，请自行核对数字）\n\n" + text
     return section, None, {"cached": False, "model": model_name}
 
 
-def _router_model_name(router) -> str:
-    """拿到 write_text 状态实际路由到的模型名（进缓存 key）。"""
+def _router_model_name(router, state: str = "write_text") -> str:
+    """拿到指定状态**稳定**的模型名（进缓存 key）。
+
+    v1.1.1：改用 router.cache_model_name(state)，它在"上次成功模型"与
+    "当前候选"之间做稳定化处理；旧实现直接取当前候选，容灾切换时会漂移。
+    """
     try:
-        agent = router._get_agent("write_text")
+        fn = getattr(router, "cache_model_name", None)
+        if callable(fn):
+            return fn(state) or ""
+        agent = router._get_agent(state)   # 兼容旧接口
         return agent.model_name
     except Exception:  # noqa: BLE001
         return ""
@@ -159,6 +181,15 @@ def _sanitize(obj: Any, _depth: int = 0) -> Any:
 
 
 def _short(msg: str, limit: int = 120) -> str:
-    """错误信息截断（避免把大段 API 报错塞给前端）。"""
+    """错误信息截断（避免把大段 API 报错塞给前端）。
+
+    v0.5.4：先过一遍凭据擦除——这段文案会直接进 jsonify(error=...) 回浏览器，
+    而底层 SDK 异常正文有时会回显 API Key。
+    """
+    try:
+        from agents.secrets_guard import redact
+        msg = redact(msg)
+    except Exception:  # noqa: BLE001
+        pass
     msg = msg.replace("\n", " ").strip()
     return msg if len(msg) <= limit else msg[:limit] + "…"

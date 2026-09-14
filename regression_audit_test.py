@@ -1,11 +1,38 @@
-"""论文排查 · 回归分析专项测试（v1.0）"""
+"""论文排查 · 回归分析专项测试（v1.0）
+
+⚠️ 需要先启动本地服务（走真实 HTTP，非 test_client）：
+       python app.py          # 另开一个终端
+   未启动时退出码 2（环境未就绪），不会伪装成测试失败。
+"""
 import json
+import sys
 import urllib.request
 import urllib.error
 
 BASE = "http://127.0.0.1:5000"
 
 
+
+def _require_server():
+    """服务未就绪时明确退出（退出码 2），不把「没起服务」伪装成「测试失败」。
+
+    本脚本走真实 HTTP（非 test_client），必须先 `python app.py`。
+    退出码约定：2 = 环境未就绪；1 = 真失败；0 = 通过。
+    """
+    try:
+        urllib.request.urlopen(BASE + "/health", timeout=3)
+        return
+    except Exception as exc:  # noqa: BLE001
+        print("=" * 70)
+        print("⚠️  未检测到本地服务，本测试无法运行。")
+        print(f"    目标：{BASE}/health")
+        print(f"    原因：{type(exc).__name__}: {exc}")
+        print("    请先另开终端执行：  python app.py")
+        print("=" * 70)
+        sys.exit(2)
+
+
+_require_server()
 def post_multipart_2files(path, paper_path, data_path):
     boundary = "----papercheck_reg"
     def part(name, filename, body, ctype="application/octet-stream"):

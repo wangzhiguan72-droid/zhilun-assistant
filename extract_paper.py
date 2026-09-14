@@ -95,6 +95,39 @@ def read_paper_text(file_storage) -> str:
     raise ValueError("论文文本编码无法识别（尝试了 utf-8 / gbk）。")
 
 
+def read_paper_tables(file_storage) -> list[list[list[str]]]:
+    """v2.11 · P3 表格交叉核查的原料：docx → 结构化表格。
+
+    返回 [表 → 行 → 单元格文本]。**只支持 .docx**——它是内测用户上传
+    论文的主要格式且 python-docx 能保真读出表格结构；PDF 的表格在文本流
+    里已经打散、txt/md 根本没有表格结构，硬解析都是误报制造机，不做。
+
+    注意：read_paper_text 已把 FileStorage 指针读到尾部，这里先 seek(0)。
+    非 docx（或 python-docx 缺失）返回 []，调用方按"无表格"处理，绝不报错。
+    """
+    name = (getattr(file_storage, "filename", "") or "").lower()
+    if not name.endswith(".docx") or Document is None:
+        return []
+    try:
+        stream = getattr(file_storage, "stream", None)
+        if stream is not None and hasattr(stream, "seek"):
+            stream.seek(0)
+        raw = file_storage.read()
+        doc = Document(io.BytesIO(raw))
+    except Exception:  # noqa: BLE001 — 表格读不出来就不核对，绝不影响主流程
+        return []
+    tables: list[list[list[str]]] = []
+    for tbl in doc.tables:
+        rows: list[list[str]] = []
+        for row in tbl.rows:
+            cells = [(c.text or "").strip() for c in row.cells]
+            if any(cells):
+                rows.append(cells)
+        if len(rows) >= 2:  # 只有表头/只有一行的表没有核对价值
+            tables.append(rows)
+    return tables
+
+
 # -----------------------------------------------------------------------------
 # 2) 统计方法识别
 # -----------------------------------------------------------------------------
@@ -110,6 +143,11 @@ _METHOD_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
         re.compile(r"(单因素方差分析|单因素\s*ANOVA|one[\s-]*way\s*ANOVA|one[\s-]*way\s*anova)", re.IGNORECASE)),
     ("双因素方差分析", "two_way_anova",
         re.compile(r"(双因素方差分析|双因素\s*ANOVA|two[\s-]*way\s*ANOVA)", re.IGNORECASE)),
+    # 注意：必须排在「单因素/双因素方差分析」之后、「方差分析」通用模式之前，
+    # 否则"重复测量方差分析"会被 .*方差分析 抢先命中成 anova。
+    ("重复测量方差分析", "repeated_measures_anova",
+        re.compile(r"(重复测量(?:方差分析|ANOVA)|被试内(?:设计|方差分析|ANOVA)|"
+                   r"组内设计|repeated[\s-]*measures|mixed[\s-]*ANOVA)", re.IGNORECASE)),
     ("Pearson 相关", "correlation",
         re.compile(r"(Pearman\s*相关|Pearson\s*相关|Pearson\s*correlation|皮尔逊相关)", re.IGNORECASE)),
     ("Spearman 相关", "spearman",
@@ -164,7 +202,36 @@ def extract_methods(text: str) -> list[dict[str, Any]]:
                 "start": m.start(),
             })
     results.sort(key=lambda x: x["start"])
-    return results
+    return _dedup_methods_per_sentence(text, results)
+
+
+# 句末标点（中英文），用于把命中位置映射到"所属句子"
+_SENT_BREAK = re.compile(r"[。！？；\n]|[.!?;](?=\s|$)")
+
+
+def _dedup_methods_per_sentence(text: str, results: list[dict[str, Any]]
+                                ) -> list[dict[str, Any]]:
+    """同一句话里同一方法被多个模式命中时，只保留一条。
+
+    背景（内测实测）："本研究为被试内设计，使用重复测量ANOVA检验差异。"
+    会同时命中「被试内设计」与「重复测量ANOVA」两个子模式，
+    产生两条完全相同的 method_key 条目，让论文排查的"声称方法"列表虚高。
+
+    实现：对每个命中位置，向前找最近的一个句末标点，得到"所属句子"的
+    起始偏移；用 (method_key, 句子起点) 作为去重键。
+    """
+    out: list[dict[str, Any]] = []
+    seen_sent: set[tuple[str, int]] = set()
+    for r in results:                              # 已按 start 升序
+        pos = r["start"]
+        seg = text[:pos]
+        last = max((m.end() for m in _SENT_BREAK.finditer(seg)), default=0)
+        sig = (r["method_key"], last)
+        if sig in seen_sent:
+            continue
+        seen_sent.add(sig)
+        out.append(r)
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -221,6 +288,22 @@ _PATTERNS = {
         re.compile(r"[Aa]lpha\s*=\s*0?\.\d+"),
         re.compile(r"α\s*=\s*0?\.\d+"),                              # α = 0.85
     ],
+    # v2.1 · GRIM 交叉核查的原料：论文声称的**均值**
+    # （配合真实样本量做 GRIM 检验：均值 × n 是否可能是整数之和）
+    # 正则刻意收窄：只认 "M = 3.47" / "均值为 3.47" 这类明确写法，
+    # 不认裸数字，避免把正文里的随便一个数字当均值。
+    "mean": [
+        re.compile(r"\bM\s*[=＝]\s*\d+\.?\d*"),                      # M = 3.47
+        re.compile(r"(均值|平均分|平均数|平均得分)\s*[=＝是为]\s*\d+\.?\d*"),
+    ],
+    # v2.10 · GRIMMER 交叉核查的原料：论文声称的**标准差**
+    # （配合均值与真实样本量，检验 (mean, sd, n) 是否可能）
+    # 同理刻意收窄：只认 "SD = 0.52" / "标准差为 0.52" 这类明确写法。
+    "sd": [
+        re.compile(r"\bSD\s*[=＝]\s*\d+\.?\d*"),                     # SD = 0.52
+        re.compile(r"\bS\.D\.\s*[=＝]\s*\d+\.?\d*", re.IGNORECASE),   # S.D. = 0.52
+        re.compile(r"(标准差|标准偏差)\s*[=＝是为]\s*\d+\.?\d*"),
+    ],
 }
 
 # v0.9.5 内测语料（减税降费博士论文）暴露：回归表脚注的显著性图例
@@ -247,8 +330,15 @@ def _normalize_p(raw: str) -> tuple[float | None, str, str]:
 
 
 def extract_quantities(text: str) -> list[dict[str, Any]]:
-    """识别论文中声称的统计量。"""
+    """识别论文中声称的统计量。
+
+    返回顺序 = 统计量在论文中**首次出现的文档顺序**，且跨进程可复现。
+    （历史 bug：曾用 ``x["context"].__hash__()`` 当排序键，而 str 的 hash
+     受 PYTHONHASHSEED 随机化影响，导致同一篇论文每次运行报告行序都不同。）
+    """
     out: list[dict[str, Any]] = []
+    # 与 out 平行的位置列表：仅用于排序，不进入返回的 dict（避免 _pos 泄漏到 API）
+    positions: list[int] = []
     seen: set[tuple[str, int]] = set()
     # v0.9.5：先定位显著性图例区间（"*** p<0.01，** p<0.05，* p<0.1"），
     # 落在其中的 p 值是表格脚注图例，不是论文声称的统计结果 → 跳过
@@ -270,19 +360,32 @@ def extract_quantities(text: str) -> list[dict[str, Any]]:
                     val, op, _ = _normalize_p(raw)
                     out.append({"kind": "p", "value": val, "op": op, "raw": raw,
                                 "context": _slice_context(text, m)})
+                    positions.append(m.start())
                 elif kind == "r":
                     val = float(re.search(r"-?0?\.\d+", raw).group())
                     out.append({"kind": "r", "value": val, "raw": raw,
                                 "context": _slice_context(text, m)})
+                    positions.append(m.start())
                 elif kind == "d":
                     val = float(re.search(r"-?\d+\.?\d*", raw).group())
                     out.append({"kind": "d", "value": val, "raw": raw,
                                 "context": _slice_context(text, m)})
+                    positions.append(m.start())
+                elif kind in ("mean", "sd"):
+                    # v2.1：均值（"M = 3.47" / "均值为 3.47" 都可能不带等号）
+                    # v2.10：标准差同理（GRIMMER 的原料）
+                    mv = re.search(r"\d+\.?\d*", raw)
+                    if mv is None:
+                        continue
+                    out.append({"kind": kind, "value": float(mv.group()), "raw": raw,
+                                "context": _slice_context(text, m)})
+                    positions.append(m.start())
                 elif kind in ("r2", "beta", "or"):
                     # v1.0 回归统计量：β / R² / OR
                     val = float(re.search(r"=\s*(-?\d+\.?\d*)", raw).group(1))
                     out.append({"kind": kind, "value": val, "raw": raw,
                                 "context": _slice_context(text, m)})
+                    positions.append(m.start())
                 else:
                     # 抓等号后面的数字（不是整段第一个数字）
                     val_match = re.search(r"=\s*(-?\d+\.?\d*)", raw)
@@ -292,7 +395,12 @@ def extract_quantities(text: str) -> list[dict[str, Any]]:
                     df = int(df_match.group(1)) if df_match else None
                     out.append({"kind": kind, "value": val, "df": df, "raw": raw,
                                 "context": _slice_context(text, m)})
-    out.sort(key=lambda x: x["context"].__hash__())  # 稳定排序即可
+                    positions.append(m.start())
+    # 按「在论文中的位置」排序：确定性、可复现，且符合读者阅读顺序。
+    # 次级键用 (kind, raw)，保证同位置多命中时也不依赖集合/字典顺序。
+    order = sorted(range(len(out)),
+                   key=lambda i: (positions[i], out[i]["kind"], out[i]["raw"]))
+    out = [out[i] for i in order]
     # v0.9.4 内测反馈（339 页博士论文）：回归表格脚注 "*** p<0.01, ** p<0.05"
     # 会被每个表格重复抓一次（80 条里 90% 是重复）。
     # 按 (kind, raw) 去重，保留首个上下文 + 记录出现次数。

@@ -1,6 +1,6 @@
 """
 智论助手 - 应用图标生成脚本
-生成 assets/icon.ico（多尺寸）+ assets/icon.png
+生成 assets/icon.ico（多尺寸）+ assets/icon.png + PWA 图标（static/icons/*）
 用法：python make_icon.py
 """
 from pathlib import Path
@@ -9,6 +9,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 ASSETS = Path(__file__).parent / "assets"
 ASSETS.mkdir(exist_ok=True)
+
+# PWA 图标目录（Flask 默认把 static/ 挂在 /static/ 下）
+STATIC_ICONS = Path(__file__).parent / "static" / "icons"
 
 BRAND = (37, 99, 235)       # 品牌蓝
 BRAND_DARK = (23, 61, 153)
@@ -53,6 +56,18 @@ def make_icon(size: int) -> Image.Image:
     return img
 
 
+def make_maskable(size: int) -> Image.Image:
+    """Maskable 图标：Android 会用圆形/方形裁切，图形必须落在中间 ~80% 安全区。
+
+    做法：整块铺满品牌色（不留透明边），再把普通图标按 78% 缩放居中贴上去。
+    """
+    base = Image.new("RGBA", (size, size), BRAND)
+    inner = make_icon(int(size * 0.78))
+    off = (size - inner.size[0]) // 2
+    base.paste(inner, (off, off), inner)
+    return base
+
+
 def main() -> None:
     sizes = [16, 24, 32, 48, 64, 128, 256]
     imgs = [make_icon(n) for n in sizes]
@@ -68,6 +83,21 @@ def main() -> None:
         sizes=[(n, n) for n in sizes],
     )
     print(f"已生成 {ASSETS / 'icon.ico'}（{', '.join(f'{n}x{n}' for n in sizes)}）")
+
+    # ---- PWA 图标 ----
+    STATIC_ICONS.mkdir(parents=True, exist_ok=True)
+    for n in (192, 512):
+        make_icon(n).save(STATIC_ICONS / f"icon-{n}.png")
+        print(f"已生成 {STATIC_ICONS / f'icon-{n}.png'}")
+    for n in (192, 512):
+        make_maskable(n).save(STATIC_ICONS / f"maskable-{n}.png")
+        print(f"已生成 {STATIC_ICONS / f'maskable-{n}.png'}")
+
+    # 浏览器地址栏 favicon（32px 够用，省一次 404）
+    STATIC_ICONS.parent.mkdir(parents=True, exist_ok=True)
+    make_icon(32).save(STATIC_ICONS.parent / "favicon.ico", format="ICO",
+                       sizes=[(16, 16), (32, 32), (48, 48)])
+    print(f"已生成 {STATIC_ICONS.parent / 'favicon.ico'}")
 
 
 if __name__ == "__main__":

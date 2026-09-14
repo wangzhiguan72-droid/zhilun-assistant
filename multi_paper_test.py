@@ -15,8 +15,14 @@
   E. 非统计类论文（2/3/5）→ 不自作主张跑分析
 """
 import io as _io
+import os
 import sys
 from pathlib import Path
+
+# 本测试在一个进程里逐篇扫模板论文（>10 次 /api/check_paper），
+# 会撞上 v1.7 新增的 LLM 接口限流（默认 8 次/分钟）→ 误报 429。
+# 测试场景显式关闭限流；生产环境绝不能这样做（见 security_guard.disabled 文档）。
+os.environ["RATE_LIMIT_DISABLE"] = "1"
 
 sys.path.insert(0, str(Path(__file__).parent))
 from app import app  # noqa: E402

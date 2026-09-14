@@ -1,194 +1,466 @@
-# 智论助手 · MVP（最小可内测版）
+# 智论助手 · ZhiLun Assistant
 
-一个本地运行的数据分析辅助 Web 应用，目标是：
-1. 从 Excel/CSV 直接产出可放进论文的 T 检验结果。
-2. 上传论文初稿 → 自动识别论文里的统计方法 → 用真实数据反向核查。
+**本地运行的毕业论文「数据体检 + 统计核查 + 写作副驾」。**
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
+[![Tests](https://img.shields.io/badge/tests-47%20suites-brightgreen)](#七测试)
+[![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+[![No Build](https://img.shields.io/badge/build-none%20required-success)](#二快速开始)
+
+从 Excel/CSV 到可写进论文的统计结果，再到用真实数据反向核查论文里的统计量是否对得上——
+一条**可追踪、不越界**的流水线。
+
+> 核心统计全部由 Python 计算，**不配任何 API Key 也能完整跑通**。AI 能力是可选的「翻译层」，
+> 只把已算好的结果讲成人话；它挂了，功能不中断。
 
 ---
 
-## 一、当前功能（v0.9）
+## 目录
 
-| 模块 | 状态 |
+- [一、它能做什么](#一它能做什么)
+- [二、快速开始](#二快速开始)
+- [三、六种用法](#三六种用法)
+- [四、产品主线：八站流程](#四产品主线八站流程)
+- [五、设计原则](#五设计原则)
+- [六、项目结构](#六项目结构)
+- [七、测试](#七测试)
+- [八、扩展点（设计已留好接口）](#八扩展点设计已留好接口)
+- [九、合规边界（重要）](#九合规边界重要)
+- [十、文档](#十文档)
+- [十一、限制](#十一限制)
+- [十二、许可证](#十二许可证)
+
+---
+
+## 一、它能做什么
+
+### 十二个统计方法（全部纯 Python 实现，不依赖 statsmodels）
+
+| 方法 | 关键产出 |
 | --- | --- |
-| **【Tab 1：数据分析】** | |
-| 拖拽 / 点击上传 .xlsx / .xls / .csv | ✅ |
-| 自动读取列、识别连续 / 分类变量 | ✅ |
-| **分步引导向导** + 手动切换方法（7 个方法） | ✅ v0.6 / v0.7 |
-| **独立样本 T 检验**（方差齐性、Welch 校正、Cohen's d、95% CI） | ✅ |
-| **单因素方差分析 ANOVA**（Levene、η²、Bonferroni 事后多重比较） | ✅ v0.3 |
-| **Pearson 相关分析**（r、95% CI、t、Cohen 效应量解释） | ✅ v0.3 |
-| **卡方检验**（χ²、Cramér's V、期望频数警告） | ✅ v0.3 |
-| **配对样本 T 检验**（Cohen's d_z、Shapiro 正态性提示） | ✅ v0.7 |
-| **Mann-Whitney U 检验**（非参数 2 组、效应量 r、中位数 + IQR） | ✅ v0.7 |
-| **Wilcoxon 符号秩检验**（非参数配对、零差值剔除、效应量 r） | ✅ v0.7 |
-| **多元线性回归**（OLS、R²、F 检验、系数 t 检验 + 95% CI） | ✅ v1.0 |
-| **二元 Logistic 回归**（IRLS、Wald z、OR 值、McFadden 伪 R²） | ✅ v1.0 |
-| **自动生成图表**：7 种方法对应不同图（柱图/散点/箱线/连线） | ✅ v0.5 / v0.7 |
-| **流式渲染**：SSE 事件流（阶段消息 + 进度条 + 先文后图），stream=0 保留兼容 | ✅ v0.8 |
-| **导出 Word**：标题/表格/列表自动排版 + 图表嵌入 + 封面元信息，宋体+Times New Roman | ✅ v0.9 |
-| 输出 Markdown 学术解读（含"可直接引用进论文"的结论段） | ✅ |
-| 复制 Markdown 到剪贴板 | ✅ |
-| 内置示例数据（30 行学生 + 焦虑前后测 + 反应时） | ✅ |
-| **【Tab 2：论文排查】** | |
-| 同时上传论文 (.docx / .txt / .md) + 数据 | ✅ |
-| 自动识别论文里的统计方法（v0.7 加 Mann-Whitney / Wilcoxon / Kruskal-Wallis）、统计量、变量名 | ✅ |
-| 论文变量 ↔ 数据列 自动匹配（含同义词映射） | ✅ |
-| 用真实数据重跑一遍，对比论文声称 vs 实际值 | ✅ |
-| 规则化生成改进建议（含 7 种方法各自前提假设 + 替代建议） | ✅ |
-| 自然语言指令过滤（"只看 T 检验 / p<0.05 / 男组 / 成绩"） | ✅ v0.4 |
-| 简单接口限速（每 IP 每分钟 30 次） | ✅ |
-| 重复测量 ANOVA / Logistic 回归 / Cronbach's α | ⏸ 后续版本 |
-| 付费弹窗 / 人味润色 | ⏸ 后续版本 |
+| 独立样本 T 检验 | 方差齐性 / Welch 校正、Cohen's d、95% CI |
+| 配对样本 T 检验 | Cohen's d_z、Shapiro 正态性提示 |
+| 单因素 ANOVA | Levene、η²、Bonferroni 事后多重比较 |
+| 双因素 ANOVA | Type III 平方和、主效应 + 交互效应 |
+| 重复测量 ANOVA | Mauchly 球形度检验、Greenhouse-Geisser 校正、Bonferroni 事后比较 |
+| Pearson 相关 | r、95% CI、t、效应量解释 |
+| 卡方检验 | χ²、Cramér's V、期望频数警告 |
+| Mann-Whitney U | 非参数两组、效应量 r、中位数 + IQR |
+| Wilcoxon 符号秩 | 非参数配对、零差值剔除、效应量 r |
+| 多元线性回归 | OLS、R²/调整 R²、F 检验、系数 t 检验 + 95% CI、VIF |
+| 二元 Logistic 回归 | IRLS、Wald z、OR 值、McFadden 伪 R² |
+| Cronbach's α | α、删项后 α、CITC、信度等级建议 |
+
+每个方法都自动产出：描述统计表格、前提条件检验、**可直接引用进论文的结论段**、
+以及对应的图表（柱图 / 散点 / 箱线 / 连线）。结果可一键导出 Word
+（标题/表格/列表自动排版 + 图表嵌入，宋体 + Times New Roman）。
+
+### 数据体检（产品入口）
+
+上传即体检，**纯本地规则、零 LLM**，检出 12 类数据问题：
+
+合计≠分项 · 取值越界 · 计数列出现小数 · 重复行 · 前后测差值规律 ·
+常数列 · 反向题漏反向计分 · 直线作答 · **作答时长过快** · 缺失模式异常 ·
+**本福特分布不符** · **末位数字偏好**
+
+还可一键生成**清洗副本**：只自动修「语义无歧义」的两类（重复行、反向题反向计分），
+合计≠分项这类无法判断谁错的**只标记不改**，且**绝不触碰你的原文件**。
+
+### 学术级取证（v2.13 · 纯 numpy，零 LLM）
+
+数据体检里最后两类是**学术取证**，用来回答"这批数字像不像人编的 / 人工读的"：
+
+| 检验 | 看什么 | 典型场景 |
+| --- | --- | --- |
+| **GRIM**（均值） | `n × 均值` 必须是粒度的整数倍 | 论文写 M=3.47、n=30，但 30×3.47=104.1 —— 这份 n 根本产生不出这个均值 |
+| **GRIMMER**（均值+标准差） | 即便均值可能，SD 仍可能落在整数数据**不可达**的区间 | 均值自洽、标准差却无解 |
+| **本福特分布** | 首位数字应遵循 `log10(1+1/d)` | 人随手编数时首位是**均匀**想的，分布会明显偏平 |
+| **末位偏好** | 末位数字应均匀（各 10%） | 血压全记成 120/130 而非 123 —— 人工取整会压缩方差 |
+
+**误报是这四把刀的生命线**，所以设了重重闸门：
+
+- 本福特用 **MAD**（审计实务刻度，**与样本量无关**）判定，不用卡方——
+  卡方在 n 大时几乎必然显著，那是台误报机器；列名含编号/年月/量表/百分比/金额、
+  样本量 < 100、跨不到 2 个数量级、唯一值 < 50 的列**一律不判**。
+- 末位偏好要求**双门槛同时成立**：卡方 p < 0.001 **且**某个末位占比 ≥ 25%。
+  只显著但偏离很小（12% vs 10%）不报。
+- 四者级别**最高只到「可疑」**，文案恒含"这只是线索，不代表造假"。
+
+论文侧的 GRIM / GRIMMER 交叉核查走 `audit.py`（**样本量取你的数据实算行数，不采信论文写的 n**）。
+
+### 论文统计核查
+
+上传论文 + 数据 → 识别论文声称的统计方法与统计量 → 用你的真实数据重跑一遍 →
+逐项对比「论文写的」vs「实算的」，不一致的地方给出**具体排查方向**
+（样本范围 / 缺失值处理 / 是否用了别的统计量），而不是一句空话。
+
+支持对任意一条比对**追问**（审计对话），回答附带「依据：论文 x / 实算 y」回执。
+
+论文是 **.docx** 时，还会把里面的**描述统计表**（组别 | n | M | SD）逐格和你的数据核对——分组对得上才核对、对不上不硬猜，表格数字与数据不符会点名到行。
+
+### 答辩准备包（v2.10 · 八站流程最后一站）
+
+本页每成功跑一次分析就记一笔；点「🎓 答辩准备」一键生成**高频 Q&A 预演**
+（为什么用这个方法 / 前提满足吗 / 效应量多大 / 样本量够吗 / 数据清洗过吗），
+每条答题要点都引用**后端重新实算**的统计量——不是抄屏幕上的数字。
+再把会话内所有统计图**一键打包 zip** 下载（内存打包，不落盘）。纯规则零 LLM。
+
+### 论文副驾驶
+
+六阶段流水线：资料调研 → 文献综述 → 研究设计 → 数据分析 → 论文核查 → 论文撰写。
+
+带**证据约束写作引擎**：claim 台账（来源 / 基线 / 置信度）+ 写作闸门自检
+——没有来源的论断不许进正文、非高置信度不许进摘要、大词必须有数字支撑。
+LaTeX 与中文学位论文双模板。可选 LLM 润色层（丢锚点 / 改数字则静默回退原稿）。
 
 ---
 
 ## 二、快速开始
 
-> 💡 不想装 Python？用打包好的免安装桌面版，见 [README-DESKTOP.md](README-DESKTOP.md)。
-
-### 1. 安装依赖
+不需要 Node.js、不需要构建步骤，`git clone` 之后两步即可。
 
 ```bash
+# 1. 安装依赖
 python -m venv .venv
-
-# Windows (PowerShell / Git Bash)
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-### 2. 启动
-
-```bash
+# 2. 启动
 python app.py
 ```
 
-然后浏览器打开 <http://127.0.0.1:5000>（默认只监听本机）。
+浏览器打开 <http://127.0.0.1:5000>（默认只监听本机，不对外暴露）。
 
----
+> 💡 不想装 Python？见 [README-DESKTOP.md](README-DESKTOP.md)（免安装桌面版）。
+> 也可以用 Docker：`docker compose up`。
 
-### 配置 API Key（可选，启用 AI 功能）
+### 配置 API Key（完全可选）
 
-不配也能跑（统计分析、图表、Word 导出都是纯 Python）。要启用 AI 深度解读 / 论文审计，在项目根建一个 `.env`（已在 `.gitignore` 里，绝不入库）：
+**不配也能用**——统计分析、图表、数据体检、Word 导出都是纯 Python。
 
-```dotenv
-ZHIPU_API_KEY=你的智谱Key
-DASHSCOPE_API_KEY=你的百炼Key
-DEEPSEEK_API_KEY=你的DeepSeekKey
-LLM_TIER=free          # free=免费档（默认）| pro=会员档
+要启用 AI 深度解读 / 论文审计，复制 `.env.example` 为 `.env` 并填入 Key：
+
+```bash
+cp .env.example .env
 ```
 
-`python app.py` 直启时会自动加载 `.env`（只影响直启，跑测试不加载，测试环境保持"无 Key"）。
+`.env` 已在 `.gitignore` 中，**绝不会入库**。
 
-**档位（v0.5.3）**：`LLM_TIER=free`（默认）只调用零成本模型（智谱 `glm-4.7-flash`、百炼 `qwen3.7-flash`、硅基流动 `GLM-Z1-9B`），付费模型（`deepseek-*` / `V4-Pro`）自动跳过；设为 `pro` 才启用付费优先链。免费用户不产生任何 API 费用。详见 `agents/router.py` 模块说明。
+**档位**：`LLM_TIER=free`（默认）只调用零成本模型，付费模型自动跳过，免费用户不产生任何
+API 费用；设为 `pro` 才启用付费优先链。
 
-## 三、怎么用
+**多平台容灾**：支持 7 家平台（智谱 / 硅基流动 / 百炼 / DeepSeek / MaaS / Kimi / MiMo），
+任何一个失败自动试用下一个；可自带 Key（BYOK），填了 Key 的平台自动提到链首。
 
-### Tab 1：数据分析
-1. 打开首页 → 点击/拖拽上传数据文件，或先点底部"下载示例数据"。
-2. 上传成功后，自动进入工作台。按左侧的**分步向导**操作：
-   - **Step 1**：选「因变量 Y」（必须是连续列）
-   - **Step 2**：选「分组 X」（必须是分类列）；不选 = 走相关分析
-   - **Step 3**（仅在没选分组时出现）：选第二个数值列（相关分析）
-   - **✓ 系统推荐方法**：每选完一步自动显示推荐方法（T/ANOVA/相关）
-   - 想做卡方？点 Step 1 下方的「点这里切换到卡方」
-3. 点"开始生成分析"，等待约 1-2 秒，结果以 Markdown 渲染，**下方会自动生成对应图表**。
-4. 点"复制 Markdown"，可直接粘贴到你的论文初稿里；图表可右键保存到答辩 PPT。
+**网页端 BYOK**：页面右上角「⚙️ 模型设置」填自己的 Key（六家都支持），
+Key 只存在你自己的浏览器（localStorage），请求时直接交给本机服务。
+新用户第一次打开会弹 30 秒上手引导，「📖 使用指南」随时可看——都是大白话。
 
-### Tab 2：论文排查
-1. 顶部切到「📋 论文排查」tab。
-2. 分别上传论文（.docx / .txt / .md）和数据（.xlsx / .csv）。
-3. **可选**：在「🎯 自然语言过滤」输入框里写指令，例如：
-   - `只看 T 检验` —— 只保留独立样本 T 检验的核查
-   - `只看 p<0.05` —— 只看显著结果
-   - `只看男组` / `只看女组` —— 只保留某组变量相关的声称
-   - `只看 T 检验 且 p<0.05` —— 组合过滤
-   - `只看成绩` / `只看学习时长` —— 按变量过滤
-4. 点「开始核查」，系统会：
-   - 识别论文里写了哪些统计方法（T 检验 / ANOVA / 相关 / 卡方 等）
-   - 提取论文里出现的 p 值、t 值、F 值、χ²、相关系数
-   - 把论文里的变量名匹配到你的数据列
-   - 用真实数据跑一遍 → 对比论文结论 vs 真实数据
-   - 在 Markdown 顶部追加「🎯 已应用指令」说明
-   - 给出一份 Markdown 格式的核查报告（含改进建议）
-5. 点「复制报告」可粘贴到任何地方。
-
-**自带测试用例**：
-- 数据：`examples/student_scores.csv`（30 行，性别+成绩+学习时长）
-- 论文：`examples/sample_paper.md`（一份声称做了 T 检验的小论文）
+**Key 安全**：服务端持有的 Key 不会出现在任何返回给浏览器的内容里——前端可见的
+`/api/llm_stats` 只显示模型名，报错文案统一经 `secrets_guard` 擦除。
 
 ---
 
-## 四、项目结构
+## 三、六种用法
+
+### 网页版（推荐）
+
+功能最全：数据体检、12 个统计方法、图表、论文核查、图表 AI 核查、副驾驶、Word 导出。
+
+### 图表 AI 核查（多模态）
+
+论文里那张图，配得上你写的那句结论吗？上传图表截图 + 对应结论句，
+多模态模型会**读图**并回答：坐标轴是什么、有没有误差棒、图和结论对不对得上。
+
+**设计上刻意的"不讨好"**：如果结论说"显著差异"但图里没有误差棒 / 星号 / p 值，
+模型会返回「信息不足，无法判断」，**而不是顺从地替你确认"显著"**——
+统计工具宁可说"看不出来"，也不能给你一个虚假的确认。
+
+图片**不落盘**（只在本请求内以 base64 送到模型），走智谱免费多模态档
+`glm-4.6v-flash`（0 元）。无 API Key 时降级为"请手动核对"，不会白屏。
+
+### 安装成桌面应用（PWA，零成本）
+
+网页版本身就是 **PWA**：用 Chrome / Edge 打开后，地址栏右侧会出现「安装」图标，
+装完就是一个独立窗口的应用（有图标、有开始菜单项、无浏览器地址栏），**不需要额外打包**。
+
+- 应用图标：`static/icons/` 下的 192/512 双尺寸（含 `maskable` 安全区版本）
+- 安装后带三个快捷方式：数据分析 / 论文排查 / 论文副驾驶
+- 断网时显示离线页，并明确声明**不会展示缓存的历史统计结果**
+- 服务端 worker 显式**永不拦截 `/api/*`** —— 统计工具宁可报错，也不能让用户看到陈旧数字
+
+### 命令行（CLI）
+
+同一套后端，命令行外壳。**结果与网页端逐字节一致**：
+
+```bash
+python cli.py methods                                     # 列出全部方法
+python cli.py check-data data.csv                         # 数据体检（可选 --format json）
+python cli.py analyze data.csv -m independent_t -g gender -v score
+python cli.py analyze data.csv -m independent_t -g gender -v score -f json
+python cli.py audit paper.pdf data.csv --directive "只看 T 检验"
+python cli.py simulate independent_t --seed 42 --n 30     # 生成模拟数据
+```
+
+护栏：CLI **默认不写文件、只打印**（`--output` 才落盘），数据全内存不落盘，
+学术红线自检同样生效。
+
+`check-data` 可作为 CI 门控：发现高优先级数据问题时返回退出码 1，加 `--exit-zero` 可强制返回 0。
+
+### 部署成 H5（分享链接给同学用）
+
+后端零改动，换个生产 WSGI 服务器即可对外提供 H5 服务：
+
+```bash
+# Linux / 容器 / 云服务器
+gunicorn --config gunicorn.conf.py wsgi:application
+
+# Windows 服务器
+python wsgi.py
+```
+
+`wsgi.py` 会按平台自动挑 gunicorn / waitress。关键是 `HOST=0.0.0.0`
+（绑 127.0.0.1 时映射出去的端口永远连不上）。
+
+完整步骤（Render / Railway / Docker / Nginx 反代）与上线安全清单见
+[docs/DEPLOY_H5.md](docs/DEPLOY_H5.md)。
+
+> ⚠️ **不能纯静态托管**：统计计算在 Python 后端（pandas/numpy/scipy），
+> Vercel/Netlify 只能放前端壳子，必须同时有个能跑 Python 的后端。
+
+### 接入小程序 / Uni-app
+
+后端**零改动**即可被微信小程序调用 —— 本后端不使用 cookie 会话
+（会话靠服务端 `file_id`），而 `wx.request` 也不走浏览器的同源策略。
+接口参考见 [docs/API.md](docs/API.md)，接入步骤与阻塞项（AppID / 备案 / 开发者工具）
+见 [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md)。
+
+### 免安装桌面版
+
+见 [README-DESKTOP.md](README-DESKTOP.md)。
+
+---
+
+## 四、产品主线：八站流程
+
+```
+上传 → ①数据体检 → ②清洗建议 → ③方法推荐 → ④统计计算
+     → ⑤人话解读 → ⑥论文核查 → ⑦写作/Word → ⑧答辩准备
+```
+
+① ② 是产品入口，③–⑦ 是已有能力。**换一个入口，就换了一个产品**。
+
+---
+
+## 五、设计原则
+
+1. **能不用 LLM 的绝不交给 LLM。** 统计量全部由 numpy/scipy 计算；LLM 只把结果翻译成人话。
+   任何 LLM 环节失败都静默降级为规则模板，功能不中断。
+2. **可复现优先。** 同一输入必须产出同一结果（曾因此修掉一个 `str.__hash__()` 随机化
+   导致的报告行序不稳定问题）。
+3. **不越界。** 明确区分「辅助写作」与「学术不端」，见[第九节](#九合规边界重要)。
+4. **零构建。** 原生 HTML/JS，`pip install` 之后就能跑，便于分发给不懂技术的同学。
+5. **不引 statsmodels。** 所有统计手写实现，换取打包体积、部署依赖与公式可控性；
+   代价是必须自己保证数值正确性——所以每个方法都配了对照测试。
+
+---
+
+## 六、项目结构
 
 ```
 论文排版辅助agent/
-├── app.py                  # Flask 后端（两条主路径：数据分析 / 论文排查）
-├── extract_paper.py        # 论文文本提取与结构化解析（独立可复用模块）
-├── audit.py                # 论文核查与改进建议生成（独立可复用模块）
-├── templates/
-│   └── index.html          # 单页面应用（含 Tab 切换）
-├── examples/
-│   ├── student_scores.csv  # 示例数据：性别 + 成绩 + 学习时长
-│   └── sample_paper.md     # 示例论文：声称做 T 检验的小论文片段
-├── uploads/                # 上传临时目录（每次启动自动创建）
-├── .venv/                  # 隔离 Python 环境
-├── requirements.txt        # 依赖清单
-├── smoke_test.py           # 数据分析端到端冒烟测试
-├── paper_check_test.py     # 论文排查端到端冒烟测试
-├── methods_test.py         # 7 个统计方法单元测试
-├── directive_test.py       # v0.4 论文排查指令过滤测试
-├── chart_test.py           # v0.5 图表生成端到端测试
-├── wizard_test.py          # v0.6 分步向导契约测试
-├── stream_test.py          # v0.8 流式 SSE 渲染测试
-├── export_docx.py          # v0.9 markdown → docx 转换器（纯函数）
-├── export_test.py          # v0.9 Word 导出端到端测试
-└── README.md               # 本文件
+├── app.py                    # Flask 入口 + 12 个 run_* 统计纯函数
+│                             #   （三条主路径：数据分析 / 论文排查 / 论文副驾驶）
+├── cli.py                    # 命令行外壳（analyze / audit / simulate / check-data / methods）
+├── wsgi.py                   # 生产/H5 部署入口（按平台自动选 gunicorn / waitress）
+├── gunicorn.conf.py          # gunicorn 配置（worker 数、超时、日志）
+├── Procfile                  # PaaS 自动识别（Render / Railway）
+│
+├── methods_registry.py       # 统计方法注册表（方法名唯一真源）
+├── methods_graph.py          # 方法知识图谱（DAG + 决策路径）
+├── datacheck.py              # 数据体检 12 检测器 + 一键清洗副本（纯本地规则）
+│                             #   （含本福特 / 末位偏好取证；GRIM 查均值也在此）
+├── grimmer.py                # GRIMMER 检验（查标准差，GRIMMER 的唯一真源）
+├── audit.py                  # 论文核查（声称值 vs 实算值）+ 红线引擎
+├── audit_chat.py             # 审计对话（LLM 只解释，不计算）
+├── multimodal_agent.py       # 图表 AI 核查（多模态读图，图片不落盘）
+├── extract_paper.py          # 论文文本提取与结构化解析
+├── pipeline.py               # 副驾驶六阶段流水线编排
+├── paper_writer.py           # 证据约束写作引擎
+├── paper_polisher.py         # 可选 LLM 润色层（污染稿静默回退）
+├── export_docx.py            # Markdown → docx
+│
+├── agents/                   # LLM 层
+│   ├── router.py             # 状态 → 模型路由 + 多平台容灾链
+│   ├── openai_compat.py      # 各平台 OpenAI 兼容适配器
+│   ├── prompts.py            # 冻结前缀 prompt 契约
+│   ├── secrets_guard.py      # 错误出口脱敏
+│   └── base.py               # Agent 基类
+├── security_guard.py         # 应用层限流（内存有界 + 防 XFF 伪造）
+├── cross_platform.py         # 跨端适配层（CORS / 预检，默认关闭）
+├── tone_guide.py             # 语气规约（规则化，只报不改）
+│
+├── templates/index.html      # 单页应用（原生 JS，无构建）
+├── static/                   # PWA 资源
+│   ├── manifest.json         #   应用清单（standalone + 快捷方式）
+│   ├── sw.js                 #   service worker（永不拦截 /api/*）
+│   ├── offline.html          #   离线页
+│   ├── favicon.ico           #   站点图标
+│   └── icons/                #   192/512 图标（含 maskable 版本）
+├── make_icon.py              # 生成 favicon 与全套 PWA 图标
+├── examples/                 # 8 份示例数据与论文
+├── docs/ARCHITECTURE.md      # 架构说明（改代码前先读这个）
+├── tools/                    # 开发期诊断脚本（需真实 Key，不参与 CI）
+│
+├── *_test.py                 # 47 个回归测试套件
+├── requirements.txt
+├── .env.example
+└── Dockerfile / docker-compose.yml
 ```
+
+### `examples/` 内置示例
+
+| 文件 | 内容 |
+| --- | --- |
+| `student_scores.csv` | 性别 + 成绩 + 学习时长 + 焦虑前后测 + 反应时（30 行） |
+| `sample_paper.md` | 声称做了独立样本 T 检验的小论文片段 |
+| `questionnaire_data.csv` / `questionnaire_paper.md` | 5 题 Likert 量表，报告 Cronbach's α |
+| `two_way_data.csv` / `two_way_paper.md` | 2×3 双因素实验（含显著交互） |
+| `rm_anova_data.csv` / `rm_anova_paper.md` | 30 人 × 4 时间点重复测量 |
+| `sample_regression_data.csv` / `sample_regression_paper.md` | 回归分析示例 |
 
 ---
 
-## 五、后续可接力扩展点（设计已留好接口）
+## 七、测试
+
+47 个测试套件，覆盖计算正确性、契约一致性、安全边界与前端逻辑。
+```bash
+# 多数测试不需要外部依赖
+export NO_PROXY=127.0.0.1,localhost   # 防代理截获本机请求
+python registry_test.py
+python methods_test.py
+python security_guard_test.py
+
+# 部分测试需要先启动本地服务
+python app.py                         # 另开一个终端也行
+python smoke_test.py
+python paper_check_test.py
+```
+
+几类测试的规模：`registry`(104) · `rm_anova`(88) · `datacheck`(115) · `forensics`(101) ·
+`cli`(69) · `red_line`(66) · `pwa`(57) · `audit_chat`(56) · `security_guard`(56) ·
+`tone_guide`(53) · `grimmer`(56) · `regression`(39) · `cronbach`(38) · `two_way`(30) ·
+`explain`(27) · `datacheck_ui`(25) · `secrets_guard`(19)。
+
+> 统计方法都配了**独立 oracle 交叉验证**（如重复测量 ANOVA 同时用定义式与 OLS 两条路径
+> 算同一组数，互相印证）。
+
+---
+
+## 八、扩展点（设计已留好接口）
 
 每个分析函数都设计成 **纯函数（输入 DataFrame，返回 dict）**，方便测试和接力。
 
+### ⚠️ 新增一个统计方法要同步改多处
+
+方法清单散落在多个位置，**漏一处就会出现「前端能选但后端不认」**。
+完整清单与说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#-新增一个方法要同步改-8-处)，
+`registry_test.py` 会校验一致性——改完记得跑它。
+
+| # | 文件 | 改什么 |
+| --- | --- | --- |
+| 1 | `methods_registry.py` | 注册 `MethodSpec`（**真源**） |
+| 2 | `templates/index.html` | 方法下拉框加 `<optgroup>`；`validateMethod` / `methodDesc` 同步 |
+| 3 | `extract_paper.py` | `_METHOD_PATTERNS`（论文方法名识别） |
+| 4 | `audit.py` | `_METHOD_ALIASES`（论文措辞 → 方法 key） |
+| 5 | `audit.py` | `_METHOD_PRIORITY`（重跑优先级） |
+| 6 | `paper_writer.py` | `_method_label`（报告正文中文名） |
+| 7 | `app.py` | `_dispatch_analysis`（JSON / SSE / copilot 三路共用入口） |
+| 8 | `methods_graph.py` | 知识图谱节点与决策路径 |
+
+### 其它任务的落点
+
 | 任务 | 在哪改 |
 | --- | --- |
-| 实现配对 T 检验 / 双因素 ANOVA / 回归 | `app.py` 加 `run_*` 函数，`api_analyze` 加分支 |
-| 实现非参数方法（Mann-Whitney / Kruskal-Wallis） | 同上套路 |
-| 加图表（柱状图 / 散点图 / 折线图） | 后端用 matplotlib 生成 PNG，前端 `<img src="...">` 渲染 |
-| 加 Word 导出 | 后端用 python-docx 把 Markdown 转 .docx，暴露新接口 `/api/export` |
-| 加人味润色 | 新增 `/api/polish` 接口，前端在结果区加个"开启人味润色"开关 |
-| 接入 LLM 写解读 | 在 `api_analyze` 末尾把统计量塞进 Prompt 调用模型 |
-| 论文排查加「用户指令输入」 | `audit.py` 新增 `apply_user_directive(...)` 函数，根据用户文本过滤要核查的统计量 / 范围 |
-| 论文里识别更多统计方法 | `extract_paper.py` 的 `_METHOD_PATTERNS` 列表加新正则 |
-| 论文里识别更多统计量 | `extract_paper.py` 的 `_PATTERNS` 加新模式 |
-| 论文变量同义词扩展 | `audit.py` 的 `_VAR_SYNONYMS` 加新映射 |
-| 改进建议模板扩展 | `audit.py` 的 `_generate_suggestions` 加新规则 |
-| 指令过滤扩展（新方法 / 新变量关键词） | `audit.py` 的 `_METHOD_ALIASES` / `_VAR_FILTER_ALIASES` 加映射 |
-| 实现方式 | `audit.py.apply_user_directive(...)` 是纯函数，返回 `{methods, quantities, variables, comparisons, parsed}` |
+| 加图表 | `app.py` 新增 `/api/chart`；前端 `<img>` 渲染 |
+| 加流式输出 | `api_analyze` 改成 SSE，前端用 `EventSource` 接（已实装 v0.8） |
+| 加 Word 导出 | 新增 `/api/export`，用 python-docx（已实装 v0.9） |
+| 论文变量同义词扩展 | `audit.py` 的 `_VAR_SYNONYMS` |
+| 改进建议模板扩展 | `audit.py` 的 `_generate_suggestions` |
+| 指令过滤扩展 | `audit.py` 的 `_METHOD_ALIASES` / `_VAR_FILTER_ALIASES` |
+| 接新的 LLM 平台 | `agents/` 加子智能体类（`complete(prompt) -> str`），`router.py` 的 `STATE_TO_MODEL` 加候选 |
 
 ---
 
-## 六、防刷与数据安全（PRD 提到的）
+## 九、合规边界（重要）
+
+本工具**辅助**学术写作，**不参与**学术不端。内置红线引擎会在指令层面拦截：
+
+| 类别 | 处理 |
+| --- | --- |
+| 代写 / 枪手、买卖论文、规避查重或 AI 检测、伪造篡改数据 | **无条件拦截，不受任何豁免** |
+| 润色你已写好的文字（表达、结构、语病） | 允许 |
+
+**本工具能做的**：用你自己的真实数据跑统计；核查论文里的统计量是否对得上；
+指出方法误用与报告缺项；润色你已经写好的文字。
+
+**本工具不会做的**：代写论文、买卖论文、规避查重或 AI 检测、伪造篡改数据。
+
+正确用法：先在「数据分析」上传你的数据跑出结果，再用「论文副驾驶」基于这些真实结果
+生成初稿，最后由你自己改写、补充并署名。
+
+> 这不是「AI 检测规避工具」。语气规约（`tone_guide.py`）的目标是让人读着顺，
+> 不是规避检测——代码里有测试专门断言这一点。
+
+### 数据安全
 
 - ✅ 默认只监听 `127.0.0.1`，不上公网就能避免被刷。
-- ✅ 接口每 IP 每分钟最多 30 次（可在 `app.py` 改 `_RATE_LIMIT_PER_MIN`）。
 - ✅ 上传的文件**只存在内存**，分析完不落盘、不持久化。
+- ✅ 应用层限流：普通接口与 AI 接口分桶计数，内存有界；仅在可信代理后才采信
+  `X-Forwarded-For`（默认关，防伪造绕过）。
+- ✅ 错误出口统一 JSON，不外漏堆栈信息。
 
 ---
 
-## 七、限制
+## 十、文档
 
-- 论文排查依赖规则引擎识别统计方法，生僻表述可能识别不到。
-- 编码识别：CSV 优先 utf-8 / utf-8-sig / gbk；其它编码可能报错。
-- 上限 20MB（`MAX_UPLOAD_MB`）。
-- 浏览器需支持 ES6 与 Fetch（Chrome / Edge / Firefox 现代版本均可）。
+| 文档 | 内容 |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构、方法注册表的同步点、LLM 缓存纪律、测试策略 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本更新日志 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南（开发环境、硬性纪律、验证流程） |
+| [README-DESKTOP.md](README-DESKTOP.md) | 桌面版打包与使用 |
+| [docs/DEPLOY_H5.md](docs/DEPLOY_H5.md) | H5 部署指南（生产服务器、环境变量、上线安全清单） |
+| [docs/API.md](docs/API.md) | HTTP API 参考（24 个路由、错误码、调用示例） |
+| [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md) | 小程序 / Uni-app 接入指南（含阻塞项） |
+| [tools/README.md](tools/README.md) | 开发期诊断脚本说明 |
+
+> 产品规划（ROADMAP）与产品主线总纲属内部文档，未随仓库公开。
 
 ---
 
-## 八、许可证
+## 十一、限制
+
+- **仅本地内测**：默认只监听 `127.0.0.1`。若要公网部署，请先读
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的安全层章节（限流、代理信任、HTTPS）。
+- **扫描件 PDF 不支持**：图片型 PDF 无法提取文本（未做 OCR），会明确报错。
+- **论文排查依赖规则引擎**识别统计方法，生僻表述可能识别不到。
+- **编码识别**：CSV 优先 utf-8 / utf-8-sig / gbk；其它编码可能报错。
+- **上限 20MB**（`MAX_UPLOAD_MB`）。
+- **浏览器需支持 ES6 与 Fetch**（Chrome / Edge / Firefox 现代版本均可）。
+- **双因素 ANOVA 不做事后多重比较**，交互显著时在报告中提示改做简单效应分析。
+- **重复测量 ANOVA 只支持单因素被试内设计**（同一批被试多时间点）；含组间因素的设计
+  （如实验组 vs 对照组 × 时间）需改用混合设计 ANOVA，暂未实装。
+- **重复测量 ANOVA 要求完整案例**：任一时间点缺失的被试会被整行剔除，报告中的 n
+  为剔除后的样本量。
+- **AI 功能依赖外部平台**：模型可用性与价格是时效信息，配 Key 前请以平台公示为准。
+- **不做 3D / 视频 / 图像生成**：本工具聚焦统计与学术写作。
+- 跑依赖服务器的测试脚本时，需先启动本地服务，并确保
+  `NO_PROXY=127.0.0.1,localhost`（环境里若设了 `HTTP_PROXY` 会拦截本机请求）。
+
+---
+
+## 十二、许可证
 
 本项目采用 [MIT License](LICENSE) 开源，可自由使用、修改、分发。

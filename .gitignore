@@ -50,3 +50,18 @@ PONYTAIL_V0.5.1.md
 freellmapi_catalog.md
 小红书-*.md
 全息边界*.md
+
+# ===== 内部文档：参赛策略 / 产品规划（含个人与商业信息，不入公开仓库）=====
+2026大创赛参赛行动方案.md
+参赛调研材料包.md
+专属桌面端开发总纲.md
+进一步完善计划.md
+
+# ===== 临时文件：会话级脚手架（一次性的，不该进版本库）=====
+_*.txt
+_*.py
+_syntaxcheck/
+_tmp_*
+methods_graph_preview.html
+workspace/
+

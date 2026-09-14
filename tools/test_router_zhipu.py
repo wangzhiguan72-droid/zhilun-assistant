@@ -9,11 +9,12 @@ Router 多 Provider 升级后端到端测试（v0.4 智谱接入）
 
 Key 从 .env.tmp 临时读取（或已有的环境变量），跑完删除，不写进源码。
 """
+import pathlib
 import os
 import sys
 
 # 把 .env.tmp 临时导入为环境变量（不写入源码）
-ENV_TMP = r'D:\论文排版辅助agent\.env.tmp'
+ENV_TMP = str(BASE / '.env.tmp')
 if os.path.exists(ENV_TMP):
     with open(ENV_TMP, 'r', encoding='utf-8') as f:
         for line in f:
@@ -22,7 +23,8 @@ if os.path.exists(ENV_TMP):
                 k, v = line.split('=', 1)
                 os.environ[k.strip()] = v.strip()
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE = pathlib.Path(__file__).resolve().parent
 
 from agents.router import Router, STATE_TO_MODEL, _PROVIDERS
 from agents import ZhipuAgent

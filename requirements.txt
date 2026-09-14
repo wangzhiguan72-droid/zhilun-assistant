@@ -1,11 +1,25 @@
+# 运行核心依赖（Python 3.10+）
 flask>=3.0
 pandas>=2.0
 numpy>=1.24
 scipy>=1.10
 openpyxl>=3.1
+
+# Markdown 渲染 + Word 导出
 markdown>=3.5
-openai>=1.0
-matplotlib>=3.7
 python-docx>=1.1
+
+# 图表生成
+matplotlib>=3.7
+
+# 论文文本提取（.pdf 支持，可选）
 pypdf>=4.0
-pypdf[crypto]>=4.0
+
+# LLM 层（AI 深度解读，可选；不配 Key 也能完整运行）
+openai>=1.0
+
+# 生产 WSGI 服务器（H5 / 容器部署用；本地直启不需要）
+# gunicorn 仅 Unix（Linux 容器 / Render / Railway / 云服务器）；
+# waitress 纯 Python、跨平台，Windows 服务器可用。二选一即可。
+gunicorn>=21.2; sys_platform != "win32"
+waitress>=3.0; sys_platform == "win32"

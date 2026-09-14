@@ -10,13 +10,16 @@
   - 统计量抽取 → p/t/F/r/χ² 有值即列出，人工抽查是否正文误报
   - 变量提取 → 列出来源分布，人工抽查垃圾短语
 """
+import pathlib
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, r'D:\论文排版辅助agent')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE = pathlib.Path(__file__).resolve().parent
 from extract_paper import extract_methods, extract_quantities, extract_variables
 
-CORPUS = Path(r'D:\论文排版辅助agent\模板论文')
+CORPUS = Path(__file__).resolve().parent.parent / '模板论文'
 
 # 论文类型预标注（人工判断，用于对照识别行为）
 TYPES = {

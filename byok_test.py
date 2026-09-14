@@ -144,19 +144,29 @@ check("路由项三元组 (provider, model, temp)",
       all(len(t) == 3 for t in STATE_TO_MODEL["paper_check"]))
 
 # ---------------------------------------------------------------------------
-print("\n[6] app.py 参数名对齐（静态源码检查）")
+print("\n[6] app.py / 前端 参数名对齐（静态源码检查）")
 # ---------------------------------------------------------------------------
 app_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "app.py"), encoding="utf-8").read()
-check("/api/check_paper 读 siliconflow_key",
-      "siliconflow_key" in app_src)
-check("/api/check_paper 读 zhipu_key", "zhipu_key" in app_src)
+# v1.8：六家平台统一走 _apply_byok helper
+check("app.py 有统一 BYOK 注入 helper", "_apply_byok" in app_src)
+for field in ("siliconflow_key", "zhipu_key", "deepseek_key",
+              "dashscope_key", "kimi_key", "mimo_key"):
+    check(f"app.py 读 {field}", field in app_src)
 check("调用 router.set_user_key", "set_user_key" in app_src)
 
 html_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "templates", "index.html"), encoding="utf-8").read()
-check("前端有 siliconflowKey 输入框", 'id="siliconflowKey"' in html_src)
-check("前端有 zhipuKey 输入框", 'id="zhipuKey"' in html_src)
+# v1.8：Key 输入收进统一设置弹窗（6 家），旧重复 ID 已移除
+check("前端有智谱 Key 输入框（设置弹窗）", 'id="settingsKey_zhipu"' in html_src)
+check("前端有硅基流动 Key 输入框（设置弹窗）", 'id="settingsKey_sf"' in html_src)
+check("前端有 Kimi / MiMo / DeepSeek / 百炼 Key 输入框",
+      all(f'id="settingsKey_{p}"' in html_src
+          for p in ("kimi", "mimo", "deepseek", "dashscope")))
+check("前端有统一收集函数 collectByok", "collectByok" in html_src)
+check("旧重复 ID（siliconflowKey）已移除", 'id="siliconflowKey"' not in html_src)
+check("首次引导 + 帮助中心弹窗存在",
+      'id="zlOnboard"' in html_src and 'id="zlHelp"' in html_src)
 
 # ---------------------------------------------------------------------------
 print("\n[7] audit.py 免责声明已注入")

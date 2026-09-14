@@ -1,9 +1,35 @@
-"""冒烟测试：上传 → 识别 → T 检验 → 检查 Markdown 输出"""
+"""冒烟测试：上传 → 识别 → T 检验 → 检查 Markdown 输出
+
+⚠️ 需要先启动本地服务（本脚本会真发 HTTP 请求，不走 test_client）：
+       python app.py          # 另开一个终端
+   未启动时本脚本会**明确报告「未检测到服务」并以退出码 2 结束**，
+   而不是抛一堆连接异常 —— 避免在批量回归里被误判成代码缺陷。
+   （退出码 2 = 环境未就绪；1 = 真的测试失败；0 = 通过）
+"""
 import json
+import sys
 import urllib.request
 import urllib.parse
 
 BASE = "http://127.0.0.1:5000"
+
+
+def _require_server():
+    """服务未就绪时明确退出，不把「没起服务」伪装成「测试失败」。"""
+    try:
+        urllib.request.urlopen(BASE + "/health", timeout=3)
+        return
+    except Exception as exc:  # noqa: BLE001
+        print("=" * 70)
+        print("⚠️  未检测到本地服务，本测试无法运行。")
+        print(f"    目标：{BASE}/health")
+        print(f"    原因：{type(exc).__name__}: {exc}")
+        print("    请先另开终端执行：  python app.py")
+        print("=" * 70)
+        sys.exit(2)
+
+
+_require_server()
 
 def post_multipart(path, file_path, field="file"):
     boundary = "----smoke123456"

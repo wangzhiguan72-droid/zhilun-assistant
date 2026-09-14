@@ -302,7 +302,13 @@ def _build_methods() -> dict[str, MethodSpec]:
                         "（仅 2 个时间点时请改用配对样本 T 检验）。"),
         ),
     ]
+
     return {s.key: s for s in specs}
+    # ⚠️ 不要把 plugins/ 的插件并进这张表。
+    # 本表是**内置方法**的真源，registry_test 会断言「前端下拉 / 副驾驶
+    # CPL_METHODS / extract_paper 识别层 / audit 别名 / 方法图谱」全部覆盖它
+    # ——插件一进来这些断言全崩（实测 12 项）。插件走 `app._run_plugin_method`
+    # 的兜底分发（注册表不认识的方法才查插件市场），两者职责不重叠。
 
 
 _METHODS_CACHE: dict[str, MethodSpec] | None = None
@@ -346,5 +352,6 @@ def call_method(method_key: str, df, payload: dict) -> dict:
         raise MissingField(
             f"方法 {method_key} 不被识别。当前支持：{' / '.join(method_keys())}。"
         )
+
     args = _resolve(spec, payload)
     return spec.fn(df, *args)

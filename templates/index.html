@@ -1073,7 +1073,11 @@
                     <option value="two_way_anova">双因素方差分析</option>
                     <option value="repeated_measures_anova">重复测量方差分析（被试内）</option>
                   </optgroup>
+                  <optgroup label="插件方法（plugins/）" id="pluginMethodGroup" style="display:none;"></optgroup>
                 </select>
+                <!-- v2.14：插件声明的可选参数（如 TOST 的等价边界）——
+                     这些参数直接决定结论，绝不能静默用默认值 -->
+                <div id="pluginParams" style="display:none; margin-top:8px; padding:8px 10px; border:1px dashed var(--c-border); border-radius:8px; font-size:12.5px;"></div>
                 <div class="wizard-alt" id="methodOverrideHint" style="display:none;"></div>
               </div>
 
@@ -2243,6 +2247,11 @@
     if (['independent_t', 'anova', 'mann_whitney'].includes(method)) {
       if (!g) return { ok: false, error: '该方法需要分组变量。' };
     }
+    // v2.14 插件方法：按插件声明的字段形状校验
+    const PM = window.PluginMethods;
+    if (PM && PM.isPlugin(method) && PM.shapeOf(method) === 'group_value' && !g) {
+      return { ok: false, error: '该插件方法需要分组变量。' };
+    }
     if (['correlation', 'paired_t', 'wilcoxon'].includes(method)) {
       if (!v2) return { ok: false, error: '该方法需要第二个变量。' };
       if (v2 === v1) return { ok: false, error: '两个变量不能相同。' };
@@ -2376,6 +2385,24 @@
     } else if (method === 'repeated_measures_anova') {
       // 后端契约：时间点列走 item_cols（与信度同通道），按勾选顺序 = 时间顺序
       payload.item_cols = getTimeCols();
+    } else if (window.PluginMethods && window.PluginMethods.isPlugin(method)) {
+      // v2.14 插件方法：字段按插件声明的 ui 形状组装，再附上用户填的插件参数
+      const pmShape = window.PluginMethods.shapeOf(method);
+      if (pmShape === 'group_value') {
+        payload.group_col = groupCol;
+        payload.value_col = valueCol;
+      } else if (pmShape === 'two_cols') {
+        payload.value_col = valueCol;
+        payload.value_col2 = valueCol2;
+      } else if (pmShape === 'x_cols') {
+        payload.value_col = valueCol;
+        const pmXs = getXCols();
+        if (pmXs.length) payload.x_cols = pmXs;
+        else if (valueCol2) payload.value_col2 = valueCol2;
+      } else if (pmShape === 'item_cols') {
+        payload.item_cols = getItemCols();
+      }
+      Object.assign(payload, window.PluginMethods.collect());
     }
     // v0.4：可选 LLM 深度解读
     const useLLM = $('useLLM') && $('useLLM').checked ? 1 : 0;
@@ -3774,6 +3801,99 @@
 
   // v2.9 图表 AI 核查：面板常驻在论文排查 Tab 内，页面加载即绑定一次事件
   if (window.ImageAudit) ImageAudit.mount();
+
+  // ============================================================
+  // v2.14 可插拔方法市场：plugins/ 里的插件自动出现在方法下拉里
+  // ------------------------------------------------------------
+  // 插件声明的 params（如 TOST 的等价边界 Δ）**必须暴露给用户填** ——
+  // 这类参数直接决定结论，静默套用默认值等于给一个看似权威、实则没有依据的判定。
+  // ============================================================
+  const PluginMethods = (function () {
+    let list = [];
+    const byKey = {};
+
+    async function load() {
+      try {
+        const r = await fetch('/api/plugins');
+        const d = await r.json();
+        if (!d || !d.ok) return;
+        list = d.plugins || [];
+        list.forEach(function (p) { byKey[p.key] = p; });
+        renderOptions();
+        hookMethod();
+      } catch (e) {
+        /* 插件接口不可用 == 没有插件，静默即可，不打扰主流程 */
+      }
+    }
+
+    function renderOptions() {
+      const g = document.getElementById('pluginMethodGroup');
+      if (!g || !list.length) return;
+      g.innerHTML = '';
+      list.forEach(function (p) {
+        const o = document.createElement('option');
+        o.value = p.key;
+        o.textContent = p.label || p.key;
+        g.appendChild(o);
+      });
+      g.style.display = '';
+    }
+
+    function isPlugin(key) { return !!byKey[key]; }
+    function infoOf(key) { return byKey[key] || null; }
+    function shapeOf(key) { return byKey[key] ? (byKey[key].ui || '') : ''; }
+
+    function renderParams(key) {
+      const box = document.getElementById('pluginParams');
+      if (!box) return;
+      const p = byKey[key];
+      if (!p) { box.style.display = 'none'; box.innerHTML = ''; return; }
+      const params = p.params || [];
+      const rows = params.map(function (q) {
+        const lab = (q.name === 'margin') ? '等价边界 Δ（多小的差异算“无差别”）'
+          : (q.name === 'alpha') ? '显著性水平 α'
+            : q.name;
+        const dv = (q.default === null || q.default === undefined) ? '' : String(q.default);
+        return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0;">'
+          + '<label style="min-width:12em;color:var(--c-muted);">' + escapeHtml(lab) + '</label>'
+          + '<input type="number" step="any" data-plugin-param="' + escapeHtml(q.name) + '"'
+          + ' value="' + escapeHtml(dv) + '"'
+          + ' style="width:8em;padding:2px 6px;">'
+          + '</div>';
+      }).join('');
+      box.innerHTML = '<div style="color:var(--c-muted);margin-bottom:2px;">🔌 插件参数（由 '
+        + escapeHtml(p.label) + ' 声明，直接决定结论）</div>' + rows
+        + (p.description
+          ? '<div style="color:var(--c-muted);margin-top:4px;">' + escapeHtml(p.description) + '</div>'
+          : '');
+      box.style.display = params.length ? '' : 'none';
+    }
+
+    function collect() {
+      const box = document.getElementById('pluginParams');
+      const out = {};
+      if (!box) return out;
+      box.querySelectorAll('input[data-plugin-param]').forEach(function (i) {
+        const v = (i.value || '').trim();
+        if (v !== '') out[i.getAttribute('data-plugin-param')] = Number(v);
+      });
+      return out;
+    }
+
+    function hookMethod() {
+      const sel = document.getElementById('method');
+      if (!sel || sel.__zlPluginHooked) return;
+      sel.__zlPluginHooked = true;
+      sel.addEventListener('change', function () { renderParams(sel.value); });
+    }
+
+    return {
+      load: load, isPlugin: isPlugin, infoOf: infoOf, shapeOf: shapeOf,
+      renderParams: renderParams, collect: collect,
+    };
+  })();
+  window.PluginMethods = PluginMethods;
+  PluginMethods.load();
 </script>
 
 <!-- v2.6 · PWA：注册 Service Worker（失败静默，不影响网页使用） -->

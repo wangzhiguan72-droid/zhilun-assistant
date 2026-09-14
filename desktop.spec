@@ -72,6 +72,7 @@ datas = [
     ('access_guard.py', '.'),       # v2.13 访问门禁（默认关闭）
     ('ai_audit.py', '.'),           # v2.15 AI 痕迹自查（纯规则零 LLM）
     ('review_share.py', '.'),       # v2.16 协作审阅（app.py 顶层 import，漏了必闪退）
+    ('version.py', '.'),            # v2.23 版本号（desktop_launcher 引用，漏了必闪退）
 
     # —— v2.14 可插拔方法市场（插件市场全套，缺一不可）——
     ('plugin_registry.py', '.'),    # 插件扫描 / 沙箱调度 / 结果合理性校验
@@ -98,6 +99,7 @@ hiddenimports = [
     'docx',              # python-docx：论文 .docx 读取 / Word 导出
     'pypdf',             # 论文 .pdf 读取（万方/知网 AES 加密自动解）
     'openpyxl',          # pandas 读 .xlsx
+    'pystray',           # v2.22 桌面托盘常驻（未装则启动器自动降级）
     'numpy',
     'scipy',
     'scipy.stats',
@@ -487,6 +489,7 @@ hiddenimports = [
     'paper_writer',
     'pipeline',
     'review_share',
+    'version',
     'security_guard',
     'table_check',
     'tone_guide',

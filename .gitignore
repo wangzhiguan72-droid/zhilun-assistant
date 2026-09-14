@@ -67,7 +67,6 @@ freellmapi_catalog.md
 # ===== 临时文件：会话级脚手架（一次性的，不该进版本库）=====
 _*.txt
 _*.py
-_syntaxcheck/
 _tmp_*
 methods_graph_preview.html
 workspace/

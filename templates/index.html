@@ -1503,21 +1503,45 @@
       const r = await fetch('/api/upload', { method: 'POST', body: fd });
       const data = await r.json();
       if (!data.ok) { toast(data.error || '上传失败'); renderPlaceholder(); return; }
-      state = {
-        fileId: data.file_id,
-        filename: data.filename,
-        rows: data.rows,
-        columns: data.columns,
-        recommendation: data.recommendation,
-      };
-      renderWorkspace();
-      // v2.0：上传即体检（产品入口第一站）
-      runDataCheck();
+      applyUploadData(data);
     } catch (e) {
       toast('网络错误：' + e.message);
       renderPlaceholder();
     }
   }
+
+  // v2.22：上传成功后的统一入口（手动上传 / 拖拽到 exe 图标自动加载共用）
+  function applyUploadData(data) {
+    state = {
+      fileId: data.file_id,
+      filename: data.filename,
+      rows: data.rows,
+      columns: data.columns,
+      recommendation: data.recommendation,
+      history: [],
+    };
+    renderWorkspace();
+    // v2.0：上传即体检（产品入口第一站）
+    runDataCheck();
+  }
+
+  // v2.22：拖拽数据文件到 exe 图标启动 → 页面带 ?localfile=1 打开，
+  // 自动向后端要那个文件（路径走本机环境变量，不经 HTTP 参数）
+  async function tryLocalOpen() {
+    if (!new URLSearchParams(location.search).has('localfile')) return;
+    showSkeleton('正在加载拖入的数据文件...');
+    try {
+      const r = await fetch('/api/local_open', { method: 'POST' });
+      const data = await r.json();
+      if (!data.ok) { toast(data.error || '自动加载失败'); renderPlaceholder(); return; }
+      applyUploadData(data);
+      toast('已自动加载：' + data.filename + '（' + data.rows + ' 行）');
+    } catch (e) {
+      toast('自动加载出错：' + e.message);
+      renderPlaceholder();
+    }
+  }
+  tryLocalOpen();
 
   function renderPlaceholder() {
     const dc = $('datacheckBox');
@@ -3754,7 +3778,9 @@
         + '<div class="rs-hint">有效期至 ' + fmtDate(info.expires_at) + '。'
         + '报告<b>只读</b>，导师 / 同门可在页面里追加批注，改不了正文；'
         + '内容存在本机 <code>.review_share/</code> 目录，'
-        + '<b>不上传任何云端</b>，删掉目录即彻底销毁。</div>'
+        + '<b>不上传任何云端</b>，删掉目录即彻底销毁。'
+        + '<div style="margin-top:6px; color:#b45309;">💡 桌面版提示：链接只有你的电脑开着智论助手时才能访问。'
+        + '如果对方打不开（比如没把服务共享到内网），请改用「下载离线快照」把报告文件直接发给对方。</div>'
         + '</div>';
     }
 

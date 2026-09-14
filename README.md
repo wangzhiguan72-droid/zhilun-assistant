@@ -483,8 +483,10 @@ python methods_test.py
 `regression`(39) · `cronbach`(38) · `two_way`(30) · `plugin_worker`(28) · `explain`(27) ·
 `datacheck_ui`(25) · `grim`(32) · `secrets_guard`(19)
 
-前端内联 JS 另有 **6 个 Node 探针**（`node _syntaxcheck/*_probe.js`，共 200+ 断言）：
-`defense_export`(82) · `simulate` · `review_share` · `datacheck` · `plugin_methods` · `image_audit`(47)。
+前端内联 JS 另有 Node 探针（`node _syntaxcheck/*_probe.js`）：
+`defense_export`(82) · `image_audit`(47) · `datacheck`(25)。
+⚠️ `_syntaxcheck/` 是各会话共享目录，**不要整体清理** —— 2026-09-14 曾被整目录清掉，
+`simulate` / `review_share` / `plugin_methods` 三个探针就此丢失（只能重写）。
 `node --check` 只验语法，探针用 DOM mock 把 IIFE 抽出来**真跑一遍**，验的是契约
 （该发什么请求、守门有没有生效、失败后按钮有没有复原、后端文本有没有转义）。
 

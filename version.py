@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 APP_NAME = "智论助手"
-APP_VERSION = "v2.21"          # 与 CHANGELOG.md 最新条目保持一致
+APP_VERSION = "v2.23"          # 与 CHANGELOG.md 最新条目保持一致
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"   # 桌面启动器横幅用
 
 

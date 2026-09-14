@@ -205,6 +205,40 @@ def scan_plugins(plugin_dir: str | Path | None = None
     return found, errors
 
 
+_SCAN_CACHE: tuple[list[PluginInfo], list[dict[str, str]]] | None = None
+
+
+def load_plugins(*, force: bool = False
+                 ) -> tuple[list[PluginInfo], list[dict[str, str]]]:
+    """带缓存的扫描（启动时扫一次即可，插件是静态文件）。"""
+    global _SCAN_CACHE
+    if force or _SCAN_CACHE is None:
+        _SCAN_CACHE = scan_plugins()
+    return _SCAN_CACHE
+
+
+def plugin_report() -> dict[str, Any]:
+    """给 `/api/plugins` 的加载报告（含失败原因与当前执行方式）。"""
+    plugins, errors = load_plugins()
+    return {
+        "ok": True,
+        "sandbox": executor(),
+        "timeout_sec": timeout_sec(),
+        "dir": str(PLUGIN_DIR),
+        "count": len(plugins),
+        "plugins": [
+            {
+                "key": p.key, "label": p.label, "module": p.module,
+                "ui": p.ui, "needs": list(p.needs),
+                "params": [{"name": n, "default": d} for n, d in p.params],
+                "description": p.description,
+            }
+            for p in plugins
+        ],
+        "errors": errors,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 结果校验（防"插件算错了还理直气壮地显示出来"）
 # ---------------------------------------------------------------------------

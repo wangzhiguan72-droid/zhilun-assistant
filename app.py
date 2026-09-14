@@ -57,6 +57,7 @@ from llm_enhance import enhance_analysis
 from llm_audit import audit_paper_with_llm
 from audit_chat import explain_comparison  # v1.6 ②审计对话（LLM 只解释，不计算）
 from defense_pack import build_qa_pack  # v2.10 ⑧答辩准备包（纯规则，零 LLM）
+import plugin_registry  # v2.14 可插拔方法市场（沙箱执行 + 结果合理性校验）
 from multimodal_agent import (  # v2.9 ④多模态图表核查（LLM 只读图，不改结论）
     audit_image,
     ALLOWED_IMAGE_MIME as IMAGE_MIME_TYPES,
@@ -2523,6 +2524,25 @@ def api_datacheck_fix():
     return jsonify({"ok": True, **fix})
 
 
+@app.route("/api/plugins", methods=["GET"])
+def api_plugins():
+    """可插拔方法市场（v2.14）—— 已加载的插件与加载失败原因。
+
+    只读视图，方便确认"我丢进 plugins/ 的那个文件到底有没有被认出来"。
+    单个插件坏掉时它会出现在 `errors` 里（其余插件照常可用），
+    而不是让整个市场静默失效。
+    """
+    try:
+        from plugin_registry import plugin_report
+    except Exception as e:  # noqa: BLE001 - 插件层缺失不该让接口 500
+        return jsonify({"ok": False, "error": f"插件层不可用：{e}"}), 200
+
+    try:
+        return jsonify(plugin_report())
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"读取插件列表失败：{e}"}), 200
+
+
 @app.route("/api/methods_graph", methods=["GET"])
 def api_methods_graph():
     """方法学知识图谱（①知识图谱）—— 决策树 + 每个方法的前提假设。
@@ -2555,6 +2575,29 @@ def api_red_line_scan():
     return jsonify({"ok": True, **red_line_scan(text)})
 
 
+def _run_plugin_method(df: pd.DataFrame, payload: dict,
+                       missing_msg: str) -> tuple[dict | None, str | None]:
+    """内置注册表不认识的方法 → 查插件市场（v2.14 可插拔方法市场）。
+
+    插件也没有 → 原样返回 MissingField 文案（对用户无感）。
+    插件执行 / 契约 / 结果合理性的一切错误都是 PluginError（= ValueError），
+    在这里统一转成中文提示；返回结果已过 validate_result 合理性校验。
+    """
+    method = str(payload.get("method") or "")
+    plugins, _errs = plugin_registry.load_plugins()
+    info = next((p for p in plugins if p.key == method), None)
+    if info is None:
+        return None, missing_msg
+    try:
+        kw = plugin_registry.build_kwargs(info, payload)
+        result = plugin_registry.run_plugin(info, df, kw)
+    except plugin_registry.PluginError as e:
+        return None, str(e)
+    except Exception as e:  # noqa: BLE001 — 插件层的意外错误也不炸接口
+        return None, f"插件「{info.label}」执行失败：{e}"
+    return result, None
+
+
 def _dispatch_analysis(df: pd.DataFrame, payload: dict) -> tuple[dict | None, str | None]:
     """按 payload 的 method 运行对应统计方法。
 
@@ -2563,13 +2606,15 @@ def _dispatch_analysis(df: pd.DataFrame, payload: dict) -> tuple[dict | None, st
 
     v1.3（总线 seam）：不再用 if/elif 硬编码方法分支，改为查 `METHODS` 注册表。
     加新方法 = 往 `methods_registry.py` 插一条 MethodSpec，本函数无需改动。
+    v2.14（插件市场）：注册表不认识的方法自动落插件市场
+    （plugins/*.py，沙箱执行 + 结果合理性校验），也没有才报未知方法。
     """
     method = payload.get("method")
     try:
         return call_method(method, df, payload), None
     except MissingField as e:
-        # 字段缺口 / 未知方法 → 友好中文提示
-        return None, str(e)
+        # 字段缺口 / 未知方法 → 先查插件市场，都没有才报错
+        return _run_plugin_method(df, payload, str(e))
     except ValueError as e:
         return None, str(e)
     except Exception as e:  # noqa: BLE001

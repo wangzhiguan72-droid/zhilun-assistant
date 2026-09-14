@@ -91,6 +91,23 @@ run_independent_t(df, group_col, value_col) -> {
 - `suggestions` 是 `list[str]`（兼容旧前端），`explanations` 是并行的结构化卡片（XAI）。
 - 解释规则**不做过度推断**：列名不是研究设计证据，小样本也不等于「数据非正态」。
 
+### `plugin_registry.py` / `plugin_worker.py` —— 可插拔方法市场（v2.14）
+
+一个方法 = `plugins/` 里的一个 .py（暴露 `SCHEMA` + `run(df, **kw)`）。三道护栏：
+**契约校验**（坏插件只记原因，不拖垮市场）→ **沙箱执行**（子进程、超时即杀）
+→ **结果合理性校验**（p∈[0,1]、df>0、n≥2，不通过绝不进报告；**会递归进 `summary`**，
+因为本项目结果约定是 `{"summary": {"p": ...}}`）。
+
+- **插件绝不并进 `methods_registry`**。那张表是**内置方法**真源，registry_test 断言
+  前端下拉 / 副驾驶 / `extract_paper` 识别层 / `audit` 别名 / 方法图谱全部覆盖它
+  ——插件一进来实测崩 12 项。插件走 `app._run_plugin_method` 的兜底分发
+  （注册表抛 MissingField 后才查市场），因此**冒名插件永远劫持不了内置方法**。
+- **沙箱用 `python -m plugin_worker` 而非 `multiprocessing`**：后者在 Windows 上是 spawn，
+  会**重新 import `__main__`**；本项目测试脚本是模块级直接跑断言的风格，
+  子进程重跑主模块会递归派生进程。独立解释器起 worker 不碰 `__main__`。
+- 冻结环境（PyInstaller）下 `sys.executable` 不是解释器 → 降级为进程内执行，
+  并通过 `/api/plugins` 的 `sandbox` 字段**如实标注**，不静默。
+
 ### `datacheck.py` —— 数据体检（产品入口）
 
 **12 个检测器** + `run_datacheck()` + `grim_check()`，纯本地规则、零 LLM。

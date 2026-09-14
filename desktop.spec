@@ -12,7 +12,18 @@ block_cipher = None
 # 项目根目录
 PROJECT_ROOT = Path(SPECPATH).parent if hasattr(sys, '_MEIPASS') else Path(SPECPATH)
 
-# 收集数据文件
+# ---------------------------------------------------------------------------
+# 资源清单（v2.14 全量补齐）
+#
+# ⚠️ 这张表必须与 app.py / audit.py 的 **顶层 import** 保持一致。
+#    漏掉任何一个 → exe 双击后 ImportError，且报错发生在 Flask 启动之前，
+#    用户看到的是闪退，极难自查。
+#
+# 上次打包（9/11）就栽在这里：datacheck / table_check / grimmer /
+# access_guard / paper_writer / defense_pack / security_guard /
+# cross_platform / methods_registry / tone_guide 全部缺失。
+# 新增模块时**必须**回来补一行，并在 docs/ARCHITECTURE.md 里同步登记。
+# ---------------------------------------------------------------------------
 datas = [
     # Flask 应用
     ('app.py', '.'),
@@ -22,14 +33,54 @@ datas = [
     ('examples', 'examples'),
     # 依赖模块（agents 包）
     ('agents', 'agents'),
-    # 核心模块
-    ('audit.py', '.'),
-    ('export_docx.py', '.'),
+
+    # —— 论文解析与核查 ——
     ('extract_paper.py', '.'),
-    ('llm_audit.py', '.'),
+    ('audit.py', '.'),
+    ('audit_chat.py', '.'),
+    ('table_check.py', '.'),        # v2.12 文本形态表格交叉核查
+    ('grimmer.py', '.'),            # v2.13 GRIMMER 检验（唯一真源）
+
+    # —— 数据体检（产品入口）——
+    ('datacheck.py', '.'),
+    ('defense_pack.py', '.'),       # v2.10 ⑧答辩准备包
+
+    # —— 方法注册表 / 知识图谱（总线 seam）——
+    ('methods_registry.py', '.'),
+    ('methods_graph.py', '.'),
+
+    # —— 写作副驾流水线 ——
+    ('pipeline.py', '.'),
+    ('paper_writer.py', '.'),
+    ('paper_polisher.py', '.'),
+
+    # —— LLM 层（无 Key 时静默降级）——
     ('llm_cache.py', '.'),
     ('llm_enhance.py', '.'),
+    ('llm_audit.py', '.'),
     ('llm_review.py', '.'),
+    ('multimodal_agent.py', '.'),   # v2.9 ④多模态图表核查
+
+    # —— 导出 ——
+    ('export_docx.py', '.'),
+
+    # —— 基础设施（★ 新增模块最容易漏的四兄弟）——
+    ('env_loader.py', '.'),         # .env 加载器
+    ('tone_guide.py', '.'),         # 文案口吻红线（被 llm_enhance / agents.prompts 依赖）
+    ('security_guard.py', '.'),     # v1.7 限流与防御
+    ('cross_platform.py', '.'),     # v2.8 跨端适配（默认关闭）
+    ('access_guard.py', '.'),       # v2.13 访问门禁（默认关闭）
+
+    # —— v2.14 可插拔方法市场（插件市场全套，缺一不可）——
+    ('plugin_registry.py', '.'),    # 插件扫描 / 沙箱调度 / 结果合理性校验
+    ('plugin_worker.py', '.'),      # 子进程沙箱入口（python -m plugin_worker）
+    ('plugins', 'plugins'),         # 插件本体目录（run_tost.py 等，用户可自行往里加）
+
+    # —— 其余被 import 链引用的业务模块（保险起见全部随包）——
+    ('simulate.py', '.'),           # ⑥模拟数据生成器
+
+    # —— 前端静态资源（PWA：sw.js / manifest / 图标 / 离线页）——
+    ('static', 'static'),
 ]
 
 # 收集隐藏导入（Flask 依赖）
@@ -40,6 +91,11 @@ hiddenimports = [
     'markupsafe',
     'click',
     'itsdangerous',
+    'requests',          # agents 各平台 HTTP 兜底
+    'openai',            # 通用适配器（OpenAI 兼容多平台）
+    'docx',              # python-docx：论文 .docx 读取 / Word 导出
+    'pypdf',             # 论文 .pdf 读取（万方/知网 AES 加密自动解）
+    'openpyxl',          # pandas 读 .xlsx
     'numpy',
     'scipy',
     'scipy.stats',
@@ -391,10 +447,61 @@ hiddenimports = [
     'PIL.PsdImagePlugin',
     'PIL.SunImagePlugin',
     'PIL.WalImagePlugin',
+
+    # —— agents 包（含全部 provider 子模块）——
     'agents',
     'agents.router',
     'agents.prompts',
     'agents.openai_compat',
+    'agents.secrets_guard',
+    'agents.siliconflow_agent',
+    'agents.zhipu_agent',
+    'agents.deepseek_agent',
+    'agents.qwen_agent',
+    'agents.maas_agent',
+    'agents.kimi_agent',
+    'agents.mimo_agent',
+
+    # —— 项目自有模块：PyInstaller 的静态分析看不透跨模块 import 时兜一手 ——
+    #     （datas 里已带源码；这里再列一次，双保险，代价只有几十 KB）
+    'access_guard',
+    'audit',
+    'audit_chat',
+    'cross_platform',
+    'datacheck',
+    'defense_pack',
+    'env_loader',
+    'export_docx',
+    'extract_paper',
+    'grimmer',
+    'llm_audit',
+    'llm_cache',
+    'llm_enhance',
+    'llm_review',
+    'methods_graph',
+    'methods_registry',
+    'multimodal_agent',
+    'paper_polisher',
+    'paper_writer',
+    'pipeline',
+    'security_guard',
+    'table_check',
+    'tone_guide',
+
+    # —— LLM 调用所依赖 ——
+    'urllib.request',
+    'http.client',
+    'ssl',
+    'json',
+    'csv',
+    'zipfile',
+    'base64',
+    'hashlib',
+    'hmac',
+
+    # —— 可选解析后端：装了就用，没装则对应格式降级 ——
+    'pdfplumber',
+    'xlrd',
 ]
 
 a = Analysis(

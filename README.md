@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
-[![Tests](https://img.shields.io/badge/tests-47%20suites-brightgreen)](#七测试)
+[![Tests](https://img.shields.io/badge/tests-49%20suites-brightgreen)](#七测试)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![No Build](https://img.shields.io/badge/build-none%20required-success)](#二快速开始)
 
@@ -106,6 +106,29 @@
 每条答题要点都引用**后端重新实算**的统计量——不是抄屏幕上的数字。
 再把会话内所有统计图**一键打包 zip** 下载（内存打包，不落盘）。纯规则零 LLM。
 
+### 可插拔方法市场（v2.14）
+
+一个统计方法 = **一个独立 .py 文件**，丢进 `plugins/` 重启即可用 —— 不改 app、不改前端、不动注册表。
+
+```python
+# plugins/run_my_method.py
+SCHEMA = {"key": "my_method", "label": "我的方法",
+          "needs": ["group_col", "value_col"],
+          "params": [{"name": "alpha", "default": 0.05}]}
+
+def run(df, group_col, value_col, alpha=0.05, **kw) -> dict: ...
+```
+
+三条护栏：**沙箱执行**（子进程跑，10 秒超时即杀，插件死循环只废这一次调用）、
+**结果合理性校验**（p∈[0,1]、df>0、n≥2，不通过绝不进报告）、
+**契约校验**（单个坏插件不拖垮其它插件，失败原因在 `/api/plugins` 里可见）。
+
+内置示例插件 **TOST 等价性检验** —— 纠正"p > 0.05 就是两组没差异"这个最常见的误用：
+不显著只代表"没检出"，要论证等价必须做等价性检验，并**事先说明等价边界 Δ 的依据**。
+
+> 插件**不会**并进内置方法注册表：那张表是内置方法的真源，前端下拉、副驾驶、
+> 方法图谱都依赖它的完整性。插件走"注册表不认识 → 才查插件市场"的兜底分发。
+
 ### 论文副驾驶
 
 六阶段流水线：资料调研 → 文献综述 → 研究设计 → 数据分析 → 论文核查 → 论文撰写。
@@ -121,6 +144,10 @@ LaTeX 与中文学位论文双模板。可选 LLM 润色层（丢锚点 / 改数
 不需要 Node.js、不需要构建步骤，`git clone` 之后两步即可。
 
 ```bash
+# 0. 拉代码（公开仓库，无需登录）
+git clone https://github.com/tiandaozongsi/zhilun-assistant.git
+cd zhilun-assistant
+
 # 1. 安装依赖
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
@@ -134,6 +161,24 @@ python app.py
 
 > 💡 不想装 Python？见 [README-DESKTOP.md](README-DESKTOP.md)（免安装桌面版）。
 > 也可以用 Docker：`docker compose up`。
+> 想分享给同学用（公网 H5）：照着 [部署上手指南.md](部署上手指南.md) 敲命令即可。
+
+### 给别人用之前：先加一道访问口令（一行环境变量）
+
+默认**不设口令**（本地自己用零干扰）。一旦要挂到公网，**务必**设上，
+否则网址被转发一次就等于对外开放：
+
+```bash
+# Linux / macOS / 容器
+export ACCESS_CODE='你们内部约定的那串口令'
+
+# Windows PowerShell
+$env:ACCESS_CODE = '你们内部约定的那串口令'
+```
+
+设了之后，未登录访客只会看到一条口令输入页；输对一次，30 天内免再输。
+改口令会让所有旧登录态立即失效。**只防"网址被转发"，不防有备而来的攻击**——
+安全边界详见 [部署上手指南.md](部署上手指南.md) §10。
 
 ### 配置 API Key（完全可选）
 
@@ -282,6 +327,9 @@ python wsgi.py
 ├── datacheck.py              # 数据体检 12 检测器 + 一键清洗副本（纯本地规则）
 │                             #   （含本福特 / 末位偏好取证；GRIM 查均值也在此）
 ├── grimmer.py                # GRIMMER 检验（查标准差，GRIMMER 的唯一真源）
+├── plugin_registry.py        # 可插拔方法市场：扫描 plugins/ + 沙箱执行 + 结果校验
+├── plugin_worker.py          #   插件沙箱的子进程入口（python -m plugin_worker）
+├── plugins/                  #   插件目录：一个方法 = 一个 .py（内置 TOST 示例）
 ├── audit.py                  # 论文核查（声称值 vs 实算值）+ 红线引擎
 ├── audit_chat.py             # 审计对话（LLM 只解释，不计算）
 ├── multimodal_agent.py       # 图表 AI 核查（多模态读图，图片不落盘）

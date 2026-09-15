@@ -1,6 +1,22 @@
 # 更新日志
 
-本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.23**。
+本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.24**。
+
+---
+
+## v2.24 — 首推 CI 四轮排障：四矩阵全绿
+
+GitHub 首推后 Actions 红，四轮排障（每轮根因都进了测试或注释）：
+
+| 轮 | 根因 | 修法 |
+| --- | --- | --- |
+| ① | workflow env 同时写 `NO_PROXY` 与 `no_proxy`——GitHub 对 env 键大小写不敏感去重 → **startup failure**（run 红且无任何 job、日志 404） | 只留小写一份 |
+| ② | 测试硬编码本机路径（`D:\论文排版辅助agent`、`.venv/Scripts/python.exe`、本机 node.exe）+ 依赖 gitignore 的 `模板论文/` | 路径全部改 `os.path.join(ROOT, ...)` / `sys.executable` / PATH 上的 node；模板论文套件 fail-soft SKIP |
+| ③ | `paper_writer._render_latex` 的 f-string 表达式内含 `r"\_"`——**Python 3.10 是 SyntaxError**（3.12 正常，故 ubuntu 3.10 矩阵单独红） | 表达式挪出 f-string（`conclusion_tex` 变量） |
+| ④ | CI Windows 的 git autocrlf 把库内 .md checkout 成 CRLF；CLI（raw bytes）与网页端（文本模式）读同一文件产出不同文本，表格渲染 `replace("
+")` 漏 CR——cli_test「CLI == 网页端」**等长不等值**（2348==2348） | `read_paper_text` 全部读取分支出口 `_normalize_newlines`（CRLF/CR→LF）；audit 表格渲染补 `replace("")`；cli_test 加 unified_diff 诊断探针（本轮定位功臣） |
+
+最终：**ubuntu/windows × 3.10/3.12 四矩阵全绿**。附带收益：CRLF 论文文件的上下文摘要不再残留 CR（产品级修复）。
 
 ---
 

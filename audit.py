@@ -1499,7 +1499,7 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         md_lines.append("| 序号 | 方法 | 出现位置（上下文摘要） |")
         md_lines.append("| ---: | --- | --- |")
         for i, m in enumerate(methods, 1):
-            ctx = m["context"][:60].replace("|", "｜").replace("\n", " ")
+            ctx = m["context"][:60].replace("|", "｜").replace("\r", " ").replace("\n", " ")
             md_lines.append(f"| {i} | {m['method_label']} | …{ctx}… |")
     else:
         md_lines.append("⚠️ 未在论文中识别到明确的统计方法关键词。"
@@ -1511,7 +1511,7 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         md_lines.append("| 类型 | 论文写法 | 上下文摘要 |")
         md_lines.append("| --- | --- | --- |")
         for q in quantities[:20]:  # 不超过 20 条
-            ctx = q["context"][:50].replace("|", "｜").replace("\n", " ")
+            ctx = q["context"][:50].replace("|", "｜").replace("\r", " ").replace("\n", " ")
             # v0.9.4：去重后同写法合并，显示出现次数
             cnt = q.get("count", 1)
             raw = q["raw"] + (f"（×{cnt}）" if cnt > 1 else "")

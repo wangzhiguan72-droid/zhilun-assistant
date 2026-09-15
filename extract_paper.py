@@ -34,6 +34,16 @@ except ImportError:  # 兜底（如果未装，至少 .txt/.md 还能用）
 SUPPORTED_PAPER_EXT = {".docx", ".txt", ".md", ".pdf"}
 
 
+def _normalize_newlines(text: str) -> str:
+    """v2.24：把 CRLF / 孤立 CR 统一成 LF。
+
+    动机：git 在 Windows 上 autocrlf 会把库内 .md 样例 checkout 成 CRLF，
+    CLI（raw bytes 读）与网页端（文本模式读）从此对同一文件产出不同文本，
+    上下文摘要里残留 CR 导致「CLI 输出 == 网页端」比对在 CI Windows 必挂。
+    在读取出口统一归一化，三条链路（网页/CLI/流水线）一次对齐。"""
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
 def read_paper_text(file_storage) -> str:
     """接收 Flask 的 FileStorage，返回纯文本字符串。"""
     name = file_storage.filename or ""
@@ -57,7 +67,7 @@ def read_paper_text(file_storage) -> str:
                 cells = [c.text.strip() for c in row.cells if c.text.strip()]
                 if cells:
                     parts.append(" | ".join(cells))
-        return "\n".join(parts)
+        return _normalize_newlines("\n".join(parts))
 
     if ext == ".pdf":
         try:
@@ -84,12 +94,12 @@ def read_paper_text(file_storage) -> str:
                 parts.append(t)
         if not parts:
             raise ValueError("PDF 中未提取到任何文本（可能是扫描件/图片型 PDF，暂不支持 OCR）。")
-        return "\n".join(parts)
+        return _normalize_newlines("\n".join(parts))
 
     # .txt / .md
     for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030"):
         try:
-            return raw.decode(enc)
+            return _normalize_newlines(raw.decode(enc))
         except UnicodeDecodeError:
             continue
     raise ValueError("论文文本编码无法识别（尝试了 utf-8 / gbk）。")

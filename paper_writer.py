@@ -597,6 +597,9 @@ def _render_latex(claims: list[Claim], figs: list[FigureEntry],
     results_tex = "\n\n".join(
         p.replace("_", r"\_").replace("%", r"\%") for p in paras
     ) or "% （暂无可写入的结果段）"
+    # v2.24：把 .replace("_", r"\_") 从 f-string 表达式里挪出来——
+    # f-string 表达式内含反斜杠在 Python 3.10 是 SyntaxError（CI 矩阵 3.10 实测踩坑）
+    conclusion_tex = _conclusion(claims).replace("_", r"\_")
 
     fig_tex = "\n\n".join(
         f"""\\begin{{figure}}[t]
@@ -651,7 +654,7 @@ def _render_latex(claims: list[Claim], figs: list[FigureEntry],
 {results_tex}
 
 \\section{{Conclusion}}
-{_conclusion(claims).replace("_", r"\\_")}
+{conclusion_tex}
 
 \\section*{{Boundary and Caveats}}
 本稿结论均来自本地真实数据，未经外部数据复核；置信度非 high 的结论未进入摘要。

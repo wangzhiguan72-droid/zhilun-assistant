@@ -5,7 +5,10 @@
    未启动时退出码 2（环境未就绪），不会伪装成测试失败。
 """
 import json
+import os
+import os
 import sys
+ROOT = os.path.dirname(os.path.abspath(__file__))
 import urllib.request
 
 BASE = "http://127.0.0.1:5000"
@@ -66,7 +69,7 @@ def post_json(path, payload):
 print("=" * 70)
 print("上传数据")
 print("=" * 70)
-up = post_multipart("/api/upload", r"D:\论文排版辅助agent\examples\student_scores.csv")
+up = post_multipart("/api/upload", os.path.join(ROOT, "examples", "student_scores.csv"))
 assert up["ok"]
 file_id = up["file_id"]
 for c in up["columns"]:

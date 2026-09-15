@@ -24,7 +24,7 @@ BASE = pathlib.Path(__file__).resolve().parent
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["RATE_LIMIT_DISABLE"] = "1"
 
-PY = str(ROOT / ".venv" / "Scripts" / "python.exe")
+PY = sys.executable  # v2.24: 不硬编码 .venv 路径（CI 上不存在）
 CLI = str(ROOT / "cli.py")
 CSV = str(ROOT / "examples" / "student_scores.csv")
 CSV_REG = str(ROOT / "examples" / "sample_regression_data.csv")

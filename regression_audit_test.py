@@ -5,7 +5,10 @@
    未启动时退出码 2（环境未就绪），不会伪装成测试失败。
 """
 import json
+import os
+import os
 import sys
+ROOT = os.path.dirname(os.path.abspath(__file__))
 import urllib.request
 import urllib.error
 
@@ -65,8 +68,8 @@ print("论文排查 · 回归分析专项测试")
 print("=" * 70)
 result = post_multipart_2files(
     "/api/check_paper",
-    r"D:\论文排版辅助agent\examples\sample_regression_paper.md",
-    r"D:\论文排版辅助agent\examples\sample_regression_data.csv",
+    os.path.join(ROOT, "examples", "sample_regression_paper.md"),
+    os.path.join(ROOT, "examples", "sample_regression_data.csv"),
 )
 assert result.get("ok"), result
 

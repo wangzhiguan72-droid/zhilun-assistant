@@ -9,7 +9,10 @@
 跑法：.venv/Scripts/python.exe rm_anova_test.py
 """
 import io
+import os
+import os
 import sys
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 import numpy as np
 import pandas as pd
@@ -21,8 +24,8 @@ from extract_paper import extract_methods
 PASS = 0
 FAIL = 0
 
-DATA_CSV = r"D:\论文排版辅助agent\examples\rm_anova_data.csv"
-PAPER_MD = r"D:\论文排版辅助agent\examples\rm_anova_paper.md"
+DATA_CSV = os.path.join(ROOT, "examples", "rm_anova_data.csv")
+PAPER_MD = os.path.join(ROOT, "examples", "rm_anova_paper.md")
 
 
 def check(name, cond, detail=""):

@@ -7,7 +7,10 @@
    （退出码 2 = 环境未就绪；1 = 真的测试失败；0 = 通过）
 """
 import json
+import os
+import os
 import sys
+ROOT = os.path.dirname(os.path.abspath(__file__))
 import urllib.request
 import urllib.parse
 
@@ -63,7 +66,7 @@ def post_json(path, payload):
 print("=" * 70)
 print("冒烟测试 1: 上传示例数据")
 print("=" * 70)
-upload = post_multipart("/api/upload", r"D:\论文排版辅助agent\examples\student_scores.csv")
+upload = post_multipart("/api/upload", os.path.join(ROOT, "examples", "student_scores.csv"))
 assert upload.get("ok"), upload
 print(f"✓ 文件: {upload['filename']} · 行数: {upload['rows']} · 列数: {len(upload['columns'])}")
 for c in upload['columns']:

@@ -169,9 +169,16 @@ claims = {
     "raw_text_length": len(paper_text),
 }
 web_audit = build_audit_report(claims, df_reg, cols, directive="")
-check("CLI audit 输出 == 网页端 build_audit_report.markdown",
-      out.strip() == (web_audit.get("markdown") or "").strip(),
-      f"CLI 长度={len(out.strip())} web 长度={len((web_audit.get('markdown') or '').strip())}")
+cli_md, web_md = out.strip(), (web_audit.get("markdown") or "").strip()
+_ok = cli_md == web_md
+_detail = f"CLI 长度={len(cli_md)} web 长度={len(web_md)}"
+if not _ok:
+    # v2.24 诊断探针：把第一处差异实文带进 CI 日志（定位 Windows-only 差异源）
+    import difflib
+    diff = [l for l in difflib.unified_diff(
+        web_md.splitlines(), cli_md.splitlines(), "web", "cli", lineterm="", n=1)]
+    _detail += " || " + " / ".join(diff[:24])[:900]
+check("CLI audit 输出 == 网页端 build_audit_report.markdown", _ok, _detail)
 
 # -----------------------------------------------------------------------------
 print('\n=== 6. simulate 子命令 ===')

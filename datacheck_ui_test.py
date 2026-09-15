@@ -22,7 +22,7 @@ from pathlib import Path
 HTML_PATH = Path('templates/index.html')
 PROBE_DIR = Path('_syntaxcheck')
 PROBE_PATH = PROBE_DIR / 'datacheck_probe.js'
-NODE = r'C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-3\node.exe'
+NODE = "node"
 
 
 def _extract_fn(lines: list[str], sig: str) -> str:

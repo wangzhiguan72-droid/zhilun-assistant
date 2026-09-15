@@ -20,6 +20,10 @@ from app import app  # noqa: E402
 
 ROOT = Path(__file__).parent
 PDF = ROOT / "模板论文" / "双摆桥式起重机轨迹规划与自抗扰控制研究.pdf"
+# v2.24 fail-soft：模板论文为版权文件不入库，CI 上没有 → 跳过而非炸红
+if not PDF.is_file():
+    print("[SKIP] 模板论文/ 素材目录不存在（本地素材件），跳过本套件")
+    raise SystemExit(0)
 
 
 def main() -> None:

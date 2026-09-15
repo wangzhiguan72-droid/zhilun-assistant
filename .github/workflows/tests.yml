@@ -20,6 +20,8 @@ jobs:
       # ⚠️ 只能写一份：GitHub 对 env 键做大小写不敏感去重，
       #    NO_PROXY + no_proxy 并存会 startup failure（v2.23 首推实测踩坑）
       no_proxy: "127.0.0.1,localhost"
+      # Windows runner 的 stdout 默认 cp1252，测试打印中文会 UnicodeEncodeError
+      PYTHONUTF8: "1"
       # 刻意【不】在这里设 RATE_LIMIT_DISABLE！
       # security_guard_test 测的就是限流器本身，全局关掉它会让该套件自相矛盾
       # （实测 56/0 变 52/4，4 个假失败）。需要关闭限流的套件在自身文件内

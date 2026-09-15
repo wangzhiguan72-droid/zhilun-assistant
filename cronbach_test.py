@@ -10,7 +10,10 @@
 """
 import io
 import json
+import os
+import os
 import sys
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 import numpy as np
 import pandas as pd
@@ -101,7 +104,7 @@ except ValueError:
 
 # ============ 2. 示例数据 ============
 section("2. 示例数据 examples/questionnaire_data.csv")
-qdf = pd.read_csv(r"D:\论文排版辅助agent\examples\questionnaire_data.csv")
+qdf = pd.read_csv(os.path.join(ROOT, "examples", "questionnaire_data.csv"))
 qres = run_cronbach_alpha(qdf, ["q1", "q2", "q3", "q4", "q5", "q6"])
 qa = qres["summary"]["alpha"]
 check("示例数据 α 在 0.7~0.95 合理区间", 0.7 <= qa <= 0.95, f"got={qa:.4f}")
@@ -112,7 +115,7 @@ print(f"  · 示例 α = {qa:.4f}（{qres['summary']['grade']}）")
 section("3. HTTP 契约 · /api/analyze JSON + SSE")
 client = app.test_client()
 
-with open(r"D:\论文排版辅助agent\examples\questionnaire_data.csv", "rb") as f:
+with open(os.path.join(ROOT, "examples", "questionnaire_data.csv"), "rb") as f:
     r = client.post("/api/upload", data={"file": (io.BytesIO(f.read()), "q.csv")},
                     content_type="multipart/form-data")
 up = r.get_json()
@@ -181,9 +184,9 @@ if alpha_qs:
 
 # ============ 5. 论文排查（audit）端到端 ============
 section("5. 论文排查 · audit 重跑信度（in-process test_client）")
-with open(r"D:\论文排版辅助agent\examples\questionnaire_paper.md", "rb") as f:
+with open(os.path.join(ROOT, "examples", "questionnaire_paper.md"), "rb") as f:
     paper_body = f.read()
-with open(r"D:\论文排版辅助agent\examples\questionnaire_data.csv", "rb") as f:
+with open(os.path.join(ROOT, "examples", "questionnaire_data.csv"), "rb") as f:
     data_body = f.read()
 
 audit = client.post("/api/check_paper", data={

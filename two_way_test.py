@@ -8,7 +8,10 @@
 跑法：.venv/Scripts/python.exe two_way_test.py
 """
 import io
+import os
+import os
 import sys
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 import numpy as np
 import pandas as pd
@@ -155,7 +158,7 @@ except ValueError:
 
 # ============ 2. 示例数据 ============
 section("2. 示例数据 examples/two_way_data.csv")
-tdf = pd.read_csv(r"D:\论文排版辅助agent\examples\two_way_data.csv")
+tdf = pd.read_csv(os.path.join(ROOT, "examples", "two_way_data.csv"))
 tres = run_two_way_anova(tdf, "gender", "teaching_method", "score")
 ts = tres["summary"]
 check("示例数据平衡", ts["balanced"] is True)
@@ -170,7 +173,7 @@ print(f"  · 性别 F={ts['f_a']:.2f} p={ts['p_a']:.4g} | "
 section("3. HTTP 契约 · /api/analyze JSON + SSE")
 client = app.test_client()
 
-with open(r"D:\论文排版辅助agent\examples\two_way_data.csv", "rb") as f:
+with open(os.path.join(ROOT, "examples", "two_way_data.csv"), "rb") as f:
     up = client.post("/api/upload", data={"file": (io.BytesIO(f.read()), "t.csv")},
                      content_type="multipart/form-data").get_json()
 check("上传成功", up.get("ok") is True)
@@ -205,13 +208,13 @@ check("错误提示含 two_way_anova", "two_way_anova" in r.get_json().get("erro
 
 # ============ 4. 论文识别与排查 ============
 section("4. 论文识别 + 排查（audit）")
-paper = open(r"D:\论文排版辅助agent\examples\two_way_paper.md", encoding="utf-8").read()
+paper = open(os.path.join(ROOT, "examples", "two_way_paper.md"), encoding="utf-8").read()
 mkeys = [m["method_key"] for m in extract_methods(paper)]
 check("识别出 two_way_anova", "two_way_anova" in mkeys, f"keys={mkeys}")
 
-with open(r"D:\论文排版辅助agent\examples\two_way_paper.md", "rb") as f:
+with open(os.path.join(ROOT, "examples", "two_way_paper.md"), "rb") as f:
     pb = f.read()
-with open(r"D:\论文排版辅助agent\examples\two_way_data.csv", "rb") as f:
+with open(os.path.join(ROOT, "examples", "two_way_data.csv"), "rb") as f:
     db = f.read()
 audit = client.post("/api/check_paper", data={
     "paper": (io.BytesIO(pb), "two_way_paper.md"),

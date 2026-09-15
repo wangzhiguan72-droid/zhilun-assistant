@@ -1527,7 +1527,7 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         md_lines.append("| --- | --- | --- |")
         for m in matched[:20]:
             data_col = m["data_col"] or "❌ 未匹配"
-            src = "、".join(set(m["sources"]))
+            src = "、".join(sorted(set(m["sources"])))  # v2.24: sorted——set 迭代序随 hash 随机，Windows CI 上造成「等长不等值」
             md_lines.append(f"| {m['paper_var']} | {data_col} | {src} |")
         if len(matched) > 20:
             md_lines.append(f"\n（共识别 {len(matched)} 个候选变量，仅展示匹配优先的前 20 个。）")

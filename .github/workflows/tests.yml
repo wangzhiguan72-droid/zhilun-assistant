@@ -16,8 +16,9 @@ jobs:
         python-version: ["3.10", "3.12"]
 
     env:
-      # 本机请求不要走代理，否则测试连不上 127.0.0.1
-      NO_PROXY: "127.0.0.1,localhost"
+      # 本机请求不要走代理，否则测试连不上 127.0.0.1。
+      # ⚠️ 只能写一份：GitHub 对 env 键做大小写不敏感去重，
+      #    NO_PROXY + no_proxy 并存会 startup failure（v2.23 首推实测踩坑）
       no_proxy: "127.0.0.1,localhost"
       # 刻意【不】在这里设 RATE_LIMIT_DISABLE！
       # security_guard_test 测的就是限流器本身，全局关掉它会让该套件自相矛盾

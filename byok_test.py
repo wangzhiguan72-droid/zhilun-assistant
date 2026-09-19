@@ -200,6 +200,54 @@ wrapped = la._wrap("审计结论", long_paper)
 check("_wrap 长文带提示", "⚠️" in wrapped and "审计结论" in wrapped)
 check("_wrap 短文不带提示", "⚠️" not in la._wrap("审计结论", short_paper))
 
+# ---------------------------------------------------------------------------
+print("\n[9] BYOK 请求级隔离（v2.25 安全修复：Key 零残留、不串用户）")
+# ---------------------------------------------------------------------------
+# 背景：Router 是 get_router() 的进程级单例。旧实现把用户 Key 存进普通
+# 实例 dict —— 多用户部署时 A 的 Key 会残留，被 B 的请求继续使用
+# （串号 + 盗用额度）。v2.25 改为 contextvars 请求级隔离 + 用户 Key
+# Agent 不进共享缓存。以下断言防回退。
+import contextvars
+import threading
+
+r9 = Router()
+os.environ["ZHIPU_API_KEY"] = "sk-env-zhipu"
+
+# 9.1 无 BYOK：走环境变量 Key，Agent 进共享缓存
+a1 = r9._get_agent("write_text")
+check("无 BYOK 用环境变量 Key", a1._api_keys[0] == "sk-env-zhipu",
+      f"实际={a1._api_keys[0]!r}")
+check("环境变量 Agent 进共享缓存",
+      ("zhipu", "glm-4.7-flash") in r9._agents)
+
+# 9.2 本请求注入用户 Key：新实例生效，但不进缓存、不顶掉共享缓存里的 env Agent
+r9.set_user_key("zhipu", "sk-userA")
+a2 = r9._get_agent("write_text")
+check("BYOK 请求用用户 Key", a2._api_keys[0] == "sk-userA",
+      f"实际={a2._api_keys[0]!r}")
+check("用户 Key Agent 未污染共享缓存",
+      r9._agents[("zhipu", "glm-4.7-flash")]._api_keys[0] == "sk-env-zhipu")
+
+# 9.3 模拟另一个用户的请求（全新线程 = 全新上下文）：看不到 A 的 Key
+seen: dict = {}
+def _other_request():
+    seen["keys"] = dict(r9._user_keys)
+    seen["agent_key"] = r9._get_agent("write_text")._api_keys[0]
+_t = threading.Thread(target=_other_request)
+_t.start(); _t.join()
+check("另一请求线程看不到用户 A 的 Key", seen.get("keys") == {},
+      f"实际={seen.get('keys')!r}")
+check("另一请求线程仍走环境变量 Key",
+      seen.get("agent_key") == "sk-env-zhipu",
+      f"实际={seen.get('agent_key')!r}")
+
+# 9.4 清 Key 后本上下文回退环境变量（且复用共享缓存）
+r9.set_user_key("zhipu", "")
+a3 = r9._get_agent("write_text")
+check("清 Key 后回退环境变量 + 复用缓存", a3 is r9._agents[("zhipu", "glm-4.7-flash")])
+
+os.environ.pop("ZHIPU_API_KEY", None)
+
 print(f"\n{'='*46}")
 print(f"BYOK 离线测试：{PASS} 通过 / {FAIL} 失败")
 print(f"{'='*46}")

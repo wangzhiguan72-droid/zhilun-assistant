@@ -1,6 +1,42 @@
 # 更新日志
 
-本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.24**。
+本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.26**。
+
+---
+
+## v2.26 — 安全自查落地：内存有界化 + 限流补登 + 向导完整性（含 v2.25 合并入库）
+
+安全自查（见 `安全自查报告.md`）之后的落地批次；v2.25 的 BYOK 隔离修复与
+本轮改动同在工作树，一并入库。网页端真实冒烟暴露出 1 个致命笔误，已修并加测试锁死。
+
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| ① | **会话表 `_SESSION` 从不清理**：多用户部署下每次上传的 DataFrame 永不释放（确定性内存泄漏） | `_session_put` 统一入口：空闲超 4h 回收、总量超 64 份按最久未写入淘汰；`upload / local_open / simulate` 三个写入口全部收编 |
+| ② | **`_session_put` 首版实现把收尾一行写成递归调用自己**——任何上传直接 RecursionError、`/api/upload` 全灭（单测 8 套件连环红；单元测试全绿但真实服务一跑就崩，再次证明"跑一跑"不可省） | 改回 `_SESSION[file_id] = df`；新增 `session_bound_test.py` 9 条断言（上传可用 / TTL 回收 / 超限淘汰 / 图表缓存 LRU 上限）并登记进 `scripts/regress_run.py` |
+| ③ | **图表缓存无上限** | `_chart_cache_put` LRU 上限 128 |
+| ④ | **`/api/analyze` 漏登 LLM 限流桶**：`use_llm=1` 真烧 token 却只受 60/分普通桶保护 | `security_guard.LLM_PATH_PREFIXES` 补登 `/api/analyze`；registry_test / wizard_test 按 `security_guard.disabled()` 约定显式关限流 |
+| ⑤ | audit 两处统计边界：单样本 SD（std=NaN 与任何值比较都是 False → 被静默判"一致"）；合并 SD 除零（两组各 1 样本时 n1+n2-2=0，整份核查报告 500） | 样本不足 2 个跳过 SD 比对；合并 SD 前检查自由度 > 0 |
+| ⑥ | `/api/analyze` 的 BYOK 注入在 stream 分流之后——流式路径（前端默认）完全拿不到用户 Key | 注入移到分流之前，双路径不再漂移 |
+| ⑦ | **前端向导函数嵌套吞并事故（2026-09-18）**：重复 `function updateWizard()` 声明把 validateMethod / methodDesc / setStep4 等吞成嵌套函数，语法完全合法、`node --check` 抓不到，运行时主流程按钮永久禁用 | 去重修复；新增 `_syntaxcheck/wizard_integrity_probe.js` 两道防线（内联脚本 new Function 编译 + 向导函数族全文件唯一声明） |
+
+验证：全量回归 26 套件全绿（新增 session_bound_test）；网页端冒烟 10/10
+（门禁三态·中文口令 HMAC cookie / 上传 / 分析 / LLM 桶第 9 次起 429 + Retry-After）；
+桌面端 exe 重建 + `scripts/exe_e2e.py` 通过。
+
+---
+
+## v2.25 — 安全修复：BYOK 用户 Key 跨用户泄露（请求级隔离）
+
+全仓安全扫描发现 1 个真实漏洞（多用户部署场景），本轮修复：
+
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| ① | **BYOK 用户 Key 残留在进程级单例 Router 里**：用户 A 填的自带 Key 写进普通 dict 后永久残留，用户 B 之后的请求会被路由到 A 的 Key 上（串号 + 盗用 A 的额度；A 若是付费 Key 就是真金白银），且带用户 Key 的 Agent 还进共享缓存加速扩散 | `agents/router.py`：`_user_keys` 改 **contextvars 请求级隔离**（每请求线程各一份，请求结束零残留）；带用户 Key 的 Agent **不进共享缓存、不污染 `_resolved`**；`_resolved` 捷径加「当前请求有该平台用户 Key 必须绕开缓存」防护 |
+| ② | 前端 `/api/audit_chat`、`/api/audit_image` 不带 `collectByok()`（原先靠服务端残留"碰巧能用"，隔离后会静默失效） | 两个入口补透传；`_syntaxcheck/byok_fields_probe.js` 新增 4 个 LLM 入口透传点契约断言 |
+
+测试：`byok_test.py` 新增 §9 共 7 条隔离断言（含多线程模拟另一用户请求）；
+byok 49/0、kimi_mimo 41/0、router_cooldown 46/0、security_guard 56/0、
+secrets_guard 49/0，全量回归绿。扫描全貌见 `安全自查报告.md`。
 
 ---
 

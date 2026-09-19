@@ -32,7 +32,10 @@ _DEFAULT_PER_MIN = 60
 _DEFAULT_LLM_PER_MIN = 8
 
 # LLM 接口前缀：这些会真花钱 / 真调外部 API，单独且更严地限流
+# ⚠️ /api/analyze 在 use_llm=1 时真调 enhance_analysis 烧 token（v2.26 补登，
+#    漏登期间可走 60/分的普通桶刷 LLM——正是本模块要防的事）。
 LLM_PATH_PREFIXES: tuple[str, ...] = (
+    "/api/analyze",
     "/api/check_paper",
     "/api/copilot/",
     "/api/audit_chat",

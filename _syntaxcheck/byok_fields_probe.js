@@ -47,3 +47,20 @@ if (onlyBackend.length || onlyFrontend.length) {
 }
 
 console.log(`[PASS] byok_fields_probe：BYOK ${backendFields.length} 个字段前后端完全一致`);
+
+// ── 透传点契约（v2.25）：BYOK 改为请求级隔离后，服务端不再持久保存用户 Key，
+//    每个 LLM 入口的每次请求都必须带上 collectByok()，漏带 = 用户 Key 静默失效
+//    （回退服务端免费档，用户以为自己在用自己的 Key）。 ──
+const attachPoints = [
+  ["/api/analyze", /Object\.assign\(payload, collectByok\(\)\)/],
+  ["/api/check_paper", /const byok = collectByok\(\)/],
+  ["/api/audit_chat", /Object\.assign\(\{ summary: summary, question: q \}, collectByok\(\)\)/],
+  ["/api/audit_image", /const byokIa = collectByok\(\)/],
+];
+for (const [endpoint, re] of attachPoints) {
+  if (!re.test(html)) {
+    console.error(`[探针] ${endpoint} 前端调用未带 collectByok() —— 请求级隔离后 BYOK 会静默失效`);
+    process.exit(1);
+  }
+}
+console.log(`[PASS] byok_fields_probe：${attachPoints.length} 个 LLM 入口全部透传 collectByok()`);

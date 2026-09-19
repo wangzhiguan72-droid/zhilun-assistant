@@ -10,11 +10,16 @@
   4. 卡方模式：点击「卡方切换」→ Step 1 选 gender → Step 3 选 pass → 推 chi_square
 """
 import io
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+
+# wizard 路径连续调用 /api/analyze；v2.26 起 analyze 计入 LLM 限流桶（8/分），
+# 测试必须关掉限流（security_guard.disabled 专为回归测试提供此开关）。
+os.environ["RATE_LIMIT_DISABLE"] = "1"
 
 from app import app
 

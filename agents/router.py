@@ -59,6 +59,7 @@ v0.5 新增（FreeLLMAPI 式推广）：
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import time
 from typing import Any
@@ -193,8 +194,19 @@ class Router:
 
     v0.5.1 新增：BYOK（用户自带 Key）模式
         - 调用 set_user_key(provider, key) 后,该 provider 的所有调用都用用户 Key
-        - 用户 Key 不缓存(每次请求可能不同),所以 Agent 实例化时不带状态
+        - 用户 Key 只活在当前请求上下文（contextvars），请求结束即销毁
+        - 带用户 Key 的 Agent 不进共享缓存（用完即弃，Key 零残留）
     """
+
+    @property
+    def _user_keys(self) -> dict[str, str]:
+        """当前请求上下文里的用户 Key（只读视图）。
+
+        对外保持 dict 语义（byok_test / kimi_mimo_test 直接断言它），
+        但底层是 ContextVar —— 跨请求、跨线程互不可见。
+        """
+        d = self._user_keys_var.get()
+        return d if d is not None else {}
 
     def __init__(self, tier: str | None = None):
         # v0.5.3 档位：free（默认，免费用户，只走零成本模型）| pro（会员，不限）
@@ -209,8 +221,15 @@ class Router:
         self._resolved: dict[str, tuple[str, str]] = {}
         # 冷却表：key = (provider, model)，value = 冷却截止时间戳
         self._cooldown_until: dict[tuple[str, str], float] = {}
-        # 用户提供的 Key（provider → key），BYOK 模式
-        self._user_keys: dict[str, str] = {}
+        # 用户提供的 Key（provider → key），BYOK 模式。
+        # ⚠️ 安全关键（v2.25 修复）：必须用 contextvars 按「请求上下文」隔离，
+        # 不能用普通实例 dict —— 本 Router 是 get_router() 的进程级单例，
+        # 普通 dict 会让用户 A 的 Key 在请求结束后残留，被用户 B 的请求
+        # 继续使用（串号 + 盗用 A 的额度；若 A 的是付费 Key 就是真金白银）。
+        # ContextVar 让每个请求线程各拿一份，请求结束线程销毁，Key 零残留。
+        # 实例属性而非模块级：测试里 new Router() 能得到干净隔离的上下文。
+        self._user_keys_var: contextvars.ContextVar[dict[str, str] | None] = \
+            contextvars.ContextVar(f"zhilun_user_keys_{id(self)}", default=None)
         # 上一次成功调用的 Agent（v0.5.2：供 llm_enhance 拿 usage 做前缀缓存观测）
         self._last_agent: BaseAgent | None = None
         # 上一次调用的 usage（同上；None = 尚未调用或调用失败）
@@ -261,17 +280,21 @@ class Router:
 
     def set_user_key(self, provider: str, key: str) -> None:
         """设置用户自带的 API Key（BYOK 模式）。
-        
-        一旦设置,该 provider 的所有调用都用这个 Key,忽略环境变量。
-        key 为空字符串时清除用户 Key,回退到环境变量。
+
+        只在**当前请求上下文**生效：该 provider 的后续调用都用这个 Key，
+        忽略环境变量；请求结束（线程销毁）后 Key 自动消失，不会残留到
+        下一个请求、更不会串到其他用户。key 为空字符串时清除（回退环境变量）。
+
+        不再清空 _agents/_resolved：共享缓存里只会有「环境变量 Key」的
+        Agent（带用户 Key 的 Agent 本就不进缓存，见 _get_agent/complete），
+        清它只会白白牺牲全站命中率。
         """
+        d = dict(self._user_keys_var.get() or {})
         if not key.strip():
-            self._user_keys.pop(provider, None)
+            d.pop(provider, None)
         else:
-            self._user_keys[provider] = key.strip()
-        # 清空缓存,避免用旧 Key 的 Agent
-        self._agents.clear()
-        self._resolved.clear()
+            d[provider] = key.strip()
+        self._user_keys_var.set(d)
 
     def _make_agent(self, provider: str, model: str, temp: float) -> BaseAgent:
         """按 provider 实例化对应 Agent。缺 Key 时抛 AgentError。
@@ -306,11 +329,17 @@ class Router:
         仅处理"实例化阶段"的失败（缺 Key 等）；运行时调用失败由
         complete() 捕获并冷却后重走容灾链。
         """
-        # 已解决过且不在冷却期的状态直接复用
+        # 已解决过且不在冷却期的状态直接复用。
+        # ⚠️ BYOK 防护：捷径只在「缓存里真有这个 Agent 且当前请求没有给它
+        # 换用户 Key」时才可走 —— 缓存里只会是环境变量 Key 的 Agent，
+        # 当前请求若带了该 provider 的用户 Key，必须绕开捷径走下面的
+        # 全新实例化，否则用户 Key 会被静默忽略（旧行为靠清缓存实现）。
         if state in self._resolved:
             key = self._resolved[state]
-            if not self._cooling(key):
-                return self._agents[key]
+            cached = self._agents.get(key)
+            if (cached is not None and not self._cooling(key)
+                    and key[0] not in self._user_keys):
+                return cached
 
         if state == "analyze":
             raise AgentError(
@@ -333,16 +362,21 @@ class Router:
                 errors.append(f"{provider}/{model}: 冷却中（近期调用失败，"
                               f"{int(self._cooldown_until[key] - time.time())}s 后恢复）")
                 continue
-            if key in self._agents:
+            if key in self._agents and provider not in self._user_keys:
                 self._resolved[state] = key
                 return self._agents[key]
             try:
-                self._agents[key] = self._make_agent(provider, model, temp)
-                self._resolved[state] = key
-                return self._agents[key]
+                agent = self._make_agent(provider, model, temp)
             except AgentError as e:
                 errors.append(f"{provider}/{model}: {e}")
                 continue
+            if provider in self._user_keys:
+                # BYOK：带用户 Key 的 Agent **不进共享缓存、不污染 _resolved**
+                # —— 缓存它等于把用户 Key 留在进程里给后续所有请求用。
+                return agent
+            self._agents[key] = agent
+            self._resolved[state] = key
+            return agent
 
         raise AgentError(
             f"状态 {state} 的所有候选模型都不可用（缺 Key？）。\n" +
@@ -376,10 +410,15 @@ class Router:
                     errors.append(f"{provider}/{model}: 冷却中（近期调用失败）")
                     continue
                 # 实例化（缺 Key 等失败 → 记录，试下一个）
+                # BYOK：带用户 Key 的 Agent 用完即弃，不进共享缓存
+                # （缓存它 = 把用户 Key 留在进程里给别人的请求用）
                 try:
-                    if key not in self._agents:
-                        self._agents[key] = self._make_agent(provider, model, temp)
-                    agent = self._agents[key]
+                    if provider in self._user_keys:
+                        agent = self._make_agent(provider, model, temp)
+                    else:
+                        if key not in self._agents:
+                            self._agents[key] = self._make_agent(provider, model, temp)
+                        agent = self._agents[key]
                 except AgentError as e:
                     errors.append(f"{provider}/{model}: {e}")
                     continue

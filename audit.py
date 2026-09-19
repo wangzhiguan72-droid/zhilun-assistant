@@ -507,6 +507,11 @@ def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
                             "diff": f"{abs(real_m - r['mean']):.3f}",
                         })
                 if r["sd"] is not None:
+                    # ⚠️ 单样本 SD 无定义（std=NaN）：NaN 与任何值比较都是 False，
+                    # 会被静默判「一致」（v2.26 修复：样本不足 2 个直接跳过，
+                    # 与 table_check 的口径一致）。
+                    if len(nums) < 2:
+                        continue
                     checked += 1
                     real_sd = float(nums.std())
                     tol = max(0.011, abs(r["sd"]) * 0.005)
@@ -899,7 +904,9 @@ def _generate_suggestions(real: dict, paper_methods: list[dict],
     has_d_in_paper = any(q["kind"] == "d" for q in paper_quantities)
     if "independent_t" in method_keys and real.get("ok") and not has_d_in_paper:
         n1, n2 = real.get("n1", 0), real.get("n2", 0)
-        if n1 > 0 and n2 > 0:
+        # ⚠️ n1+n2-2 是除数：两组各 1 个有效样本时为 0（v2.26 真实除零崩溃，
+        # 整份核查报告 500）。合并 SD 至少需要 2 个自由度。
+        if n1 > 0 and n2 > 0 and (n1 + n2 - 2) > 0:
             m1, m2 = real.get("mean1", 0), real.get("mean2", 0)
             s1, s2 = real.get("sd1", 0), real.get("sd2", 0)
             pooled = (((n1 - 1) * s1**2 + (n2 - 1) * s2**2) / (n1 + n2 - 2)) ** 0.5

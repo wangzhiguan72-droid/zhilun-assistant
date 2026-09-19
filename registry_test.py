@@ -17,11 +17,16 @@
 跑法：.venv/Scripts/python.exe registry_test.py
 """
 import io
+import os
 import re
 import sys
 from pathlib import Path
 
 import pandas as pd
+
+# 本套件对 /api/analyze 连打 12+ 次；v2.26 起 analyze 计入 LLM 限流桶（8/分），
+# 不关限流必然误报 429（security_guard.disabled 专为回归测试提供此开关）。
+os.environ["RATE_LIMIT_DISABLE"] = "1"
 
 from app import app, method_label, _dispatch_analysis
 from methods_registry import (

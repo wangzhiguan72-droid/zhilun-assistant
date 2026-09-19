@@ -107,7 +107,31 @@ MAX_UPLOAD_MB = 20
 ALLOWED_EXT = {".csv", ".xlsx", ".xls"}
 
 # 简易内存缓存：file_id -> DataFrame（小数据集本地测试足够）
+# ⚠️ 必须有界（v2.26）：旧版从不清理，多用户部署下每次上传都新增一份
+# DataFrame 永不释放，是确定性内存泄漏（与限流器同一课：内存有界）。
+# 规则：空闲超 _SESSION_TTL 回收；总数超 _SESSION_MAX 按最久未上传淘汰。
 _SESSION: dict[str, pd.DataFrame] = {}
+_SESSION_TS: dict[str, float] = {}
+_SESSION_MAX = 64                 # 同时最多保留多少份数据
+_SESSION_TTL = 4 * 3600.0         # 空闲回收阈值（秒）
+
+
+def _session_put(file_id: str, df: pd.DataFrame) -> None:
+    """写入会话表（带回收到顶/到期淘汰）。所有写入必须走这里。"""
+    now = time.time()
+    # 先回收过期的
+    stale = [k for k, t in _SESSION_TS.items() if now - t > _SESSION_TTL]
+    for k in stale:
+        _SESSION.pop(k, None)
+        _SESSION_TS.pop(k, None)
+    # 再按数量上限淘汰最久未写入的（新 file_id 自己除外）
+    if file_id not in _SESSION and len(_SESSION) >= _SESSION_MAX:
+        victims = sorted(_SESSION_TS.items(), key=lambda kv: kv[1])
+        for k, _t in victims[: len(_SESSION) - _SESSION_MAX + 1]:
+            _SESSION.pop(k, None)
+            _SESSION_TS.pop(k, None)
+    _SESSION[file_id] = df
+    _SESSION_TS[file_id] = now
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -2054,7 +2078,17 @@ def run_repeated_measures_anova(df: pd.DataFrame, time_cols: list[str],
 #   - 简单内存缓存：key 用 (file_id, method, cols, n_rows) 的 md5
 #   - 输出 base64，前端用 <img src="data:image/png;base64,..."> 直接渲染
 
+# ⚠️ 必须有界（v2.26）：每张图 base64 几十~几百 KB，无上限缓存会慢性涨内存。
+# 超上限按最旧插入淘汰（dict 保序，FIFO 足够——图表重算成本低）。
 _CHART_CACHE: dict[str, str] = {}
+_CHART_CACHE_MAX = 128
+
+
+def _chart_cache_put(key: str, data_uri: str) -> None:
+    if key not in _CHART_CACHE and len(_CHART_CACHE) >= _CHART_CACHE_MAX:
+        oldest = next(iter(_CHART_CACHE))
+        _CHART_CACHE.pop(oldest, None)
+    _CHART_CACHE[key] = data_uri
 
 
 def _chart_cache_key(file_id: str, method: str, cols: list[str | None],
@@ -2468,7 +2502,7 @@ def api_upload():
     recommendation = _recommend_method(columns)
 
     file_id = uuid.uuid4().hex[:12]
-    _SESSION[file_id] = df
+    _session_put(file_id, df)
     return jsonify({
         "ok": True,
         "file_id": file_id,
@@ -2546,7 +2580,7 @@ def api_local_open():
 
     columns = [_summarize_column(df[c]) for c in df.columns]
     file_id = uuid.uuid4().hex[:12]
-    _SESSION[file_id] = df
+    _session_put(file_id, df)
     return jsonify({
         "ok": True,
         "file_id": file_id,
@@ -2619,7 +2653,7 @@ def api_simulate():
     columns = [_summarize_column(df[c]) for c in df.columns]
     recommendation = _recommend_method(columns)
     file_id = uuid.uuid4().hex[:12]
-    _SESSION[file_id] = df
+    _session_put(file_id, df)
 
     try:
         csv_text = df.to_csv(index=False)
@@ -2843,6 +2877,13 @@ def api_analyze():
         wilcoxon:       Wilcoxon 符号秩（2 列：前测 + 后测）
     """
     payload = request.get_json(silent=True) or {}
+
+    # 处理 BYOK（用户自带 Key，v1.8 起支持六家平台）
+    # ⚠️ 必须在 stream 分流**之前**注入：v2.26 之前此段在分流之后，
+    # 流式路径（前端默认 stream=1）完全拿不到用户 Key —— 双路径漂移。
+    router = get_router()
+    _apply_byok(router, payload.get)
+
     if payload.get("stream") == 1:
         return _analyze_sse(payload)
 
@@ -2856,10 +2897,6 @@ def api_analyze():
         return jsonify({"ok": False, "error": "会话已过期，请重新上传文件。"}), 400
     if not method:
         return jsonify({"ok": False, "error": "请提供分析方法。"}), 400
-
-    # 处理 BYOK（用户自带 Key，v1.8 起支持六家平台）
-    router = get_router()
-    _apply_byok(router, payload.get)
 
     df = _SESSION[file_id]
     result, err = _dispatch_analysis(df, payload)
@@ -3139,7 +3176,7 @@ def api_chart():
 
     b64 = base64.b64encode(png_bytes).decode("ascii")
     data_uri = f"data:image/png;base64,{b64}"
-    _CHART_CACHE[cache_key] = data_uri
+    _chart_cache_put(cache_key, data_uri)
     return jsonify({
         "ok": True,
         "image": data_uri,

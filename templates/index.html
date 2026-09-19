@@ -2146,84 +2146,6 @@
     const v1 = $('valueCol').value;
     const v2 = $('valueCol2').value;
     const g  = $('groupCol').value;
-
-    // Step 1 状态
-    if (v1) {
-      $('wizStatus1').textContent = '✓ ' + v1;
-      setStepActive(1, true);
-    } else {
-      $('wizStatus1').textContent = '';
-      $('wizStep1').classList.remove('done', 'active');
-    }
-
-    if (state.wizard.mode === 'chi_square') {
-      // 卡方模式：Step 1 = 行变量（分类），Step 2 隐藏，Step 3 = 列变量（分类）
-      $('wizStep2').style.display = 'none';
-      $('wizStep3').style.display = '';
-      $('wizStep3Title').textContent = '选列变量（分类列）';
-      $('wizStep3Hint').innerHTML = '再选一个<strong>分类列</strong>。';
-      // 过滤 valueCol2 只显示分类列
-      filterSelectByType('valueCol2', 'categorical');
-      $('wizStatus2').textContent = '';
-      $('wizStep2').classList.remove('done', 'active');
-      if (v1) {
-        const t1 = getColType(v1);
-        if (t1 !== 'categorical') {
-          $('wizStatus1').textContent = '✗ 需分类列';
-          $('wizStep1').classList.remove('done');
-        } else if (v2 && v2 !== v1) {
-          $('wizStatus3').textContent = '✓ ' + v2;
-          setStepActive(3, true);
-          setWizardMethod('chi_square', '卡方检验',
-            `行变量 = ${v1}，列变量 = ${v2}。检验两个分类变量是否独立。`);
-        } else {
-          $('wizStatus3').textContent = '';
-          $('wizStep3').classList.remove('done', 'active');
-          $('runBtn').disabled = true;
-          $('wizMethodBadge').textContent = '—';
-          $('wizMethodDesc').textContent = '选好两个分类列后自动给出方法。';
-        }
-      } else {
-        $('runBtn').disabled = true;
-        $('wizMethodBadge').textContent = '—';
-        $('wizMethodDesc').textContent = '选好两个分类列后自动给出方法。';
-      }
-      return;
-    }
-
-    // t_anova / correlation 模式
-    $('wizStep2').style.display = '';
-    $('wizStep2').querySelector('.wizard-hint').innerHTML =
-      '想<strong>按什么分组</strong>比较？选一个<strong>分类列</strong>；不选 = 看两个连续变量的相关性。';
-    $('wizStep3').style.display = 'none';
-
-    if (!v1) {
-      $('runBtn').disabled = true;
-      $('wizMethodBadge').textContent = '—';
-      $('wizMethodDesc').textContent = '选好上面变量后自动给出方法。';
-      $('wizStatus2').textContent = '';
-      $('wizStep2').classList.remove('done', 'active');
-      $('wizStatus3').textContent = '';
-      $('wizStep3').classList.remove('done', 'active');
-      $('wizStatus4').textContent = '';
-      $('wizStep4').classList.remove('done');
-      return;
-    }
-
-    // Step 2 状态
-    if (g) {
-      $('wizStatus2').textContent = '✓ ' + g;
-      setStepActive(2, true);
-    } else {
-      $('wizStatus2').textContent = '';
-      $('wizStep2').classList.remove('done');
-    }
-
-  function updateWizard() {
-    if (!state.wizard) return;
-    const v1 = $('valueCol').value;
-    const v2 = $('valueCol2').value;
-    const g  = $('groupCol').value;
     const manual = $('method').value;
 
     // Step 1 状态
@@ -2439,7 +2361,9 @@
     $('runBtn').disabled = true;
     $('methodOverrideHint').style.display = 'none';
   }
-    // 把不符合类型的选项变 disabled，但保留已选项
+
+  // 把不符合类型的选项变 disabled，但保留已选项
+  function filterSelectByType(selId, type) {
     const sel = $(selId);
     const keepValue = sel.value;
     Array.from(sel.options).forEach(o => {
@@ -3415,7 +3339,9 @@
 
       fetch('/api/audit_chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summary: summary, question: q }),
+        // v2.25：BYOK 改为请求级隔离（服务端不再持久保存用户 Key），
+        // 每次请求都必须带上 collectByok()，否则用户自己的 Key 不生效
+        body: JSON.stringify(Object.assign({ summary: summary, question: q }, collectByok())),
       }).then(function (r) { return r.json().then(function (d) { return { r: r, d: d }; }); })
         .then(function (o) {
           wait.remove();
@@ -3615,6 +3541,9 @@
       const fd = new FormData();
       fd.append('image', file);
       if (claim) fd.append('claim', claim);
+      // v2.25：BYOK 请求级隔离后每次都要带上用户 Key（同 check_paper）
+      const byokIa = collectByok();
+      for (const [k, v] of Object.entries(byokIa)) fd.append(k, v);
 
       const box = $('iaResult');
       if (box) {

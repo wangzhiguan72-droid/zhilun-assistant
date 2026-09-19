@@ -174,7 +174,14 @@ run_independent_t(df, group_col, value_col) -> {
 
 - `free` / `pro` 两档；`FREE_MODELS` 是独立的免费白名单，默认 `free`。
 - Key 从 `PROVIDER_REGISTRY[platform].env_var` 取，**不要自拼变量名**。
-- BYOK：`set_user_key()` 注入构造时参数，不改全局状态。
+- BYOK：用户自带 Key 走**请求级隔离**（v2.25）：`_user_keys` 存在 contextvars 里，
+  每个请求线程各一份、请求结束即销毁，**Key 在服务端零残留**。Router 是进程级单例，
+  v2.24 以前普通 dict 会让用户 A 填的 Key 残留、被用户 B 的后续请求盗用
+  （跨用户串号——2026-09 全仓安全扫描发现的唯一真实漏洞，已修复：
+  带 BYOK Key 的 Agent **不进共享缓存、不污染 `_resolved`**，
+  `_resolved` 复用捷径在当前请求带该平台用户 Key 时强制绕开缓存）。
+  隔离契约由 `byok_test.py` §9 七条断言（含多线程模拟另一用户）与
+  `_syntaxcheck/byok_fields_probe.js` 前端透传探针共同锁住。
 - `maas` 是私有百炼端点的尾位兜底；`kimi` / `mimo` 是 v1.8 新增的**付费 BYOK 尾部备胎**
   （故意排在免费档之后，免费用户零感知）。
 

@@ -214,6 +214,27 @@ cache_key = hash(model + PROMPT_VERSION + method + summary_canonical_json)
 
 在 `AgentError` 与浏览器错误出口统一脱敏，测试只能使用合成 Key。
 
+### `user_accounts.py`（独立账号层，v2.27，默认关闭）
+
+口令门禁之上的"认人"层：`ACCOUNTS_ENABLED=1` 才生效，**不设零干扰**。
+
+- **邀请制注册**：`/register` 表单必须带与门禁同一把 `code`——光知道网址不能注册；
+- 口令存 **PBKDF2（12 万轮 + 随机盐）摘要**于 `.accounts/accounts.json`
+  （已 gitignore；账号索引是唯一落盘物，用户数据仍全内存）；
+- 会话 cookie「用户名｜过期｜HMAC 签名」httponly，**签名密钥由口令派生——
+  改 `ACCESS_CODE` 全员会话立即失效**；
+- 限流 key 升级为 `user:<名>`（app.py `rate_limit` 传参），配额按人独立；
+- `file_id` 归属登记在 `_SESSION_OWNER`（与数据同生命周期），`_user_gate`
+  钩子中央校验，他人访问 403——不用改几十个路由；
+- `security_guard.LoginLockout`：/unlock、/login、/register 共享按 IP 锁定
+  （5 次失败 → 15 分钟，锁定期内正确口令也被拒；内存有界可回收）；
+- 分层顺序（before_request 注册序）：`_access_gate` → `_user_gate` → `rate_limit`
+  → CORS。`/unlock` `/login` 等登录体系路径在 `_user_gate` 豁免——
+  账号是门禁之内的一层，不能把"输口令"重定向走（实际踩过：v2.27 首版漏豁免
+  `/unlock`，解锁 POST 被账号层重定向走、cookie 永远种不上，由
+  `user_accounts_test.py` 端到端断言锁住）。
+- 契约由 `user_accounts_test.py`（30 条断言）锁定。
+
 ### `cross_platform.py`（跨端适配，默认关闭）
 
 手写 CORS，不引 `flask-cors`（保持零构建、开箱即跑）。设计要点：

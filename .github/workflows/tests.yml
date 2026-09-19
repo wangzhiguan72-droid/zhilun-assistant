@@ -145,3 +145,18 @@ jobs:
           name: server-log-${{ matrix.os }}-${{ matrix.python-version }}
           path: server.log
           if-no-files-found: ignore
+
+  # v2.27 供应链检查：扫描 requirements.txt 依赖的已知漏洞（CVE/GHSA）。
+  # 报告性质（continue-on-error）：先跑起来看噪音，稳定后再决定是否升级为门槛。
+  deps-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit dependencies for known vulnerabilities
+        run: pip-audit -r requirements.txt --progress-spinner off

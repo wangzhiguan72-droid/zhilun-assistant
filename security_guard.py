@@ -170,6 +170,71 @@ class RateLimiter:
 limiter = RateLimiter()
 
 
+class LoginLockout:
+    """登录/解锁口令的**独立防爆破锁定**（v2.27，内存有界）。
+
+    解决的问题：/unlock 原先只吃通用限流（60 次/分），没有独立锁定——
+    对弱口令来说 60 次/分钟仍是可观的爆破速度。现在连续失败达到阈值后，
+    该来源（按 IP）在锁定期内连**正确**口令也会被拒，直到窗口滑走。
+
+    纪律与 RateLimiter 一致：滑动窗口、空闲回收、超上限淘汰最旧、锁内操作。
+    """
+
+    def __init__(self, max_fails: int = 5, window: float = 900.0,
+                 max_keys: int = 4096) -> None:
+        self.max_fails = int(max_fails)
+        self.window = float(window)          # 失败计数的滑动窗口（也是锁定期）
+        self.max_keys = int(max_keys)
+        self._lock = threading.Lock()
+        self._fails: dict[str, list[float]] = {}
+        self._last: dict[str, float] = {}
+
+    def _sweep(self, now: float) -> None:
+        if len(self._last) >= self.max_keys:
+            order = sorted(self._last.items(), key=lambda kv: kv[1])
+            for k, _t in order[:max(len(order) - self.max_keys + 1, 0)]:
+                self._last.pop(k, None)
+                self._fails.pop(k, None)
+        stale = [k for k, t in self._last.items() if now - t > self.window]
+        for k in stale:
+            self._last.pop(k, None)
+            self._fails.pop(k, None)
+
+    def status(self, key: str) -> tuple[bool, int]:
+        """(是否被锁, 还要等多少秒)。**只读，不计失败**。"""
+        now = time.time()
+        with self._lock:
+            fails = [t for t in self._fails.get(key, []) if now - t <= self.window]
+            self._fails[key] = fails
+            if len(fails) < self.max_fails:
+                return False, 0
+            return True, max(1, int(self.window - (now - fails[0])) + 1)
+
+    def fail(self, key: str) -> None:
+        now = time.time()
+        with self._lock:
+            self._sweep(now)
+            hist = [t for t in self._fails.get(key, []) if now - t <= self.window]
+            hist.append(now)
+            self._fails[key] = hist
+            self._last[key] = now
+
+    def ok(self, key: str) -> None:
+        """成功登录 → 清空该来源的失败计数。"""
+        with self._lock:
+            self._fails.pop(key, None)
+            self._last.pop(key, None)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._fails.clear()
+            self._last.clear()
+
+
+#: 模块级单例：/unlock、/login、/register 三个口 共享同一套按 IP 锁定
+login_lockout = LoginLockout()
+
+
 def client_ip(req, *, trusted: bool | None = None) -> str:
     """从请求对象取客户端 IP。
 

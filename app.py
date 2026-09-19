@@ -39,7 +39,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from flask import (Flask, jsonify, make_response, redirect, render_template,
+from flask import (Flask, g, jsonify, make_response, redirect, render_template,
                    request, send_from_directory, url_for)
 from scipy import stats
 from werkzeug.utils import secure_filename
@@ -65,6 +65,7 @@ from multimodal_agent import (  # v2.9 ④多模态图表核查（LLM 只读图�
     MAX_IMAGE_BYTES,
 )
 import security_guard  # v1.7 P2 应用层限流与防御（独立可测）
+import user_accounts   # v2.27 独立账号系统（ACCOUNTS_ENABLED 开启；默认关闭零干扰）
 import cross_platform  # v2.8 跨端适配：CORS / 预检 / 小程序接入辅助（默认关闭）
 import access_guard  # v2.13 访问门禁：ACCESS_CODE 环境变量一句话加密码（默认关闭）
 import review_share  # v2.15 ⑨协作审阅：报告 → 分享链接 + 批注（本地落盘）
@@ -112,26 +113,43 @@ ALLOWED_EXT = {".csv", ".xlsx", ".xls"}
 # 规则：空闲超 _SESSION_TTL 回收；总数超 _SESSION_MAX 按最久未上传淘汰。
 _SESSION: dict[str, pd.DataFrame] = {}
 _SESSION_TS: dict[str, float] = {}
+_SESSION_OWNER: dict[str, str] = {}   # v2.27：file_id → 账号名（账号关闭时为空，不启用）
+
+
+def _current_user() -> str | None:
+    """当前登录账号名（账号系统关闭时恒为 None）。"""
+    if not user_accounts.enabled():
+        return None
+    return getattr(g, "user", None) or user_accounts.current_user(request)
 _SESSION_MAX = 64                 # 同时最多保留多少份数据
 _SESSION_TTL = 4 * 3600.0         # 空闲回收阈值（秒）
 
 
-def _session_put(file_id: str, df: pd.DataFrame) -> None:
-    """写入会话表（带回收到顶/到期淘汰）。所有写入必须走这里。"""
+def _session_put(file_id: str, df: pd.DataFrame,
+                 owner: str | None = None) -> None:
+    """写入会话表（带回收到顶/到期淘汰）。所有写入必须走这里。
+
+    owner：上传者账号名（v2.27，账号系统开启时由路由传入）——
+    归属表与数据同生命周期：过期/淘汰时一并清除，防止残留串号。
+    """
     now = time.time()
     # 先回收过期的
     stale = [k for k, t in _SESSION_TS.items() if now - t > _SESSION_TTL]
     for k in stale:
         _SESSION.pop(k, None)
         _SESSION_TS.pop(k, None)
+        _SESSION_OWNER.pop(k, None)
     # 再按数量上限淘汰最久未写入的（新 file_id 自己除外）
     if file_id not in _SESSION and len(_SESSION) >= _SESSION_MAX:
         victims = sorted(_SESSION_TS.items(), key=lambda kv: kv[1])
         for k, _t in victims[: len(_SESSION) - _SESSION_MAX + 1]:
             _SESSION.pop(k, None)
             _SESSION_TS.pop(k, None)
+            _SESSION_OWNER.pop(k, None)
     _SESSION[file_id] = df
     _SESSION_TS[file_id] = now
+    if owner:
+        _SESSION_OWNER[file_id] = owner
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -2378,7 +2396,9 @@ def index():
     # v2.22：版本角标改由 version.py 单一真源注入（以前页面写死 v1.1，
     # 启动器写死 v0.9.0，三处各说各话）
     import version
-    return render_template("index.html", version=version.badge_text())
+    # v2.27：账号系统开启时页脚显示当前账号（未登录根本到不了这里）
+    return render_template("index.html", version=version.badge_text(),
+                           user=getattr(g, "user", "") or "")
 
 
 @app.route("/favicon.ico")
@@ -2502,7 +2522,7 @@ def api_upload():
     recommendation = _recommend_method(columns)
 
     file_id = uuid.uuid4().hex[:12]
-    _session_put(file_id, df)
+    _session_put(file_id, df, owner=_current_user())
     return jsonify({
         "ok": True,
         "file_id": file_id,
@@ -2580,7 +2600,7 @@ def api_local_open():
 
     columns = [_summarize_column(df[c]) for c in df.columns]
     file_id = uuid.uuid4().hex[:12]
-    _session_put(file_id, df)
+    _session_put(file_id, df, owner=_current_user())
     return jsonify({
         "ok": True,
         "file_id": file_id,
@@ -2653,7 +2673,7 @@ def api_simulate():
     columns = [_summarize_column(df[c]) for c in df.columns]
     recommendation = _recommend_method(columns)
     file_id = uuid.uuid4().hex[:12]
-    _session_put(file_id, df)
+    _session_put(file_id, df, owner=_current_user())
 
     try:
         csv_text = df.to_csv(index=False)
@@ -3866,7 +3886,33 @@ def _access_gate():
 
 @app.route("/unlock", methods=["GET", "POST"])
 def unlock():
-    """访问口令解锁页（ACCESS_CODE 未配置时直接跳首页）。"""
+    """访问口令解锁页（ACCESS_CODE 未配置时直接跳首页）。
+
+    v2.27 两件事：
+    1. **独立防爆破锁定**：/unlock 连续错 5 次 → 该 IP 锁 15 分钟
+      （此前只有通用限流 60/分，对弱口令仍是可观的爆破速度）；
+    2. **账号系统开启时**，口令过了之后跳 /login 继续个人登录，
+       而不是直接进首页。
+    """
+    if request.method == "POST" and not security_guard.disabled():
+        try:
+            lk = security_guard.login_lockout
+            key = "unlock:" + security_guard.client_ip(request)
+            locked, wait = lk.status(key)
+            if locked:
+                return access_guard.login_page(
+                    f"尝试次数过多，已临时锁定，请 {wait} 秒后再试。", ok=False), 429
+            resp = access_guard.handle_unlock(request)
+            failed = isinstance(resp, tuple)      # (html, 401) = 口令不对
+            (lk.fail if failed else lk.ok)(key)
+            if not failed and user_accounts.enabled():
+                # 解锁成功且开了账号系统 → 去个人登录页
+                loc = getattr(resp, "headers", {}).get("Location")
+                if loc == "/":
+                    resp.headers["Location"] = "/login"
+            return resp
+        except Exception:  # noqa: BLE001 — 锁定器异常不挡正常解锁
+            return access_guard.handle_unlock(request)
     return access_guard.handle_unlock(request)
 
 
@@ -3874,6 +3920,71 @@ def unlock():
 def logout():
     """退出登录：清掉解锁 cookie。改过 ACCESS_CODE 后旧 cookie 自动失效。"""
     return access_guard.logout_response()
+
+
+# -----------------------------------------------------------------------------
+# v2.27 独立账号系统（user_accounts.py）：每人一个账号，按人限额、按人隔离
+#
+# 层次关系：口令门禁（access_guard，看门人）→ 个人账号（本层，认人）。
+#   ACCOUNTS_ENABLED=1 开启；不设 = 完全关闭，本地/桌面端一个字节都不变。
+#
+# _user_gate 必须注册在 _access_gate **之后**、rate_limit **之前**：
+#   先过门禁、再认人、最后按人限流 —— 顺序错了没登录的人会先吃掉限流配额。
+# -----------------------------------------------------------------------------
+@app.before_request
+def _user_gate():
+    try:
+        if not user_accounts.enabled():
+            return None
+        path = request.path or ""
+        if path in user_accounts.EXEMPT_PATHS:
+            return None
+        if any(path.startswith(p) for p in user_accounts.EXEMPT_PREFIXES):
+            return None
+        user = user_accounts.current_user(request)
+        if user is None:
+            if path.startswith("/api/"):
+                return jsonify({
+                    "ok": False,
+                    "error": "请先登录个人账号。",
+                    "need_login": True,
+                }), 401
+            from flask import redirect as _redirect
+            return _redirect("/login")
+        g.user = user
+
+        # ── file_id 归属检查：A 上传的数据，B 拿着 file_id 也读不到 ──
+        fid = request.values.get("file_id")
+        if not fid and request.is_json:
+            fid = (request.get_json(silent=True) or {}).get("file_id")
+        if fid:
+            owner = _SESSION_OWNER.get(fid)
+            if owner and owner != user:
+                return jsonify({
+                    "ok": False,
+                    "error": "该数据属于其他账号，无权访问。",
+                }), 403
+    except Exception:  # noqa: BLE001 — 账号层异常绝不锁死站点
+        return None
+    return None
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_user():
+    """个人账号登录（ACCOUNTS_ENABLED 未开启时跳回首页）。"""
+    return user_accounts.handle_login(request)
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register_user():
+    """个人账号注册（邀请制：需与门禁同一把口令）。"""
+    return user_accounts.handle_register(request)
+
+
+@app.route("/logout-user")
+def logout_user_route():
+    """退出个人账号（只清账号 cookie，口令门禁不受影响）。"""
+    return user_accounts.handle_logout(request)
 
 
 # 防刷限流（v1.7 · 规划§四 P2 上线安全）
@@ -3897,10 +4008,14 @@ def rate_limit():
         if security_guard.disabled():
             return None
         ip = security_guard.client_ip(request)
+        # v2.27：账号系统开启时**按用户名**计数——同一校园网出口 IP 下
+        # 每个人有独立配额，不再互相挤占；未登录/未开启时退回按 IP。
+        who = getattr(g, "user", None) if user_accounts.enabled() else None
+        scope = f"user:{who}" if who else ip
         if security_guard.is_llm_path(path):
-            # LLM 接口：按 IP 计（贵），阈值更严
+            # LLM 接口：贵，阈值更严
             allowed, retry = security_guard.limiter.check(
-                "llm:" + ip, security_guard.llm_per_min())
+                "llm:" + scope, security_guard.llm_per_min())
             if not allowed:
                 return jsonify({
                     "ok": False,
@@ -3909,7 +4024,7 @@ def rate_limit():
                 }), 429, {"Retry-After": str(retry)}
         else:
             allowed, retry = security_guard.limiter.check(
-                "api:" + ip, security_guard.per_min())
+                "api:" + scope, security_guard.per_min())
             if not allowed:
                 return jsonify({
                     "ok": False,

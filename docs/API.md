@@ -14,8 +14,10 @@
   服务端在内存字典 `_SESSION[file_id]` 里持有 DataFrame。
   - 好处：小程序 / H5 / CLI / 桌面共用同一套调用方式，无需各自鉴权适配。
   - ⚠️ 代价：`file_id` 无鉴权，**拿到即可读取该份数据**。不要跨用户分享。
-  - 服务重启后 `file_id` 全部失效，需重新上传。
+  - 服务重启后 `file_id` 全部失效，需重新上传；v2.26 起会话表**有界**：
+    空闲超 4 小时自动回收、总量超 64 份淘汰最久未用——久置的 `file_id` 也可能失效。
 - **限流**：默认普通接口 60 次/分、LLM 接口 8 次/分（按客户端 IP）。
+  `POST /api/analyze` 自 v2.26 起计入 **LLM 桶**（`use_llm=1` 时真烧 token）。
   超限返回 `429` + `Retry-After` 头。**`OPTIONS` 预检不计入限流。**
 - **数据不落盘**：原始数据全程内存处理。
   `POST /api/audit_image` 上传的**图片同样不落盘**（仅请求内以 base64 送模型）。
@@ -65,7 +67,9 @@
     例：T 检验用 `group_col` + `value_col`；相关/卡方/配对用 `value_col` + `value_col2`
   - `stream: 1` → 改为 SSE 流式返回（`stage` / `markdown` / `chart` 事件）
   - `use_llm: 1` → 附带 LLM 深度解读（可选功能，失败静默降级）
-  - BYOK：可带用户自带 Key 相关字段
+  - BYOK：可带用户自带 Key 相关字段。**Key 是请求级的（v2.25 起强制）**：
+    服务端不保存，每个请求都要自带，不带则回退环境变量档；
+    绝不会用到其他请求残留下来的 Key
 - 返回：`summary`（统计量）、`groups`、`markdown`、可选 `chart`
 
 > `summary` 的字段就是统计量本身（`p` / `t` / `df` / `ci_low` / `d` 等）。
@@ -105,6 +109,8 @@
 对**一条**统计比对追问，LLM 只解释不计算。
 
 - **JSON**：`{"summary": {...}, "question": "...", "force": false}`
+  - BYOK：用户自带 Key 字段同样随本请求 JSON 透传（前端每次 `collectByok()`，
+    不依赖服务端残留——v2.25 请求级隔离后这是唯一正确姿势）
 - 返回：`answer`（Markdown 或 `null`）、`cited`（引用回执）、`llm_model`、
   `llm_cached`、`llm_error`。LLM 不可用时 `answer` 回退到规则引擎文案。
 
@@ -119,6 +125,7 @@
   | `image` | 是 | 图表截图，`.png` / `.jpg` / `.jpeg` / `.webp` / `.gif`，**≤ 5 MB** |
   | `claim` | 否 | 与这张图对应的结论句（≤ 500 字） |
   | `force` | 否 | `1` = 绕过缓存强制真调 |
+  | BYOK 字段 | 否 | 用户自带 Key 相关字段，随表单每次透传（请求级隔离，服务端不存 Key） |
 
 - 返回字段：
 

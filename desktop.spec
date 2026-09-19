@@ -70,6 +70,7 @@ datas = [
     ('security_guard.py', '.'),     # v1.7 限流与防御
     ('cross_platform.py', '.'),     # v2.8 跨端适配（默认关闭）
     ('access_guard.py', '.'),       # v2.13 访问门禁（默认关闭）
+    ('user_accounts.py', '.'),      # v2.27 独立账号系统（默认关闭；缺了预检就拦）
     ('ai_audit.py', '.'),           # v2.15 AI 痕迹自查（纯规则零 LLM）
     ('review_share.py', '.'),       # v2.16 协作审阅（app.py 顶层 import，漏了必闪退）
     ('version.py', '.'),            # v2.23 版本号（desktop_launcher 引用，漏了必闪退）

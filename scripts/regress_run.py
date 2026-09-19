@@ -52,7 +52,7 @@ TESTS = [
     "multi_paper_test", "pdf_paper_test", "audit_chat_test",
     "security_guard_test", "tone_guide_test", "two_way_test",
     "rm_anova_test", "cronbach_test", "methods_test", "chart_test",
-    "export_test", "wizard_test", "session_bound_test",
+    "export_test", "wizard_test", "session_bound_test", "user_accounts_test",
 ]
 
 # 需要服务在跑、单独跑必 rc=2 的「环境依赖型」套件

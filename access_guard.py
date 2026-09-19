@@ -57,7 +57,11 @@ COOKIE_NAME = "zhilun_pass"
 _SALT = b"zhilun-access-v1"
 
 #: 门禁放行的路径（不设门禁也放行）
-_EXEMPT_PATHS = ("/unlock", "/health", "/favicon.ico")
+#: v2.27：/login /register /logout-user 是账号系统（user_accounts）自身的路径——
+#: 账号是门禁**之内**的第二层，注册页要能被还没解锁的人打开（否则死锁）；
+#: 注册表单里自带口令字段，门槛没有降低。
+_EXEMPT_PATHS = ("/unlock", "/health", "/favicon.ico",
+                 "/login", "/register", "/logout-user")
 #: v2.15：/s/<token> 是协作审阅的分享页，token 本身是 96bit 不可猜凭据，
 #: 分享的初衷就是给没口令的导师/同门看 —— 门禁拦它等于功能自废。
 #: 注意：只有**页面**放行，写批注走 /s/<token> 的 POST（同一前缀），

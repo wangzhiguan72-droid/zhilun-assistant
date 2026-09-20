@@ -1,6 +1,24 @@
 # 更新日志
 
-本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.27**。
+本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.28**。
+
+---
+
+## v2.28 — 防护网整备：测试自动发现 + 探针基准清单（外部扫描报告修复）
+
+第三方对 v2.27 快照的全仓扫描指出防护网层三处问题，逐项修复：
+
+| # | 问题（扫描报告） | 修法 |
+| --- | --- | --- |
+| P0-1 | `stream_test.py` 连打 11 次 /api/analyze 吃 429 → StopIteration 崩溃，且不在回归清单里（下一次推 CI 必红） | 按硬性纪律 7 关限流；`regress_run.py` **改自动发现**后再也不会漏套件 |
+| P1-1 | 16 个套件会打 LLM 限流路径却未关限流（跨套件顺序敏感 429） | 11 个 in-process 套件补 `RATE_LIMIT_DISABLE=1`（user_accounts_test 例外——它专门测限流且配额自管；methods/smoke/regression 为 HTTP 外部服务型，归入 ENV_DEPENDENT 由服务端控制） |
+| P1-2 | `_syntaxcheck/` 两个关键探针（defense_export 82 断言 / image_audit 47 断言）历史上两次丢失 | **按当前源码行为重建**：defense_export_probe 20 断言（cdFilename UTF-8 优先契约 9 例 + Werkzeug 残缺回退名事故场景 + 双导出点守门 + 后端 download_name）；image_audit_probe 35 断言（BYOK 透传 + 重选同文件修复 + 拖拽 + 错误路径 + 后端 5MB/白名单）。断言数与 v2.23 版本不必相同，契约不变 |
+| P1-2 保险丝 | CI「探针数 < 3 报警」阈值太低，丢一半照样绿灯 | 改**基准清单逐个点名**（8 个探针缺一即红）+ 总数少于清单即红 |
+| P1-3 | 回归清单漂移：仓库 59 个测试文件 / 手工清单 26 / README 三个数字互相打架 | `regress_run.py` 改**自动发现**（与 CI 同规则：排除 4 个 live + 4 个 HTTP 服务型），README 徽标与正文同步 |
+| 文档 | 安全自查报告 §4 的两条"已知局限"（口令爆破/按人限额）已被 v2.27 修掉但报告未更新 | §4 加更新注记，逐条标注修复版本，不再自相矛盾 |
+
+验证：8 个前端探针全过（含重建的 2 个，55 条新断言）；全量回归自动发现
+**55 套件**全部通过；网页端真机冒烟（含账号全链路）通过；exe 重建后 e2e 12/12。
 
 ---
 
@@ -78,7 +96,8 @@ GitHub 首推后 Actions 红，四轮排障（每轮根因都进了测试或注�
 | ② | 测试硬编码本机路径（`D:\论文排版辅助agent`、`.venv/Scripts/python.exe`、本机 node.exe）+ 依赖 gitignore 的 `模板论文/` | 路径全部改 `os.path.join(ROOT, ...)` / `sys.executable` / PATH 上的 node；模板论文套件 fail-soft SKIP |
 | ③ | `paper_writer._render_latex` 的 f-string 表达式内含 `r"\_"`——**Python 3.10 是 SyntaxError**（3.12 正常，故 ubuntu 3.10 矩阵单独红） | 表达式挪出 f-string（`conclusion_tex` 变量） |
 | ④ | CI Windows 的 git autocrlf 把库内 .md checkout 成 CRLF；CLI（raw bytes）与网页端（文本模式）读同一文件产出不同文本，表格渲染 `replace("
-")` 漏 CR——cli_test「CLI == 网页端」**等长不等值**（2348==2348） | `read_paper_text` 全部读取分支出口 `_normalize_newlines`（CRLF/CR→LF）；audit 表格渲染补 `replace("")`；cli_test 加 unified_diff 诊断探针（本轮定位功臣） |
+")` 漏 CR——cli_test「CLI == 网页端」**等长不等值**（2348==2348） | `read_paper_text` 全部读取分支出口 `_normalize_newlines`（CRLF/CR→LF）；audit 表格渲染补 `replace("
+")`；cli_test 加 unified_diff 诊断探针（本轮定位功臣） |
 
 最终：**ubuntu/windows × 3.10/3.12 四矩阵全绿**。附带收益：CRLF 论文文件的上下文摘要不再残留 CR（产品级修复）。
 

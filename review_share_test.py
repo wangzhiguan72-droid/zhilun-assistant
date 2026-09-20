@@ -20,6 +20,10 @@
 """
 import json
 import os
+
+# 硬性纪律 7（与 registry_test / wizard_test 同款）：本套件会连续调用限流路径，
+# 必须整体关闭限流，否则 60 秒滑窗内必吃 429（v2.27 扫描报告 P1-1）。
+os.environ.setdefault("RATE_LIMIT_DISABLE", "1")
 import shutil
 import sys
 import tempfile

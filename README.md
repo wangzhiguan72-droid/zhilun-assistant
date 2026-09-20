@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
-[![Tests](https://img.shields.io/badge/tests-57%20suites-brightgreen)](#七测试)
+[![Tests](https://img.shields.io/badge/tests-55%2B%20suites%20auto--discovered-brightgreen)](#七测试)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![No Build](https://img.shields.io/badge/build-none%20required-success)](#二快速开始)
 
@@ -419,7 +419,7 @@ python wsgi.py
 ├── scripts/
 │   ├── regress_run.py        # 全量回归入口（单元测试 + exe 打包链路验证）
 │   └── exe_e2e.py            # 打包链路验证（真启动 exe 走 12 步）
-├── *_test.py                 # 24 个回归测试套件
+├── *_test.py                 # 回归测试套件（自动发现，当前 59 个）
 ├── requirements.txt
 ├── .env.example
 └── Dockerfile / docker-compose.yml
@@ -440,7 +440,7 @@ python wsgi.py
 
 ## 七、测试
 
-24 个测试套件（部分需真实 API Key 或 `--live`，默认跳过），覆盖计算正确性、契约一致性、安全边界与前端逻辑。
+测试套件**自动发现**（`*_test.py`，当前 59 个文件；真调外部 API 的 4 个 live 套件与需先起服务的 HTTP 型套件默认跳过），覆盖计算正确性、契约一致性、安全边界与前端逻辑。
 
 ### 一条命令跑全量回归（推荐）
 

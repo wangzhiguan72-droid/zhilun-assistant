@@ -37,26 +37,29 @@ EXE_PATH = str(ROOT / "dist" / "智论助手.exe")
 SUMMARY = str(ROOT / "_tmp_reg.txt")
 
 # -----------------------------------------------------------------------------
-# 单元测试套件
+# 单元测试套件：**自动发现**（v2.28）
 #
-# ⚠️ 已知会返回 rc=2 的两个（**不是失败**）：
-#     paper_check_test / methods_test 需要 Flask 服务已启动才能跑。
-#   单独跑时 rc=2 = "环境未就绪"，与项目退出码约定一致。
+# 为什么不用手工清单：CI 注释里早就写了——「自动发现，别维护手工清单，
+# 手工清单一定会漂移」。v2.27 扫描报告实测了这句预言：stream_test 连打
+# 11 次 /api/analyze 吃 429 崩溃，却因为不在手工清单里两轮回归都没人发现。
+#
+# 规则与 CI（.github/workflows/tests.yml）保持同一套：
+#   1. 自动发现根目录全部 `*_test.py`；
+#   2. 排除 LIVE_SUITES（真调外部 API / 真 Key，与 CI 同一清单）；
+#   3. 排除 HTTP 外部服务型（需要先起 Flask 服务才能跑，单独跑必 rc=2，
+#      与项目「环境未就绪」退出码约定一致，**不算失败**）。
 # -----------------------------------------------------------------------------
-TESTS = [
-    "registry_test", "explain_test", "datacheck_test", "datacheck_ui_test",
-    "grim_test", "grimmer_test", "table_check_test", "access_guard_test",
-    "plugin_registry_test",
-    "cli_test",
-    "copilot_test", "paper_check_test",
-    "multi_paper_test", "pdf_paper_test", "audit_chat_test",
-    "security_guard_test", "tone_guide_test", "two_way_test",
-    "rm_anova_test", "cronbach_test", "methods_test", "chart_test",
-    "export_test", "wizard_test", "session_bound_test", "user_accounts_test",
-]
+TESTS = sorted(p.stem for p in ROOT.glob("*_test.py"))
 
-# 需要服务在跑、单独跑必 rc=2 的「环境依赖型」套件
-ENV_DEPENDENT = {"paper_check_test", "methods_test"}
+# 真调外部 API / 需要真实 Key（与 CI 的 LIVE_SUITES 保持同一清单）
+LIVE_SUITES = {"llm_cache_test", "prefix_cache_test",
+               "zhipu_cache_test", "kimi_mimo_live_test"}
+
+# HTTP 外部服务型：单独跑必 rc=2（需要 Flask 服务已启动），不计为失败
+ENV_DEPENDENT = {"paper_check_test", "methods_test",
+                 "regression_test", "smoke_test", "regression_audit_test"}
+
+TESTS = [t for t in TESTS if t not in LIVE_SUITES]
 
 # 打包链路验证脚本（慢：要真启动 exe，约 30–60 秒）—— 路径见上方 EXE_E2E / EXE_PATH
 

@@ -69,8 +69,18 @@ jobs:
           # 里的 IIFE / 函数抽出来**真跑一遍**，验的是契约（守门有没有生效、
           # 该发的请求有没有发、失败后按钮有没有复原、后端文本有没有转义）。
           # 自动发现，别维护手工清单 —— 手工清单一定会漂移。
+          # 但**基准清单必须逐个点名**（v2.28）：探针目录历史上两次整体丢失
+          # （defense_export / image_audit 曾消失），"数量 < 3 报警"这种保险丝
+          # 丢一半也不响。新增探针后请同步维护下面的 EXPECTED 清单。
           fail=0
           ran=0
+          EXPECTED_PROBES="ai_audit byok_fields datacheck defense_export image_audit method_label review_share wizard_integrity"
+          for name in $EXPECTED_PROBES; do
+            if [ ! -f "_syntaxcheck/${name}_probe.js" ]; then
+              echo "::error::基准探针丢失：_syntaxcheck/${name}_probe.js 不存在（该文件历史上丢过两次）"
+              fail=1
+            fi
+          done
           for p in _syntaxcheck/*_probe.js; do
             [ -e "$p" ] || continue
             echo "───────── $p ─────────"
@@ -81,9 +91,9 @@ jobs:
               fail=1
             fi
           done
-          echo "共运行 $ran 个前端探针"
-          if [ "$ran" -lt 3 ]; then
-            echo "::error::前端探针数异常偏少（$ran），疑似发现逻辑失效"
+          echo "共运行 $ran 个前端探针（基准清单 $(echo $EXPECTED_PROBES | wc -w) 个）"
+          if [ "$ran" -lt "$(echo $EXPECTED_PROBES | wc -w)" ]; then
+            echo "::error::实际探针数（$ran）少于基准清单，疑似有探针未入库"
             exit 1
           fi
           exit $fail

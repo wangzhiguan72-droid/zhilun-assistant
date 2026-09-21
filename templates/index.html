@@ -13,8 +13,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="apple-mobile-web-app-title" content="智论助手" />
 <meta name="description" content="本地运行的论文数据体检、统计核查与写作副驾。统计全部本地计算，不上传数据。" />
-<!-- Markdown 渲染：PRD 指定 markdown-it -->
-<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+<!-- Markdown 渲染：PRD 指定 markdown-it（v2.29 起本地化随包分发，断网/离线也能渲染） -->
+<script src="/static/vendor/markdown-it.min.js"></script>
 <style>
   :root {
     --c-primary: #1e40af;
@@ -1162,7 +1162,7 @@
                   <span>✨ <strong>AI 深度解读</strong>（实验功能）</span>
                 </label>
                 <div style="font-size:12px; color:var(--c-muted); margin-top:4px; padding-left:24px;">
-                  统计结果仍由本地精确计算；勾选后额外调用国产大模型生成一段解读与写作提示（免费模型，失败自动跳过）。
+                  统计结果仍由本地精确计算；勾选后会把<b>算好的统计摘要</b>（方法名、均值、p 值等，<b>不含原始数据表</b>）发送给你所选的大模型厂商，用于生成一段解读与写作提示（失败自动跳过，不影响本地结果）。
                 </div>
               </div>
               <!-- v1.8：BYOK 收进统一设置弹窗（页头 ⚙️），避免每个 Tab 重复填 -->
@@ -1276,6 +1276,10 @@
           <input type="checkbox" id="useLLMCheck" style="accent-color:var(--c-primary, #4f46e5);">
           <span>🔬 <strong>AI 深度审计</strong>（DeepSeek V4-Pro，消耗少量额度，约 30-60 秒）</span>
         </label>
+        <div style="font-size:12px; color:var(--c-muted); margin-top:4px; padding-left:24px;">
+          勾选后会把<b>论文文本开头约 2000 字</b>与核查出的统计量摘要发送给大模型厂商做深度审计；
+          不上传原始数据表。论文含未公开内容或敏感信息时请不要勾选。
+        </div>
       </div>
       <!-- v1.8：BYOK 收进统一设置弹窗（页头 ⚙️）；AI 深度审计用哪家的 Key 也在那里填 -->
     </section>
@@ -1311,8 +1315,8 @@
         </div>
       </div>
       <div class="ia-note">
-        🔒 图片<b>不会保存到服务器</b>，仅本次请求内送到模型；无 API Key 时会提示手动核对。
-        判断结果仅供参考，<b>请以你的原始数据为准</b>。
+        🔒 本功能会把<b>所选图片与结论句</b>发送给多模态大模型厂商读图；图片<b>不会保存到服务器</b>，仅本次请求内使用；
+        无 API Key 时会提示手动核对。判断结果仅供参考，<b>请以你的原始数据为准</b>。
       </div>
       <div id="iaResult"></div>
     </div>
@@ -3407,7 +3411,7 @@
       const defSummary = list[best].summary || {};
       return '<div class="chat-wrap">'
         + '<div class="chat-hd">🗣 追问这条比对'
-        + '<span>AI 只解释已算出的统计量，不会改动结论</span></div>'
+        + '<span>AI 只解释已算出的统计量，不会改动结论；提问会把该条比对的摘要与你的问题发送给大模型厂商</span></div>'
         + '<div class="chat-body">'
         + '<div class="chat-pick" id="chatPick"></div>'
         + '<div class="chat-ask">'

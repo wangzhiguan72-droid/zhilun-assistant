@@ -41,6 +41,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Secrets guard scan
+        # v2.29：真实 Key 进 Git 历史就再也删不干净（可回溯）。任何提交前
+        # 先对已跟踪文件做密钥形态扫描（sk-* / GLM / GitHub PAT / .env 误跟踪）。
+        run: python scripts/secrets_scan.py
+
       - name: Static check (syntax)
         run: python -m compileall -q app.py cli.py agents methods_registry.py audit.py datacheck.py extract_paper.py
 

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import threading
 import time
 from typing import Any
 
@@ -188,6 +189,22 @@ DEFAULT_TIER = TIER_FREE
 COOLDOWN_SECONDS = 60.0
 COOLDOWN_MAX = 600.0
 
+# v2.29 付费调用熔断（spend brake）——"账单止损"的可验证实现。
+#
+# 背景（材料整改项）：文档里一直承诺"模型免费档不代表项目方不付费"，
+# 但此前代码里没有任何**按钱数/按次数**的硬停止——一旦把 LLM_TIER 打成
+# pro 又把付费 Key 填上，程序就会不限量地调用付费模型，账单失控。
+#
+# 机制：
+#   - 环境变量 LLM_PAID_MAX_CALLS：本次进程内**项目方付费调用**次数上限。
+#     计数口径 = 实际发到付费模型（不在 FREE_MODELS 白名单）且用的是
+#     项目方 Key（非用户 BYOK）的请求数。BYOK 调用用户自付，不计入。
+#   - 默认 0 = 关闭熔断（兼容既有行为）；设为正整数即启用硬上限，
+#     超过后付费候选一律跳过（报错串标注"付费熔断"），免费模型不受影响。
+#   - 结果缓存命中的请求根本不进 Router.complete() 的调用段，不计数。
+#   - 免费模型不走这里——它们没有现金成本，无需熔断。
+PAID_MAX_CALLS_ENV = "LLM_PAID_MAX_CALLS"
+
 
 class Router:
     """多 Provider 状态机 Router（含运行时容灾 + 429 冷却）。
@@ -240,6 +257,43 @@ class Router:
         # 容灾切换会让"当前候选"漂移，用这个记住"实际服务过该状态的是谁"，
         # 让缓存 key 在模型切换前后保持稳定，避免命中率被容灾悄悄打掉。
         self._last_ok_model: dict[str, str] = {}
+        # v2.29 付费熔断计数（项目方付费调用次数；BYOK 不计）。线程安全：
+        # Flask 默认 threaded=True，多个请求会并发进 complete()。
+        self._paid_calls = 0
+        self._paid_lock = threading.Lock()
+
+    # ── 付费调用熔断（v2.29）────────────────────────────────────
+    @staticmethod
+    def _paid_max_calls() -> int:
+        """LLM_PAID_MAX_CALLS：进程内项目方付费调用上限。0/非法值 = 不启用。"""
+        try:
+            return max(0, int(os.environ.get(PAID_MAX_CALLS_ENV, "0") or "0"))
+        except ValueError:
+            return 0
+
+    def _paid_blocked(self, provider: str, model: str) -> bool:
+        """该候选是否被付费熔断拦住。
+
+        口径：只拦「付费模型 + 项目方 Key」。BYOK（用户自带 Key）调用
+        费用由用户自担，不占项目方额度、不计入熔断。
+        """
+        if provider in self._user_keys:      # BYOK：用户自付，不熔断
+            return False
+        if (provider, model) in FREE_MODELS:  # 免费模型无现金成本
+            return False
+        cap = self._paid_max_calls()
+        return cap > 0 and self._paid_calls >= cap
+
+    def _charge_paid(self, provider: str, model: str) -> None:
+        """记账：项目方付费调用 +1（BYOK / 免费模型不计）。"""
+        if provider in self._user_keys or (provider, model) in FREE_MODELS:
+            return
+        with self._paid_lock:
+            self._paid_calls += 1
+
+    def paid_calls(self) -> dict[str, Any]:
+        """付费熔断观测（/api/llm_stats 用）：已用次数与上限。"""
+        return {"used": self._paid_calls, "cap": self._paid_max_calls()}
 
     # ── 档位（v0.5.3）─────────────────────────────────────────────
     @staticmethod
@@ -406,6 +460,10 @@ class Router:
                 if not self._allowed(provider, model):
                     errors.append(f"{provider}/{model}: 免费档跳过（付费模型，需会员）")
                     continue
+                if self._paid_blocked(provider, model):
+                    errors.append(f"{provider}/{model}: 付费熔断"
+                                  f"（{PAID_MAX_CALLS_ENV}={self._paid_max_calls()} 已用尽）")
+                    continue
                 if self._cooling(key):
                     errors.append(f"{provider}/{model}: 冷却中（近期调用失败）")
                     continue
@@ -423,6 +481,9 @@ class Router:
                     errors.append(f"{provider}/{model}: {e}")
                     continue
                 # 运行时调用（429 等 → 冷却，试下一个）
+                # v2.29：项目方付费调用先记账再发——只要请求发出去了，
+                # 哪怕中途失败 token 也可能已计费，熔断必须拦住源头。
+                self._charge_paid(provider, model)
                 try:
                     result = agent.complete(prompt, system=system,
                                             temperature=temperature,

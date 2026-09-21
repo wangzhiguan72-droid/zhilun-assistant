@@ -68,6 +68,8 @@ freellmapi_catalog.md
 _*.txt
 _*.py
 _tmp_*
+# v2.29：CI 临时产物（内联 JS 拼接后用 node --check 校验，不入仓）
+_inline_all.js
 methods_graph_preview.html
 workspace/
 

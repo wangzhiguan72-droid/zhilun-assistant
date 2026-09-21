@@ -2498,6 +2498,8 @@ def api_llm_stats():
         "cache": cache,
         "prefix": prefix,
         "provider": provider,
+        # v2.29 付费熔断观测：项目方付费调用已用次数 / 上限（0 = 未启用）
+        "paid_brake": router.paid_calls(),
     })
 
 

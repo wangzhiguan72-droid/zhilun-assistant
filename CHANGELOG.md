@@ -1,6 +1,34 @@
 # 更新日志
 
-本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.29**。
+本项目遵循「版本号体现在功能里程碑」的惯例。当前版本 **v2.30**。
+
+---
+
+## v2.30 — LLM 返回安全解析统一抽象（json_guard）
+
+抖音"Agent 防循环 4 条"里唯一对智论助手真有价值的那条——**工具返回合法性校验**——
+本轮收敛到一个统一抽象，**不动行为，只收口兜底逻辑**：
+
+- 新增 `agents/json_guard.safe_parse_json(text, *, expect, required) -> (value, status, raw_len)`
+  - 三层降级：直接 parse → markdown 代码块提取 → inline 反引号提取 → 首段 `{}`/`[]` 提取
+  - 结构校验：顶层类型 + object 必填字段
+  - 超长截断：`> 200 KB` 直接判 `too_long`（防 LLM 异常长输出撑爆内存）
+  - 失败静默：返 `(None, reason_code, raw_len)`，绝不把 `JSONDecodeError` 原文透出去
+- `llm_review._parse_review` 改用 `safe_parse_json` 替换原手写双层兜底；旧的"两段 try/except
+  + re.search []" 是 2026-09 v0.5.1 留下的，3 个状态码现在收成 1 个统一失败路径
+- 新增 `json_guard_test.py`：**21/0 全过**（顶层类型 4、必填字段 3、markdown 3、inline 2、
+  前后废话 2、空/超长/坏 JSON 4、与旧 llm_review 格式兼容 2、异常路径 1）
+- `desktop.spec` 的 `('agents','agents')` 整体打包已覆盖新模块；`build_desktop_test`
+  预检 **42/0 全过**
+
+不动什么
+- **不做 chat 流熔断**——智论助手没有 ReAct chat 循环：`/api/audit_chat` 是单轮解释，
+  `llm_enhance/llm_review` 也都是单次 `router.complete()`。本来就没有循环，加熔断是空对空。
+- **不做"重复任务去重"**——流水线性调用，重入风险低。
+- **不做 Prompt 约束熔断**——初级开发者手段，资深工程方案已替代。
+- **不做"降低 AI 率 / 小红书妙招"**——违背红线 #4「不做代写、不绕检测」。
+
+测试：单跑 21/0；build_desktop 预检 42/0；回归脚本中 json_guard 被自动发现套件（见下条）。
 
 ---
 

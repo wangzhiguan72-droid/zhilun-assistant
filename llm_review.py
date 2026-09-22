@@ -72,33 +72,33 @@ OUTPUT>>>
 
 
 def _parse_review(text: str) -> list[dict[str, str]]:
-    """解析 LLM 返回的 JSON 数组。"""
-    import json
-    import re
+    """解析 LLM 返回的 JSON 数组（v2.30 起走 agents.json_guard.safe_parse_json 统一兜底）。
 
-    text = text.strip()
-    # 尝试直接解析（如果 LLM 很守规矩）
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    三层降级：直接 parse → 提取首段 [] → markdown 代码块提取。
+    失败时返回兜底提示，**绝不**把 JSONDecodeError 原文透出去。
+    """
+    from agents.json_guard import safe_parse_json
 
-    # 尝试提取 JSON 部分（应对 LLM 混了一些废话）
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-
-    # 失败时返回兜底提示
-    return [
-        {
-            "type": "error",
-            "original": text[:100],
-            "suggestion": "解析失败，请检查输出格式"
-        }
-    ]
+    parsed, status, raw_len = safe_parse_json(text, expect="array")
+    if parsed is None:
+        # 兜底提示统一收敛到这里——上游 review_output 会包成 error 项。
+        # raw_len > 0 但 status != ok 时附上原文前 100 字符，方便排查。
+        preview = text[:100] if raw_len else ""
+        reason = {
+            "empty": "LLM 返回为空",
+            "too_long": f"LLM 返回过长（{raw_len} > 安全上限）",
+            "type_mismatch": "LLM 返回顶层类型不符（期望 JSON 数组）",
+            "missing_field": "LLM 返回缺少必填字段",
+            "decode_failed": "LLM 返回无法解析为 JSON",
+        }.get(status, f"解析失败（{status}）")
+        return [
+            {
+                "type": "error",
+                "original": preview,
+                "suggestion": f"{reason}，请检查输出格式",
+            }
+        ]
+    return parsed
 
 
 # ---------------------------------------------------------------------------

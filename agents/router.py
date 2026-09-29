@@ -66,6 +66,7 @@ import time
 from typing import Any
 
 from .base import AgentError, BaseAgent
+from .custom_agent import CustomAgent
 from .deepseek_agent import DeepSeekAgent
 from .kimi_agent import KimiAgent
 from .maas_agent import MaasAgent
@@ -86,6 +87,7 @@ _PROVIDERS = {
     "maas":      MaasAgent,          # 百炼 MaaS 专属工作空间（私有端点）
     "kimi":      KimiAgent,          # Kimi 开放平台（月之暗面，v1.8）
     "mimo":      MimoAgent,          # 小米 MiMo 开放平台（v1.8）
+    "custom":    CustomAgent,        # 自定义 OpenAI 兼容端点（v2.31）
 }
 
 # 状态 → 容灾链 [(provider, 模型友好名, 默认温度), ...]
@@ -225,6 +227,11 @@ class Router:
         d = self._user_keys_var.get()
         return d if d is not None else {}
 
+    @property
+    def _custom_cfg(self) -> dict | None:
+        """当前请求上下文里的自定义供应商配置（只读视图）。"""
+        return self._custom_cfg_var.get()
+
     def __init__(self, tier: str | None = None):
         # v0.5.3 档位：free（默认，免费用户，只走零成本模型）| pro（会员，不限）
         # 可通过构造参数、环境变量 LLM_TIER 或 set_tier() 指定
@@ -247,6 +254,10 @@ class Router:
         # 实例属性而非模块级：测试里 new Router() 能得到干净隔离的上下文。
         self._user_keys_var: contextvars.ContextVar[dict[str, str] | None] = \
             contextvars.ContextVar(f"zhilun_user_keys_{id(self)}", default=None)
+        # v2.31：自定义供应商配置（base_url + 模型名列表）。与
+        # _user_keys 同走 ContextVar——请求级隔离，绝不跨请求残留。
+        self._custom_cfg_var: contextvars.ContextVar[dict | None] = \
+            contextvars.ContextVar(f"zhilun_custom_cfg_{id(self)}", default=None)
         # 上一次成功调用的 Agent（v0.5.2：供 llm_enhance 拿 usage 做前缀缓存观测）
         self._last_agent: BaseAgent | None = None
         # 上一次调用的 usage（同上；None = 尚未调用或调用失败）
@@ -350,18 +361,66 @@ class Router:
             d[provider] = key.strip()
         self._user_keys_var.set(d)
 
+    def set_custom_provider(self, base_url: str, key: str,
+                            models: str | list[str]) -> None:
+        """v2.31 单供应商入口（兼容保留）：等价于只有一家的列表。"""
+        self.set_custom_providers(
+            [{"id": "custom", "base_url": base_url, "key": key,
+              "models": models}])
+
+    def set_custom_providers(self, providers: list[dict]) -> None:
+        """配置多个自定义供应商（v2.33，请求级 BYOK）。
+
+        providers: [{id?, name?, base_url, key, models(逗号分隔或 list)}]
+        - 链头顺序 = 列表顺序；每家的模型依次作为其内部候选；
+        - base_url / key / models 缺任何一项的条目直接跳过；
+        - key 同时注入 _user_keys[pid]：BYOK 通行（不受免费白名单
+          与付费熔断限制），请求级隔离零残留；
+        - id 缺省 custom1..N（不以 custom 开头的会加前缀）。
+        """
+        provs: dict[str, dict] = {}
+        for i, p in enumerate(providers or [], start=1):
+            if not isinstance(p, dict):
+                continue
+            base_url = str(p.get("base_url") or "").strip()
+            key = str(p.get("key") or "").strip()
+            raw = p.get("models", p.get("model", ""))
+            if isinstance(raw, str):
+                model_list = [m.strip() for m in raw.split(",") if m.strip()]
+            else:
+                model_list = [str(m).strip() for m in raw if str(m).strip()]
+            if not base_url or not model_list or not key:
+                continue
+            pid = str(p.get("id") or f"custom{i}").strip() or f"custom{i}"
+            if not pid.startswith("custom"):
+                pid = "custom_" + pid
+            provs[pid] = {"base_url": base_url.rstrip("/"),
+                          "name": str(p.get("name") or pid),
+                          "models": model_list}
+            self.set_user_key(pid, key)
+        self._custom_cfg_var.set({"providers": provs})
+
     def _make_agent(self, provider: str, model: str, temp: float) -> BaseAgent:
         """按 provider 实例化对应 Agent。缺 Key 时抛 AgentError。
 
         v0.5.1 BYOK：用户自带 Key 直接传给 Agent 构造（不走环境变量，
         避免并发竞态和环境污染）；没设用户 Key 时回退环境变量。
         """
-        cls = _PROVIDERS.get(provider)
-        if cls is None:
+        base_url = None
+        if str(provider).startswith("custom"):
+            # v2.33：自定义供应商（含 v2.31 的单个 "custom" 与 custom1..N）
+            cls = CustomAgent
+            info = ((self._custom_cfg or {}).get("providers") or {}).get(provider)
+            if info:
+                base_url = info.get("base_url") or None
+        elif provider in _PROVIDERS:
+            cls = _PROVIDERS[provider]
+        else:
             raise AgentError(f"未知 provider：{provider}。已知：{list(_PROVIDERS.keys())}")
 
         user_key = self._user_keys.get(provider)
-        return cls(model=model, default_temperature=temp, api_key=user_key)
+        return cls(model=model, default_temperature=temp,
+                   api_key=user_key, base_url=base_url)
 
     # ── 容灾链排序（v1.8 BYOK）────────────────────────────────────
     def _ordered_chain(self, state: str) -> list[tuple[str, str, float]]:
@@ -370,7 +429,18 @@ class Router:
         规则很简单：用户填了 Key = "我就要用这一家"，优先级高于
         服务端内置 Key（平台额度）。没填 Key 的用户完全无感知。
         """
-        chain = STATE_TO_MODEL[state]
+        chain = list(STATE_TO_MODEL[state])
+        cfg = self._custom_cfg
+        if cfg and state not in VISION_REQUIRED_STATES:
+            # v2.31/33：自定义供应商排最前（用户明确配置 = 最高
+            # 优先级），多家按配置顺序、各自模型依次候选；视觉状态除外
+            # ——无法验证自填模型能否读图，宁可不试。
+            temp = chain[0][2] if chain else 0.5
+            head = [(pid, m, temp)
+                    for pid, info in (cfg.get("providers") or {}).items()
+                    for m in info.get("models", [])]
+            if head:
+                return head + chain
         return sorted(chain, key=lambda c: c[0] not in self._user_keys)
 
     def _cooling(self, key: tuple[str, str]) -> bool:
@@ -557,7 +627,7 @@ class Router:
             ]
             if cooling:
                 info += f" ｜冷却中: {', '.join(cooling)}" + \
-                    f"（{int(min(self._cooldown_until[(p, m)] for p, m, _t in STATE_TO_MODEL[state] if self._cooling((p, m))) - time.time())}s 后恢复）"
+                    f"（{int(min((self._cooldown_until[(p, m)] for p, m, _t in STATE_TO_MODEL[state] if self._cooling((p, m))), default=time.time()) - time.time())}s 后恢复）"
             result[state] = info
         return result
 

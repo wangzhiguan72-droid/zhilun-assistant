@@ -85,6 +85,9 @@ from methods_registry import (
 # v1.4 · ①方法学知识图谱：决策树 + 前提假设（方法名仍由注册表派生）
 from methods_graph import build_graph as _build_methods_graph, enrich_recommendation
 import datacheck as data_doctor  # v2.0 产品入口：数据体检（纯本地规则，零 LLM）
+import lessons  # v2.32 经验库（越用越聪明：同类问题计数与固化建议）
+import paper_table_forensics  # v2.32 论文表格取证（docx 表格数字本身）
+import rules_kb  # v2.32 行业规则知识库（本地《行业规则.json》）
 
 # 中文字体（Windows 自带；其他系统会回退到默认）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
@@ -2718,6 +2721,7 @@ def api_datacheck():
 
     try:
         report = data_doctor.run_datacheck(_SESSION[file_id])
+        report = _augment_dc(_SESSION[file_id], report)  # v2.32
     except Exception as e:  # noqa: BLE001 - 体检失败不阻断主流程
         return jsonify({"ok": False, "error": f"数据体检失败：{e}"}), 500
 
@@ -2883,7 +2887,59 @@ def _apply_byok(router, getter) -> int:
         if raw:
             router.set_user_key(provider, raw)
             n += 1
+    # v2.31/33：自定义供应商（OpenAI 兼容）。
+    # 多供应商列表优先（v2.33，设置页可添加多家、按序容灾）；
+    # 单供应商旧字段向后兼容。
+    c_list = getter("custom_providers")
+    if isinstance(c_list, list) and c_list:
+        router.set_custom_providers([
+            p for p in c_list
+            if isinstance(p, dict)
+            and str(p.get("base_url") or "").strip()
+            and str(p.get("key") or "").strip()
+            and str(p.get("models") or p.get("model") or "").strip()
+        ])
+        n += 1
+        return n
+    c_url = (getter("custom_base_url") or "").strip()
+    c_key = (getter("custom_key") or "").strip()
+    c_models = (getter("custom_model") or "").strip()
+    if c_url and c_key and c_models:
+        router.set_custom_provider(c_url, c_key, c_models)
+        n += 1
     return n
+
+
+def _augment_dc(df, report):
+    """v2.32：体检报告追加「行业规则」检查 + 经验库标注与记录。
+
+    全 try/except——知识库/经验库坏掉只少两栏,绝不影响体检本体。
+    """
+    try:
+        extra = rules_kb.check_rules(df)
+        if extra:
+            report["issues"] = list(report.get("issues", [])) + extra
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # v2.33：经验带上列统计上下文（类型/范围/唯一值/样本），
+        # 事后单看《经验库.jsonl》一行也能明白当时发生了什么。
+        cs = {}
+        for c in df.columns:
+            s = pd.to_numeric(df[c], errors="coerce").dropna()
+            cs[str(c)] = {
+                "dtype": str(df[c].dtype),
+                "min": (float(s.min()) if len(s) else None),
+                "max": (float(s.max()) if len(s) else None),
+                "unique": int(df[c].nunique()),
+                "samples": [str(v) for v in list(df[c].dropna().unique())[:3]],
+            }
+        lessons.annotate(report.get("issues", []))
+        lessons.record(report.get("issues", []), source="datacheck",
+                       col_stats=cs)
+    except Exception:  # noqa: BLE001
+        pass
+    return report
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -3530,7 +3586,84 @@ def api_ai_audit():
     from ai_audit import audit_ai_traces
     report = audit_ai_traces(text)
     report["text_length"] = len(text)
+
+    # v2.32：论文表格取证（耿同学式——对表格数字本身做
+    # 末位/尾串/合计/GRIM 可达性取证;只需 docx,不需要原始数据）。
+    # 结果并入 suggestions 通道渲染（P1=可疑/P2=提示）,原始数据挂
+    # table_forensics 键。失败静默——自查主体不受影响。
+    try:
+        _paper = request.files.get("paper")
+        if _paper is not None and (_paper.filename or "").lower().endswith(".docx"):
+            _paper.seek(0)
+            _tables = read_paper_tables(_paper)
+            if _tables:
+                forensics = paper_table_forensics.audit_paper_tables(_tables)
+                report["table_forensics"] = forensics
+                for _f in forensics.get("issues", []):
+                    report.setdefault("suggestions", []).append({
+                        "priority": "P1" if _f.get("level") == "mid" else "P2",
+                        "issue": f"【表格取证】{_f['title']}",
+                        "action": f"{_f['evidence']}。→ {_f['suggestion']}",
+                    })
+    except Exception:  # noqa: BLE001
+        pass
     return jsonify(report)
+
+
+@app.route("/api/lessons/feedback", methods=["POST"])
+def api_lessons_feedback():
+    """v2.33：经验库质量把关——用户标记某条体检卡片为误报。
+
+    入参 JSON：{"key": "<卡片上的 lesson_key>", "verdict": "false_positive"|"useful"}
+    误报 ≥2 次且过半 → 该经验转入 rejected（静音：不再标注、不再催固化）。
+    """
+    payload = request.get_json(silent=True) or {}
+    key = (payload.get("key") or "").strip()
+    verdict = payload.get("verdict") or "false_positive"
+    if not key:
+        return jsonify({"ok": False, "error": "缺少 key。"}), 400
+    entry = lessons.feedback(key, verdict)
+    if not entry:
+        return jsonify({"ok": False, "error": "经验库中没有这条记录。"}), 404
+    return jsonify({"ok": True, "entry": {
+        "key": entry.get("key"), "seen": entry.get("seen"),
+        "false_pos": entry.get("false_pos"), "status": entry.get("status")}})
+
+
+@app.route("/api/lessons/stats", methods=["GET"])
+def api_lessons_stats():
+    """v2.33：经验库概览（条数/已确认/已拒绝/候选）。"""
+    return jsonify({"ok": True, **lessons.stats()})
+
+
+@app.route("/api/rules_suggest", methods=["POST"])
+def api_rules_suggest():
+    """v2.32：用 AI(预置 Key/BYOK)为当前数据的列生成
+    《行业规则.json》**草稿建议**。仅供人工确认,绝不自动写入规则文件。
+    入参 JSON：{file_id, ...BYOK 字段};出参 {ok, draft}。
+    """
+    payload = request.get_json(silent=True) or {}
+    file_id = payload.get("file_id")
+    if not file_id or file_id not in _SESSION:
+        return jsonify({"ok": False, "error": "会话已过期，请重新上传文件。"}), 400
+    df = _SESSION[file_id]
+    cols = []
+    for c in df.columns:
+        s = pd.to_numeric(df[c], errors="coerce").dropna()
+        cols.append({"name": str(c), "dtype": str(df[c].dtype),
+                     "min": (float(s.min()) if len(s) else None),
+                     "max": (float(s.max()) if len(s) else None),
+                     "unique": int(df[c].nunique())})
+    router = get_router()
+    _apply_byok(router, payload.get)
+    try:
+        draft = rules_kb.draft_with_llm(
+            cols, lambda p: router.complete("recommend", p))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"AI 草稿生成失败：{e}"}), 502
+    return jsonify({"ok": True, "draft": draft,
+                    "note": "AI 草稿仅供参考;请人工逐条确认后,"
+                            "把认可的条目并入《行业规则.json》再保存。"})
 
 
 @app.route("/api/check_paper", methods=["POST"])

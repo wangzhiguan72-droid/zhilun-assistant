@@ -156,6 +156,40 @@ def _sentence_stats(text: str, sents: list[str]) -> dict:
                      if uniform else "句长有自然起伏")}
 
 
+def _rhythm_stats(text: str, sents: list[str]) -> dict:
+    """v2.32：节奏与词汇多样性——朱雀式「困惑度/突发度」的
+    本地启发式代理(零 LLM):
+      - 突发度代理:句长变异系数 CV(人写的长短交错,CV 高)
+      - 困惑度代理:汉字 bigram 唯一率(重复搭配越多,越好猜)
+      - 模板复用代理:五字片段重复占比
+    短文本(<400 字)不判——样本太小,任何指标都是噪声。
+    """
+    import math
+    if len(text) < 400:
+        return {"enabled": False}
+    lens = [len(s) for s in sents if s.strip()]
+    cv = None
+    if len(lens) >= 8:
+        mean = sum(lens) / len(lens)
+        var = sum((x - mean) ** 2 for x in lens) / len(lens)
+        cv = (math.sqrt(var) / mean) if mean else None
+    chs = [c for c in text if '\u4e00' <= c <= '\u9fff']
+    bigrams = [chs[i] + chs[i + 1] for i in range(len(chs) - 1)]
+    ttr = (len(set(bigrams)) / len(bigrams)) if bigrams else 1.0
+    g5 = ["".join(chs[i:i + 5]) for i in range(len(chs) - 4)]
+    dup5 = (1 - len(set(g5)) / len(g5)) if g5 else 0.0
+    flags = []
+    if cv is not None and cv < 0.35:
+        flags.append("句长节奏过于平稳（突发度低）")
+    if ttr < 0.55:
+        flags.append("词汇搭配重复率高（多样性低）")
+    if dup5 > 0.12:
+        flags.append("五字片段重复率偏高（模板化痕迹）")
+    return {"enabled": True, "cv": (round(cv, 3) if cv is not None else None),
+            "bigram_ttr": round(ttr, 3), "dup5": round(dup5, 3),
+            "flags": flags}
+
+
 def _passive_ratio(sents: list[str]) -> dict:
     n = len(sents)
     if not n:
@@ -219,6 +253,7 @@ def audit_ai_traces(text: str) -> dict:
 
     conn = _connection_stats(sents)
     sent = _sentence_stats(text, sents)
+    rhythm = _rhythm_stats(text, sents)  # v2.32
     passive = _passive_ratio(sents)
     hype = _hype_hits(text)
     hype_risky = [h for h in hype if not h["quantified"]]
@@ -263,6 +298,13 @@ def audit_ai_traces(text: str) -> dict:
     add = min(sum(h["count"] for h in generic) * 6, 18)
     breakdown["无边界推广"] = add
     score += add
+
+    # v2.32：节奏与词汇多样性(朱雀式代理,短文本不判)
+    rhythm_add = 0
+    if rhythm.get("enabled") and rhythm.get("flags"):
+        rhythm_add = min(6 * len(rhythm["flags"]), 12)
+    breakdown["节奏与词汇多样性"] = rhythm_add
+    score += rhythm_add
 
     score = min(score, 100)
     if score <= 19:
@@ -312,6 +354,14 @@ def audit_ai_traces(text: str) -> dict:
         top_tone = "、".join(h["phrase"] for h in tone[:4])
         suggestions.append({"priority": "P2", "issue": f"空泛套话 {tone_count} 处（{top_tone}）",
                             "action": "删掉后不影响判断的话就删掉；总结句必须带数字"})
+    if rhythm.get("enabled") and rhythm.get("flags"):
+        suggestions.append({"priority": "P2",
+                            "issue": "节奏与词汇多样性偏低："
+                                     + "；".join(rhythm["flags"])
+                                     + f"（句长CV={rhythm.get('cv')}，"
+                                       f"bigram 唯一率={rhythm.get('bigram_ttr')}）",
+                            "action": "长短句交错、替换重复搭配、删掉复用"
+                                      "的模板句式；这是风格线索，不判定作者身份"})
 
     return {
         "ok": True,
@@ -322,6 +372,7 @@ def audit_ai_traces(text: str) -> dict:
         "metrics": {
             "connection": conn,
             "sentence": sent,
+            "rhythm": rhythm,
             "passive": passive,
             "hype_risky": hype_risky,
             "hype_total": len(hype),

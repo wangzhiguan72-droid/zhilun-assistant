@@ -30,6 +30,10 @@
         + (it.evidence ? '<div class="dc-row"><b>证据：</b>' + escapeHtml(it.evidence) + '</div>' : '')
         + (it.explain ? '<div class="dc-row"><b>意味着什么：</b>' + escapeHtml(it.explain) + '</div>' : '')
         + (it.suggestion ? '<div class="dc-row"><b>建议：</b>' + escapeHtml(it.suggestion) + '</div>' : '')
+        + (it.lesson_key
+            ? '<div class="dc-row"><button class="dc-btn" type="button" style="font-size:12px;padding:2px 10px;margin:2px 0;" '
+              + 'onclick="markFalsePositive(this)" data-key="' + escapeHtml(it.lesson_key) + '">👎 这条是误报（帮经验库把关）</button></div>'
+            : '')
         + '</div>';
     }).join('');
 

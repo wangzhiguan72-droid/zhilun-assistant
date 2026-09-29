@@ -72,6 +72,9 @@ datas = [
     ('access_guard.py', '.'),       # v2.13 访问门禁（默认关闭）
     ('user_accounts.py', '.'),      # v2.27 独立账号系统（默认关闭；缺了预检就拦）
     ('ai_audit.py', '.'),           # v2.15 AI 痕迹自查（纯规则零 LLM）
+    ('paper_table_forensics.py', '.'),  # v2.32 论文表格取证
+    ('rules_kb.py', '.'),           # v2.32 行业规则知识库
+    ('lessons.py', '.'),            # v2.32 经验库
     ('review_share.py', '.'),       # v2.16 协作审阅（app.py 顶层 import，漏了必闪退）
     ('version.py', '.'),            # v2.23 版本号（desktop_launcher 引用，漏了必闪退）
 
@@ -466,6 +469,10 @@ hiddenimports = [
     'agents.maas_agent',
     'agents.kimi_agent',
     'agents.mimo_agent',
+    'agents.custom_agent',
+    'paper_table_forensics',
+    'rules_kb',
+    'lessons',
 
     # —— 项目自有模块：PyInstaller 的静态分析看不透跨模块 import 时兜一手 ——
     #     （datas 里已带源码；这里再列一次，双保险，代价只有几十 KB）

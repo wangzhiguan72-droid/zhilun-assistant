@@ -231,6 +231,17 @@ def main() -> None:
     threading.Thread(target=open_browser_delayed, args=(url,), daemon=True).start()
 
     # 4) 启动 Flask
+    # v2.31：预置 Key——exe 同目录的 .env（不进 exe、不进仓库，
+    # 删掉该文件即恢复无 Key 状态）。冻结环境读 exe 旁，源码跑读项目根。
+    _env_path = (Path(sys.executable).parent if getattr(sys, "frozen", False)
+                 else Path(__file__).resolve().parent) / ".env"
+    if _env_path.is_file():
+        try:
+            from env_loader import load_dotenv as _ld
+            _n = _ld(str(_env_path))
+            print(f"[预置] 已从 {_env_path.name} 载入 {_n} 项服务端配置")
+        except Exception as _e:  # noqa: BLE001 —— 预置失败不挡启动
+            print(f"[预置] .env 读取失败（忽略）：{_e}")
     print(f"[启动] 正在启动 Flask 后端（端口 {port}）...")
     try:
         from app import app

@@ -1605,6 +1605,10 @@
         + (it.evidence ? '<div class="dc-row"><b>证据：</b>' + escapeHtml(it.evidence) + '</div>' : '')
         + (it.explain ? '<div class="dc-row"><b>意味着什么：</b>' + escapeHtml(it.explain) + '</div>' : '')
         + (it.suggestion ? '<div class="dc-row"><b>建议：</b>' + escapeHtml(it.suggestion) + '</div>' : '')
+        + (it.lesson_key
+            ? '<div class="dc-row"><button class="dc-btn" type="button" style="font-size:12px;padding:2px 10px;margin:2px 0;" '
+              + 'onclick="markFalsePositive(this)" data-key="' + escapeHtml(it.lesson_key) + '">👎 这条是误报（帮经验库把关）</button></div>'
+            : '')
         + '</div>';
     }).join('');
 
@@ -4440,6 +4444,21 @@
       <div class="zl-why">新平台，注册有赠送额度。领 Key：platform.xiaomimimo.com</div>
       <input type="password" id="settingsKey_mimo" placeholder="不填 = 不使用" autocomplete="off">
     </div>
+    <div class="zl-keyrow">
+      <label>自定义供应商（OpenAI 兼容 · 可添加多家）</label>
+      <div class="zl-why">任何 OpenAI 兼容端点都能接（官方平台或 one-api / new-api 等中转）。可添加多家：排在前面的优先，失败自动试后面的；每家的模型名也可填多个（逗号分隔，前者失败自动试后者）。接口格式：OpenAI 兼容 chat/completions。</div>
+      <div id="customProvidersBox"></div>
+      <button class="zl-btn ghost" type="button" onclick="addCustomProviderRow()" style="margin-top:6px;">＋ 添加自定义供应商</button>
+    </div>
+    <div class="zl-keyrow">
+      <label>💡 额度不够用？这些地方有免费额度（仅指引，不强制）</label>
+      <div class="zl-why">
+        · 智谱 bigmodel.cn —— glm-4.7-flash 永久免费（上方智谱栏填 Key 即用）<br>
+        · 硅基流动 cloud.siliconflow.cn —— 注册送额度，另有免费小模型<br>
+        · Kimi platform.kimi.com / 阿里百炼 bailian.console.aliyun.com —— 新用户均有赠送额度<br>
+        · 领到 Key 填进上方对应栏即可；其他渠道一律用「自定义供应商」接入
+      </div>
+    </div>
 
     <div class="zl-actions">
       <button class="zl-btn ghost" onclick="clearKeys()">清空全部</button>
@@ -4544,6 +4563,23 @@
         if (v) out[FIELD_MAP[id]] = v;
       }
     } catch (e) { /* 静默：BYOK 拿不到就不带，走默认额度 */ }
+    try {
+      // v2.33：自定义供应商列表（多家，cc-switch 式管理）
+      var cpBox = document.getElementById('customProvidersBox');
+      if (cpBox) {
+        var plist = [];
+        cpBox.querySelectorAll('.zl-cp-row').forEach(function (r) {
+          var g = function (c) {
+            var el = r.querySelector(c);
+            return el ? el.value.trim() : '';
+          };
+          if (g('.cp-url') && g('.cp-key') && g('.cp-models'))
+            plist.push({ name: g('.cp-name'), base_url: g('.cp-url'),
+                         key: g('.cp-key'), models: g('.cp-models') });
+        });
+        if (plist.length) out.custom_providers = plist;
+      }
+    } catch (e) { /* 静默 */ }
     return out;
   };
 
@@ -4555,15 +4591,21 @@
         if (el && saved[FIELD_MAP[id]]) el.value = saved[FIELD_MAP[id]];
       }
     } catch (e) { /* 损坏就当没存过 */ }
+    renderCustomProviders();
   }
 
   window.saveKeys = function () {
     var saved = {};
     var byok = window.collectByok();
+    var cpList = byok.custom_providers || [];
+    delete byok.custom_providers;
     for (var field in byok) saved[field] = byok[field];
     try { localStorage.setItem(LS, JSON.stringify(saved)); } catch (e) {}
+    try { localStorage.setItem(LS_CP, JSON.stringify(cpList)); } catch (e) {}
     closeModal('zlSettings');
-    toast('模型设置已保存' + (Object.keys(saved).length ? '（' + Object.keys(saved).length + ' 家）' : '（未填 Key，走默认免费额度）'));
+    toast('模型设置已保存' + ((Object.keys(saved).length + cpList.length)
+      ? '（预置 ' + Object.keys(saved).length + ' 家，自定义 ' + cpList.length + ' 家）'
+      : '（未填 Key，走默认免费额度）'));
   };
 
   window.clearKeys = function () {
@@ -4571,8 +4613,67 @@
       var el = document.getElementById(id);
       if (el) el.value = '';
     }
+    var cpBox = document.getElementById('customProvidersBox');
+    if (cpBox) cpBox.innerHTML = '';
     try { localStorage.removeItem(LS); } catch (e) {}
+    try { localStorage.removeItem(LS_CP); } catch (e) {}
     toast('已清空全部 Key，之后走默认免费额度');
+  };
+
+  // ── v2.33：自定义供应商列表（多家，cc-switch 式管理）──
+  var LS_CP = 'zhilun_custom_providers';
+  function _cpVal(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+  function _cpRowHtml(p) {
+    p = p || {};
+    return '<div class="zl-cp-row" style="border:1px dashed var(--c-border,#e2e2ea);border-radius:8px;padding:8px;margin:6px 0;">'
+      + '<div style="display:flex;gap:6px;align-items:center;">'
+      + '<input type="text" class="cp-name" placeholder="名称（如：我的中转）" value="' + _cpVal(p.name) + '" style="flex:1;">'
+      + '<button class="zl-btn ghost" type="button" onclick="this.closest(\'.zl-cp-row\').remove()" style="padding:2px 10px;">✕ 移除</button></div>'
+      + '<input type="text" class="cp-url" placeholder="Base URL，如 https://api.example.com/v1" value="' + _cpVal(p.base_url) + '" style="width:100%;margin-top:4px;" autocomplete="off">'
+      + '<input type="password" class="cp-key" placeholder="API Key" value="' + _cpVal(p.key) + '" style="width:100%;margin-top:4px;" autocomplete="off">'
+      + '<input type="text" class="cp-models" placeholder="模型名（逗号分隔，前者失败自动试后者）" value="' + _cpVal(p.models) + '" style="width:100%;margin-top:4px;" autocomplete="off">'
+      + '</div>';
+  }
+  window.addCustomProviderRow = function (p) {
+    var box = document.getElementById('customProvidersBox');
+    if (!box) return;
+    var holder = document.createElement('div');
+    holder.innerHTML = _cpRowHtml(p);
+    box.appendChild(holder.firstChild);
+  };
+  function renderCustomProviders() {
+    var box = document.getElementById('customProvidersBox');
+    if (!box) return;
+    box.innerHTML = '';
+    var list = [];
+    try { list = JSON.parse(localStorage.getItem(LS_CP) || '[]') || []; } catch (e) {}
+    if (!list.length) {
+      // 旧版单个自定义字段 → 迁移成列表
+      try {
+        var old = JSON.parse(localStorage.getItem(LS) || '{}');
+        if (old.custom_base_url && old.custom_key && old.custom_model)
+          list = [{ name: '自定义（迁移）', base_url: old.custom_base_url,
+                    key: old.custom_key, models: old.custom_model }];
+      } catch (e) { /* 损坏就当没存过 */ }
+    }
+    list.forEach(function (p) { window.addCustomProviderRow(p); });
+  }
+
+  // ── v2.33：经验库质量把关——体检卡片上的「误报」按钮 ──
+  window.markFalsePositive = function (btn) {
+    var key = btn.getAttribute('data-key');
+    if (!key) return;
+    fetch('/api/lessons/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key, verdict: 'false_positive' })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      toast(d.ok ? '已记为误报——该类经验将被降权，不再催你固化'
+                 : (d.error || '记录失败'));
+    }).catch(function () { toast('记录失败（网络）'); });
   };
 
   // ── 弹窗通用开关 ──

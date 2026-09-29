@@ -109,6 +109,16 @@ PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
         display_name="小米 MiMo",
         extra_env={"base_url": "MIMO_BASE_URL"},
     ),
+    "custom": ProviderConfig(
+        # 自定义供应商（v2.31，OpenAI 兼容）：base_url / Key /
+        # 模型名全部由用户在设置页填写（或环境变量 CUSTOM_LLM_BASE_URL /
+        # CUSTOM_LLM_API_KEY 预置），请求内经 Router.set_custom_provider 注入。
+        # 没有默认 base_url——未配置时实例化失败，容灾链自动跳过。
+        base_url="",
+        env_var="CUSTOM_LLM_API_KEY",
+        display_name="自定义供应商",
+        extra_env={"base_url": "CUSTOM_LLM_BASE_URL"},
+    ),
 }
 
 

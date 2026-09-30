@@ -112,6 +112,24 @@ check("列名带「剂量」的设计轴列不报",
 t9c = [["编号", "孔径"], *[[f"T{i+1}", f"{(i * 37) % 91 + 10}.{(i * 29) % 90 + 10:02d}"] for i in range(10)]]
 check("无规律的列不报", check_progression([t9c]) == [], str(check_progression([t9c])))
 
+print("[9b] 等比数列列(T05 的另一半)")
+# 1.5 → 3 → 6 → 12 …:逐项 ×2,人不会这么量
+t9d = [["编号", "渗透率"], *[[f"V{i+1}", f"{1.5 * 2 ** i:.2f}"] for i in range(9)]]
+gp = check_progression([t9d])
+check("命中「等比数列列」且为最低档",
+      len(gp) == 1 and gp[0]["category"] == "表格取证·等比数列列"
+      and gp[0]["level"] == "low", str(gp))
+check("等比说明里点明「都是上一项的 N 倍」",
+      gp and "倍" in gp[0]["evidence"], str(gp[:1]))
+# 反向:公比恒为 1(常数段)不算等比,也不是等差
+t9e = [["编号", "读数"], *[[f"W{i+1}", "3.14"] for i in range(9)]]
+check("常数段不报等比", check_progression([t9e]) == [], str(check_progression([t9e])))
+# 反向:带 0 的段不能当等比(后项/前项无意义),且不得抛异常
+t9f = [["编号", "读数"], *[[f"X{i+1}", f"{i % 3 * 1.0:.2f}"] for i in range(9)]]
+check("含 0 的列不误报等比也不会崩",
+      all(i["category"] != "表格取证·等比数列列" for i in check_progression([t9f])),
+      str(check_progression([t9f])))
+
 print("[10] 独立组降噪(单一类信号 → 全降最低档 + 注明未印证)")
 # 第一张只有「列间」一类统计信号;第二张给一条合计硬矛盾(合计行与分项不符)
 t10 = [["编号", "前测", "后测"],

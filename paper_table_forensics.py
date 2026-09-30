@@ -188,6 +188,37 @@ def _arith_runs(vals, *, min_run: int = _MIN_AP_RUN) -> list[tuple[int, int, flo
     return out
 
 
+def _geo_runs(vals, *, min_run: int = _MIN_AP_RUN) -> list[tuple[int, int, float]]:
+    """找列里最长的等比数列游程,返回 [(起, 止, 公比)]。
+
+    与 _arith_runs 同一套路,只是把差换成比(对数域上看就是等差)。
+    比恒为 1(常数段)不判——同上交给 datacheck 的常数列。含 0 的段无意义
+    (后项/前项不成立),直接跳过。
+    """
+    seq = [v for v, _raw, _d in vals]
+    out = []
+    n = len(seq)
+    i = 0
+    while i < n - 2:
+        if seq[i] == 0:
+            i += 1
+            continue
+        r = seq[i + 1] / seq[i]
+        if abs(r - 1.0) < 1e-9:
+            i += 1
+            continue
+        j = i + 1
+        while j < n and seq[j - 1] != 0 and \
+                abs(seq[j] / seq[j - 1] - r) <= 1e-6 * max(abs(r), 1.0):
+            j += 1
+        if j - i >= min_run:
+            out.append((i, j - 1, r))
+            i = j
+        else:
+            i += 1
+    return out
+
+
 def _fixed_relation(a_vals, b_vals, *, min_rows: int = _MIN_REL_ROWS):
     """两列的固定差 / 固定比判定。返回 (关系名, 常数, 符合比例, 行数) 或 None。
 
@@ -386,11 +417,15 @@ def check_relations(tables) -> list[dict]:
 # 检查 7:列内精确等差数列
 # ──────────────────────────────────────────────────────────────────────
 def check_progression(tables) -> list[dict]:
-    """某一列构成精确等差数列(连续 ≥5 项公差恒定)。
+    """某一列构成精确等差或等比数列(连续 ≥5 项公差/公比恒定)。
 
     剂量梯度、时间序列、等距分组本身就是等差数列,所以列名带「剂量 / 浓度 /
-    年份 / 序号」等设计轴词的列直接跳过;剩下的列出现精确等差,多半意味着
+    年份 / 序号」等设计轴词的列直接跳过;剩下的列出现精确等差/等比,多半意味着
     这列数据是「按公式推出来的」而不是量出来的。
+
+    等差与等比放在同一把刀里(同一个 group="等差"),因为它们指的是同一种
+    情形——「这一列有公式」。等比是等差在对数域的镜像,不少伪造手法直接用
+    等比生成(2/4/8/16…),漏掉它这把刀只算装了一半。
     """
     issues = []
     for ti, rows in enumerate(tables, 1):
@@ -399,22 +434,40 @@ def check_progression(tables) -> list[dict]:
             if _is_design_col(col["name"]) or _col_stats(col["vals"])["int_col"]:
                 continue
             vals = col["vals"]
-            runs = _arith_runs(vals)
-            if not runs:
+            a_runs = _arith_runs(vals)
+            g_runs = _geo_runs(vals)
+            # 同一段既可能被两边都认出来(公差 0 已排除,但 1,2,4,8 这类
+            # 小整数段在两种口径下都可能勉强成立),取跨得最长的那条。
+            spans = ([(r, "arith") for r in a_runs] +
+                     [(r, "geo") for r in g_runs])
+            if not spans:
                 continue
-            i, j, d = max(runs, key=lambda r: r[1] - r[0])
-            span = [raw for _v, raw, _dd in vals[i:j + 1]]
-            issues.append(_issue(
-                LEVEL_LOW, "表格取证·等差数列列",
-                f"第 {ti} 张表「{col['name']}」列:第 {i + 1}–{j + 1} 项构成公差 "
-                f"{d:+g} 的等差数列",
-                f"这 {j - i + 1} 个值依次相差恒为 {d:+g}({'、'.join(span[:8])}"
-                f"{'…' if len(span) > 8 else ''})。",
-                "精确等差通常出现在人工构造的数字里;真实的测量数据会有随机"
-                "波动。等差也可能是「按公式算出的理论值」列。",
-                "确认这列是实测数据还是理论推导值;若是推导值,在表注中说明。"
-                "这只是线索,不代表造假。",
-                group="等差"))
+            (i, j, k), kind = max(spans, key=lambda x: x[0][1] - x[0][0])
+            raw_span = [raw for _v, raw, _dd in vals[i:j + 1]]
+            shown = "、".join(raw_span[:8]) + ("…" if len(raw_span) > 8 else "")
+            if kind == "arith":
+                issues.append(_issue(
+                    LEVEL_LOW, "表格取证·等差数列列",
+                    f"第 {ti} 张表「{col['name']}」列:第 {i + 1}–{j + 1} 项构成公差 "
+                    f"{k:+g} 的等差数列",
+                    f"这 {j - i + 1} 个值依次相差恒为 {k:+g}({shown})。",
+                    "精确等差通常出现在人工构造的数字里;真实的测量数据会有随机"
+                    "波动。等差也可能是「按公式算出的理论值」列。",
+                    "确认这列是实测数据还是理论推导值;若是推导值,在表注中说明。"
+                    "这只是线索,不代表造假。",
+                    group="等差"))
+            else:
+                # 等比段:说明里点名「逐项乘以同一倍数」,比给一个公比数字直观
+                issues.append(_issue(
+                    LEVEL_LOW, "表格取证·等比数列列",
+                    f"第 {ti} 张表「{col['name']}」列:第 {i + 1}–{j + 1} 项构成公比 "
+                    f"{k:g} 的等比数列",
+                    f"这 {j - i + 1} 个值每一项都是上一项的 {k:g} 倍({shown})。",
+                    "真实的测量数据不会逐项严格乘同一个倍数;这通常是按公式"
+                    "递推生成的结果(如按比例递增的预设值、理论级数)。",
+                    "确认这列是实测数据还是按公式递推的值;若是递推值,在表注中"
+                    "说明生成方式。这只是线索,不代表造假。",
+                    group="等差"))
     return issues
 
 

@@ -97,7 +97,45 @@ conn_100 = audit_ai_traces("综上所述，" + "。".join(["进一步分析"] * 
 check("连接词全占 → 高风险档", conn_100["metrics"]["connection"]["band"] == "高风险")
 
 # ---------------------------------------------------------------------------
-print("\n[C] 红线")
+print("\n[C] 段级定位 + 改写范例（v2.36）")
+# ---------------------------------------------------------------------------
+ps = r_bad["passages"]
+check("AI 腔文本定位到段落", len(ps) >= 1, f"n={len(ps)}")
+check("每处都带风险分/原因/建议/范例",
+      all(p.get("score") and p.get("reasons") and p.get("suggestion")
+          and p.get("example") for p in ps), str(ps[:1]))
+check("按风险分降序", all(ps[i]["score"] >= ps[i + 1]["score"]
+                          for i in range(len(ps) - 1)))
+check("范例与原文不同（确实改写了）",
+      all(p["example"] != p["excerpt"] for p in ps))
+check("干净文本不定位段落", audit_ai_traces(GOOD)["passages"] == [],
+      str(audit_ai_traces(GOOD)["passages"]))
+check("空文本 passages 为空不崩", audit_ai_traces("").get("passages") == [])
+# 数字必须原样保留——改写只动套话与语态
+_mix = ("综上所述，该模型显著提高了预测精度。此外，误差从 0.31 降到 0.12，"
+        "调整后 R² 为 0.62，样本量 n=120。由此可见，本方法广泛应用于各个领域。")
+_mix_p = audit_ai_traces(_mix)["passages"]
+check("改写范例不碰数字/统计量",
+      all("0.31" in p["example"] and "0.62" in p["example"] and "120" in p["example"]
+          for p in _mix_p), str(_mix_p[:1]))
+check("套话确实被改掉",
+      _mix_p and "综上所述" not in _mix_p[0]["example"], str(_mix_p[:1]))
+# 段落过短 / 单句不给定位（信息量不够，避免噪声）
+check("单句短段不定位",
+      audit_ai_traces("综上所述，模型效果很好。")["passages"] == [],
+      str(audit_ai_traces("综上所述，模型效果很好。")["passages"]))
+# 被动句改写必须成句：裸「被 X V」不能补成「本研究 X V」（缺「所」不成句），
+# 施动者已写明「本文/本研究」时也不能再补前缀（会成「本研究本文所验证」）
+from ai_audit import _rewrite_passage  # noqa: E402
+_pv = _rewrite_passage("该结果被多组实验证实。此外，模型显著提升了预测精度。")[0]
+check("裸「被 X V」不硬补施动者（补了会不成句）", "被多组实验证实" in _pv, _pv)
+_pv2 = _rewrite_passage("该结论被本文所验证。此外，模型显著提升了预测精度。")[0]
+check("施动者已写明时不重复补前缀", "本研究本文" not in _pv2 and "被本文所验证" in _pv2, _pv2)
+_pv3 = _rewrite_passage("该方案被多组实验所证实。此外，模型显著提升了预测精度。")[0]
+check("「被 X 所 V」补成合法主动句", "本研究多组实验所证实" in _pv3, _pv3)
+
+# ---------------------------------------------------------------------------
+print("\n[D] 红线")
 # ---------------------------------------------------------------------------
 all_text = r_bad["markdown"] if "markdown" in r_bad else ""
 report_str = json.dumps(r_bad, ensure_ascii=False)
@@ -109,7 +147,7 @@ check("报告含免责声明（不替代正式检测）",
 check("人工自查清单存在（≥8 条）", len(r_bad["manual_checks"]) >= 8)
 
 # ---------------------------------------------------------------------------
-print("\n[D] 健壮性")
+print("\n[E] 健壮性")
 # ---------------------------------------------------------------------------
 for label, t in [("空文本", ""), ("纯公式", "y = ax + b\n|x| < 1\n2*3=6"),
                  ("超短文本", "很短。"), ("None", None)]:
@@ -120,7 +158,7 @@ for label, t in [("空文本", ""), ("纯公式", "y = ax + b\n|x| < 1\n2*3=6"),
         check(f"{label} 不崩", False, f"{type(e).__name__}: {e}")
 
 # ---------------------------------------------------------------------------
-print("\n[E] 端到端 /api/ai_audit（需本地服务）")
+print("\n[F] 端到端 /api/ai_audit（需本地服务）")
 # ---------------------------------------------------------------------------
 
 

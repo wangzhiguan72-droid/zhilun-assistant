@@ -1,8 +1,8 @@
 """
-论文表格取证（v2.32）
+论文表格取证（v2.32 / v2.35 扩充）
 ==============================
 对论文 docx 表格里的**数字本身**做取证——不依赖作者是否上传原始数据。
-参考"耿同学式论文打假"的朴素思路,把产品里跑在用户数据上的取证四刀
+参考"耿同学式论文打假"的朴素思路,把产品里跑在用户数据上的取证刀法
 移植到论文表格上:
 
     1. 末位数字偏好(凑数据的人末位往往取整/聚集,如大量 x.0 / x.5)
@@ -10,9 +10,26 @@
     3. 行/列合计一致性(合计 ≠ 分项之和,硬矛盾)
     4. GRIM 表格版(n × 均值 在报告位数下不可达——"出现概率极低"的线索)
 
+v2.35 新增三刀(思路参考开源工具 geng-pro 的列级取证法,代码为本仓独立实现):
+
+    5. 混合小数位(整列统一保留 2 位,个别值只有 1 位 → 多为录入笔误,弱线索)
+    6. 列间固定差/比(同一张表两列在 ≥95% 的行上恒差一个常数 / 恒为同一比值
+       —— 独立测量的两列不会这样)
+    7. 等差数列列(某列构成精确等差 → 常是「按公式推出来的」而非量出来的)
+
+以及两条「防误报」纪律(v2.35,同样借鉴 geng-pro 的独立组收敛做法):
+
+    - 粗网格抑制:末位只可能是 .0/.5 的列(李克特、货币、粗量化仪器),
+      末位与尾串的不均匀是机械结果,一律不判;
+    - 独立组降噪:统计类线索按「数字/精度/等差/列间/GRIM」分组,若本次
+      **只有一类**信号报警,全部降为最低档并在说明里注明「未经交叉印证」;
+      算术硬矛盾(合计不符)不受此限,单独一条也照报。
+
 红线(与产品取证纪律一致):
     - 级别最高只到「可疑」,文案恒含"这只是线索,不代表造假";
     - 闸门保守:数字太少/位数太少一律不判,宁漏勿误;
+    - 概率一律给「多重比较校正后」的口径,不给 (0.01)^k 这种偏大几十个
+      数量级的朴素概率;
     - 纯函数、零 LLM、不落盘。
 
 输入:extract_paper.read_paper_tables 的输出([表 → 行 → 单元格文本])。
@@ -23,7 +40,8 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from math import lcm  # noqa: F401  (占位:GRIM 粒度推导无需,保留可读性)
+
+from scipy import stats as _st
 
 from datacheck import LEVEL_MID, LEVEL_LOW
 
@@ -38,17 +56,29 @@ _NUM_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%?")
 #: 均值列头
 _MEAN_HDR_RE = re.compile(r"均值|平均|平均分|M\b|mean", re.IGNORECASE)
 
-_MIN_CELLS = 5          # 一张表至少 5 个数字才算数据表(再小无核对价值)
-_MIN_DECIMAL_NUMS = 40  # 末位/尾串判定需要的"带小数的数字"总量
-_MIN_TAIL_COUNT = 5     # 尾串至少出现 5 次才谈"重复"
-_TAIL_SHARE = 0.30      # 且占比 ≥30%
+_MIN_CELLS = 5           # 一张表至少 5 个数字才算数据表(再小无核对价值)
+_MIN_COL_VALUES = 3      # 列内至少 3 个「单元格只含一个数字」的值才建列
+_MIN_COL_DECIMALS = 20   # 列内至少 20 个带小数的值才做末位 / 尾串判定
+_MIN_TAIL_COUNT = 3      # 尾串至少出现 3 次才谈"重复"
+_TAIL_P_CORR = 1e-4      # 尾串过度集中的判据:多重比较校正后 p < 1e-4
+_MIN_REL_ROWS = 8        # 列间固定差 / 比至少 8 行
+_MIN_AP_RUN = 5          # 等差数列至少连续 5 项
+
+#: 统计类线索的独立组标签 —— 单组报警时会统一降档(见 audit_paper_tables)。
+#: 合计矛盾与 GRIM 不可达属于「算术上不可能同时成立」,不在此列,单独一条也照报。
+_STAT_GROUPS = ("数字", "精度", "尾串", "等差", "列间")
+#: 设计轴列名(序号 / 剂量 / 浓度 / 时间…):本身就是等差,不参与等差与列间判定
+_DESIGN_RE = re.compile(
+    r"序号|编号|编码|组别|分组|年份|时间|剂量|浓度|梯度|水平|温度|重复|"
+    r"(?<![A-Za-z0-9])(?:id|no|index|year|time|dose|conc|level)(?![A-Za-z0-9])",
+    re.IGNORECASE)
 
 
 def _issue(level: str, category: str, title: str, evidence: str,
-           explain: str, suggestion: str) -> dict:
+           explain: str, suggestion: str, group: str = "") -> dict:
     return {"level": level, "category": category, "title": title,
             "evidence": evidence, "explain": explain, "suggestion": suggestion,
-            "rows": [], "columns": []}
+            "rows": [], "columns": [], "group": group}
 
 
 def _nums_in(cell: str) -> list[float]:
@@ -77,58 +107,319 @@ def _table_numbers(tables):
     return flat
 
 
+def _cols_of_table(rows, header) -> list[dict]:
+    """把一张表切成「列」:只收「单元格里恰好一个数字」的纯数值列。
+
+    带文字 / 带 ± 的格子(如 "3.47±0.82")整体跳过——那些是复合统计量,
+    混进列里会让等差 / 固定差判定全是噪声。
+    """
+    ncol = max((len(r) for r in rows), default=0)
+    out = []
+    for ci in range(ncol):
+        name = (header[ci] if ci < len(header) else "") or f"第{ci + 1}列"
+        vals: list[tuple[float, str, int]] = []   # (值, 原文本, 小数位)
+        ok = True
+        for r in rows:
+            if ci >= len(r):
+                continue
+            cell = (r[ci] or "").strip()
+            if not cell or not _NUM_RE.search(cell):
+                continue
+            if len(_NUM_RE.findall(cell)) != 1:
+                ok = False
+                break
+            m = _NUM_RE.search(cell)
+            frac = (m.group(1).split(".") + [""])[1]
+            vals.append((float(m.group(1)), m.group(1), len(frac)))
+        if ok and len(vals) >= _MIN_COL_VALUES:
+            out.append({"name": name.strip(), "vals": vals})
+    return out
+
+
+def _col_stats(vals) -> dict:
+    """列的数字特征:是否粗网格、是否纯计数列。"""
+    raws = [raw for _v, raw, _d in vals]
+    decs = [d for _v, _raw, d in vals]
+    #: 粗网格:整列都落在 0.5 的格子上(李克特 .0/.5、百分比一位小数、整数
+    #: 计数)。这类列的末位与尾串不均匀是机械结果,一律不判。
+    #: 注意不能写成「末位只有 ≤2 种」——一列全 .33 也满足那个条件,
+    #: 而那恰恰是本工具要抓的东西。
+    coarse = len(raws) >= 5 and all(
+        abs(v * 2 - round(v * 2)) < 1e-9 for v, _r, _d in vals)
+    #: 列级整数判定:整列都是整数(无小数)且值域宽 → 多半是计数列,不是测量列
+    int_col = all(d == 0 for d in decs) and len({v for v, _r, _d in vals}) >= 5
+    return {"coarse": coarse, "int_col": int_col, "dec_hist": Counter(decs)}
+
+
+def _is_design_col(name: str) -> bool:
+    return bool(_DESIGN_RE.search(name or ""))
+
+
+def _tail2(v: float) -> int:
+    """小数后两位(0..99),按数值量级取 —— 整数部分不参与。"""
+    f = abs(v) - int(abs(v))
+    return int(round(f * 100)) % 100
+
+
+def _arith_runs(vals, *, min_run: int = _MIN_AP_RUN) -> list[tuple[int, int, float]]:
+    """找列里最长的等差数列游程,返回 [(起, 止, 公差)]。
+
+    只认「按行顺序的连续段」——交错排列的巧合不算。公差为 0(常数段)
+    不在此判定,那由 datacheck 的全列常数负责。浮点比较用相对容差 1e-9。
+    """
+    seq = [v for v, _raw, _d in vals]
+    out = []
+    n = len(seq)
+    i = 0
+    while i < n - 2:
+        d = seq[i + 1] - seq[i]
+        if d == 0:
+            i += 1
+            continue
+        tol = 1e-9 * max(abs(d), 1.0)
+        j = i + 1
+        while j < n and abs((seq[j] - seq[j - 1]) - d) <= tol:
+            j += 1
+        if j - i >= min_run:
+            out.append((i, j - 1, d))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _fixed_relation(a_vals, b_vals, *, min_rows: int = _MIN_REL_ROWS):
+    """两列的固定差 / 固定比判定。返回 (关系名, 常数, 符合比例, 行数) 或 None。
+
+    容差取列内取值尺度的 1%(对差)与中位比值的 1%(对比),避免把
+    「几乎相同」误判成「精确关系」。至少 95% 的行符合才算固定关系,
+    且常数本身不能是 0(全等两列)或 1(纯粹同比放大 —— 先由差值分支兜）。
+    """
+    pairs = [(a, b) for (a, _ar, ad), (b, _br, bd) in zip(a_vals, b_vals)
+             if ad == bd]        # 精度不同的两列不做比(位数不同多半是不同量纲)
+    n = len(pairs)
+    if n < min_rows:
+        return None
+    scale = max(max(abs(a) for a, _b in pairs),
+                max(abs(b) for _a, b in pairs), 1e-12)
+    tol = 0.01 * scale + 1e-12
+    diffs = [b - a for a, b in pairs]
+    diffs_sorted = sorted(diffs)
+    off = diffs_sorted[n // 2]
+    conform = sum(1 for d in diffs if abs(d - off) <= tol) / n
+    if conform >= 0.95 and abs(off) > tol:
+        return ("constant-offset", off, conform, n)
+    ratios = sorted(b / a for a, b in pairs if a != 0)
+    if len(ratios) >= min_rows:
+        rmed = ratios[len(ratios) // 2]
+        rconf = sum(1 for r in ratios
+                    if abs(r - rmed) <= 0.01 * abs(rmed) + 1e-9) / len(ratios)
+        if rconf >= 0.95 and abs(rmed - 1.0) > 1e-6:
+            return ("constant-ratio", rmed, rconf, len(ratios))
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────
-# 检查 1 & 2:末位偏好 + 小数尾串重复(合并一次遍历)
+# 检查 1 & 2:末位偏好 + 小数尾串重复(按「列」判定,非全表汇总)
 # ──────────────────────────────────────────────────────────────────────
-def check_digits(flat) -> list[dict]:
+def check_digits(tables) -> list[dict]:
+    """按列做末位偏好与尾串重复。
+
+    为什么按列而不是全表汇总(v2.32 的口径):全表汇总是多种量纲混在一起,
+    「比例列天然均匀、计数列天然整数」的差异会被平均掉;按列判定才看得出
+    「这一列的数字长得不像量出来的」。粗网格列(.0/.5)直接跳过。
+    """
     issues = []
-    dec = [(v, raw) for _t, _r, v, raw, d in flat if d > 0]
-    if len(dec) < _MIN_DECIMAL_NUMS:
-        return issues
+    for ti, rows in enumerate(tables, 1):
+        header = rows[0] if rows else []
+        for col in _cols_of_table(rows[1:] if len(rows) > 1 else rows, header):
+            st = _col_stats(col["vals"])
+            if st["coarse"]:
+                continue
+            dec = [(v, raw) for v, raw, d in col["vals"] if d > 0]
+            n = len(dec)
+            if n < _MIN_COL_DECIMALS:
+                continue
+            name = col["name"]
 
-    # 1) 末位数字分布(双门槛,与 datacheck 末位偏好一致:卡方 p<0.001 且 ≥25%)
-    last = Counter(int(raw.replace("-", "").replace(".", "")[-1])
-                   for v, raw in dec)
-    n = sum(last.values())
-    top_d, top_c = last.most_common(1)[0]
-    share = top_c / n
-    exp = n / 10.0
-    chi2 = sum((c - exp) ** 2 / exp for c in
-               [last.get(d, 0) for d in range(10)])
-    p_lt001 = chi2 >= 29.588  # df=9, p=0.001 临界值(近似)
-    if p_lt001 and share >= 0.25:
-        issues.append(_issue(
-            LEVEL_MID, "表格取证·末位偏好",
-            f"论文表格共 {n} 个小数,末位数字「{top_d}」占 {share:.0%}",
-            f"末位分布卡方 χ²={chi2:.1f}(df=9,p<0.001);最高末位 {top_d} 出现 "
-            f"{top_c} 次。人工凑数/随手取整常表现为末位聚集(如大量 .0/.5)。",
-            "末位偏好是统计学取证线索,不是结论——量表的求和、百分比换算"
-            "都可能天然改变末位分布。",
-            "对照原始数据复核这些表格;无法提供原始数据的,在论文中说明"
-            "数值来源与舍入规则。这只是线索,不代表造假。"))
+            # 1) 末位数字分布:卡方 p < 0.001 才谈偏好(顶层显著性再作收敛要求)
+            cnt = Counter(int(raw.replace("-", "").replace(".", "")[-1])
+                          for _v, raw in dec)
+            counts = [cnt.get(d, 0) for d in range(10)]
+            exp = n / 10.0
+            chi2 = sum((c - exp) ** 2 / exp for c in counts)
+            p_chi = float(_st.chi2.sf(chi2, 9))
+            top_d, top_c = cnt.most_common(1)[0]
+            share = top_c / n
+            p_share = min(1.0, 10 * float(_st.binom.sf(top_c - 1, n, 0.1)))
+            p_eff = min(p_chi, p_share)
+            if p_eff < 1e-3:
+                issues.append(_issue(
+                    LEVEL_MID, "表格取证·末位偏好",
+                    f"第 {ti} 张表「{name}」列:n={n},末位数字「{top_d}」占 {share:.0%}",
+                    f"该列末位分布 χ²={chi2:.1f}(df=9),最大单元格校正后 "
+                    f"p≈{p_eff:.1e};最高末位 {top_d} 出现 {top_c} 次"
+                    f"(均匀时每末位期望 {exp:.1f} 次)。",
+                    "手工凑数 / 随手取整常表现为末位聚集(大量 .0 / .5)。"
+                    "但货币、计数、仪器粗量化也会这样——所以本项只在整列"
+                    "绝大多数值同精度、且非粗网格时才判。",
+                    "对照原始数据复核该列;无法提供原始数据的,在论文中"
+                    "说明数值来源与舍入规则。这只是线索,不代表造假。",
+                    group="数字"))
 
-    # 2) 小数尾串重复(小数点后最后 2 位相同)
-    tails = Counter()
-    for v, raw in dec:
-        frac = raw.split(".")[-1].lstrip("0") or raw.split(".")[-1]
-        tail = frac[-2:] if len(frac) >= 2 else frac
-        tails[tail] += 1
-    top_tail, tail_c = tails.most_common(1)[0]
-    if tail_c >= _MIN_TAIL_COUNT and tail_c / n >= _TAIL_SHARE:
-        issues.append(_issue(
-            LEVEL_MID, "表格取证·尾数重复",
-            f"小数尾串「.{top_tail}」出现 {tail_c} 次,占全部小数的 {tail_c/n:.0%}",
-            f"共 {n} 个带小数的数值,最高频尾串 .{top_tail} 占 {tail_c/n:.0%}"
-            f"(均匀情况下两位尾串期望占比约 1%)。",
-            "同一批描述统计里大量相同尾串,常见于复制粘贴同一结果或"
-            "按同一模板编数。",
-            "逐表核对这批 .{} 尾数对应的统计量是否各自独立计算;"
-            "这只是线索,不代表造假。".format(top_tail)))
+            # 2) 小数尾串重复:校正后 Poisson 尾概率,不用 (0.01)^k 这种朴素口径
+            tails = [_tail2(v) for v, _raw in dec]
+            tcnt = Counter(tails)
+            top_tail, top_k = tcnt.most_common(1)[0]
+            mu = n * 0.01
+            p_point = float(_st.poisson.sf(top_k - 1, mu))
+            p_corr = min(1.0, 100 * p_point)
+            exp_omni = n / 100.0
+            omni = [tcnt.get(t, 0) for t in range(100)]
+            chi2_t = (sum((c - exp_omni) ** 2 / exp_omni for c in omni)
+                      if exp_omni > 0 else 0.0)
+            p_omni = float(_st.chi2.sf(chi2_t, 99))
+            if p_corr < _TAIL_P_CORR and top_k >= _MIN_TAIL_COUNT:
+                issues.append(_issue(
+                    LEVEL_MID, "表格取证·尾数重复",
+                    f"第 {ti} 张表「{name}」列:小数尾串「.{top_tail:02d}」出现 "
+                    f"{top_k} 次(占 {top_k / n:.0%})",
+                    f"该列 {n} 个带小数的值里,小数后两位是 .{top_tail:02d} 的有 "
+                    f"{top_k} 个(均匀时每种尾数期望 {mu:.1f} 个);多重比较校正后 "
+                    f"p≈{p_corr:.1e}(整体均匀性 χ²={chi2_t:.0f},df=99,p≈{p_omni:.2g})。",
+                    "同一列的数值若整数部分各不相同、小数尾却反复相同,通常意味着"
+                    "它们是照着同一个尾数编出来的;比值、归一化、百分比换算也会"
+                    "留下类似痕迹。"
+                    "(注:网上流传的 (0.01)^k 概率没做多重比较校正,偏大约几十个"
+                    "数量级,本工具给的是校正后的口径。)",
+                    "逐行核对这些尾数对应的数值是否各自独立算出;这只是线索,"
+                    "不代表造假。",
+                    group="尾串"))
     return issues
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 检查 3:行/列合计一致性
+# 检查 5:混合小数位(整列同精度里混进极少数异精度值)
+# ──────────────────────────────────────────────────────────────────────
+def check_mixed_precision(tables) -> list[dict]:
+    """一列绝大多数值保留 k 位小数,却有个别值精度不同。
+
+    真实仪器读数的小数位是恒定的;混合精度最常见的成因是录入时漏打/多打
+    一位(笔误),因此本项**恒定报最低档**,只在同列另有其它信号时才值得看。
+    """
+    issues = []
+    for ti, rows in enumerate(tables, 1):
+        header = rows[0] if rows else []
+        for col in _cols_of_table(rows[1:] if len(rows) > 1 else rows, header):
+            st = _col_stats(col["vals"])
+            if st["coarse"] or st["int_col"]:
+                continue
+            decs = [d for _v, _raw, d in col["vals"]]
+            if len(decs) < 10:
+                continue
+            hist = Counter(decs)
+            modal_dec, modal_n = hist.most_common(1)[0]
+            minority = len(decs) - modal_n
+            modal_frac = modal_n / len(decs)
+            #: 少数派必须是「少数但非零」:单个异常最可能只是笔误 → 更低分
+            if not (modal_frac >= 0.9 and 0 < minority < 0.1 * len(decs)):
+                continue
+            odd = [raw for _v, raw, d in col["vals"] if d != modal_dec][:5]
+            issues.append(_issue(
+                LEVEL_LOW, "表格取证·小数位不齐",
+                f"第 {ti} 张表「{col['name']}」列:{modal_n}/{len(decs)} 个值保留 "
+                f"{modal_dec} 位小数,另有 {minority} 个值位数不同"
+                f"（如 {'、'.join(odd)}）",
+                f"该列精度分布 {dict(hist)};仪器读数与统一导出的表格小数位通常"
+                f"恒定。",
+                "单个异常精度绝大多数情况是录入 / 格式化笔误,不是数据问题;"
+                "只有当同一列还有别的取证信号时,它才多一层意义。",
+                "顺手把这一列的小数位统一到与其它行一致即可。",
+                group="精度"))
+    return issues
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 检查 6:列间固定差 / 固定比(独立测量的两列不会有精确关系)
+# ──────────────────────────────────────────────────────────────────────
+def check_relations(tables) -> list[dict]:
+    """同一张表内任意两列,若 ≥95% 的行上恒差一个常数 / 恒为同一比值。
+
+    单位换算(固定乘数)、基线+增量列(固定差)、派生列都会天然出现固定关系,
+    所以本项**只报最低档**,并在文案里先给出这些良性解释。
+    """
+    issues = []
+    for ti, rows in enumerate(tables, 1):
+        if len(rows) < _MIN_REL_ROWS + 1:
+            continue
+        header = rows[0] if rows else []
+        cols = [c for c in _cols_of_table(rows[1:], header)
+                if not _is_design_col(c["name"])]
+        if len(cols) < 2 or len(cols) > 12:    # 列太多时两两组合爆炸且多为堆砌表
+            continue
+        for i in range(len(cols)):
+            for j in range(i + 1, len(cols)):
+                a, b = cols[i], cols[j]
+                got = _fixed_relation(a["vals"], b["vals"])
+                if not got:
+                    continue
+                kind, const, conform, n = got
+                what = "相差恒为" if kind == "constant-offset" else "比值恒为"
+                fmt = f"{const:+g}" if kind == "constant-offset" else f"{const:.4g}"
+                issues.append(_issue(
+                    LEVEL_LOW, "表格取证·列间固定关系",
+                    f"第 {ti} 张表「{a['name']}」与「{b['name']}」在 "
+                    f"{conform:.0%} 行上{what} {fmt}",
+                    f"两列各取 {n} 个同精度数值逐行配对,{conform:.0%} 的行的"
+                    f"{what.replace('恒为', '恒等于')} {fmt},"
+                    f"接近完全固定的线性关系。",
+                    "独立测量出来的两列几乎不可能有精确固定关系;但单位换算、"
+                    "「基线 + 增量」、由同一列派生的列都会天然如此——先确认"
+                    "两列是否有换算或派生关系。",
+                    "核对这两列是否各自独立测得;若确有换算关系,在表注里写明。"
+                    "这只是线索,不代表造假。",
+                    group="列间"))
+    return issues
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 检查 7:列内精确等差数列
+# ──────────────────────────────────────────────────────────────────────
+def check_progression(tables) -> list[dict]:
+    """某一列构成精确等差数列(连续 ≥5 项公差恒定)。
+
+    剂量梯度、时间序列、等距分组本身就是等差数列,所以列名带「剂量 / 浓度 /
+    年份 / 序号」等设计轴词的列直接跳过;剩下的列出现精确等差,多半意味着
+    这列数据是「按公式推出来的」而不是量出来的。
+    """
+    issues = []
+    for ti, rows in enumerate(tables, 1):
+        header = rows[0] if rows else []
+        for col in _cols_of_table(rows[1:] if len(rows) > 1 else rows, header):
+            if _is_design_col(col["name"]) or _col_stats(col["vals"])["int_col"]:
+                continue
+            vals = col["vals"]
+            runs = _arith_runs(vals)
+            if not runs:
+                continue
+            i, j, d = max(runs, key=lambda r: r[1] - r[0])
+            span = [raw for _v, raw, _dd in vals[i:j + 1]]
+            issues.append(_issue(
+                LEVEL_LOW, "表格取证·等差数列列",
+                f"第 {ti} 张表「{col['name']}」列:第 {i + 1}–{j + 1} 项构成公差 "
+                f"{d:+g} 的等差数列",
+                f"这 {j - i + 1} 个值依次相差恒为 {d:+g}({'、'.join(span[:8])}"
+                f"{'…' if len(span) > 8 else ''})。",
+                "精确等差通常出现在人工构造的数字里;真实的测量数据会有随机"
+                "波动。等差也可能是「按公式算出的理论值」列。",
+                "确认这列是实测数据还是理论推导值;若是推导值,在表注中说明。"
+                "这只是线索,不代表造假。",
+                group="等差"))
+    return issues
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 检查 3:行/列合计一致性(算术硬矛盾,不受独立组降噪影响)
 # ──────────────────────────────────────────────────────────────────────
 def check_totals(tables) -> list[dict]:
     issues = []
@@ -256,28 +547,43 @@ def check_grim(tables) -> list[dict]:
 
 
 def audit_paper_tables(tables) -> dict:
-    """主入口:对论文 docx 表格做取证,返回 {ok, tables, numeric_cells, issues}。"""
+    """主入口:对论文 docx 表格做取证,返回 {ok, tables, numeric_cells, issues}。
+
+    七把刀跑完后统一过一遍「独立组降噪」:统计类线索只在**跨类印证**时才
+    保留中档,单类独响一律降为最低档并注明「未经交叉印证」——这样做的原因
+    是单条弱线索(某一列末位偏多、某两列像有换算关系)在真实论文里出现得
+    太频繁,堆到用户面前只会变成噪声,反而不如诚实地说「这条还没被印证」。
+    算术硬矛盾(合计不符)不参与降噪:那是数学上不可能同时成立的两件事。
+    """
     tables = tables or []
     flat = _table_numbers(tables)
     issues = []
-    try:
-        issues += check_digits(flat)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        issues += check_totals(tables)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        issues += check_grim(tables)
-    except Exception:  # noqa: BLE001
-        pass
+    for fn in (check_digits, check_mixed_precision, check_relations,
+               check_progression, check_totals, check_grim):
+        try:
+            issues += fn(tables)
+        except Exception:  # noqa: BLE001 — 单把刀出错不影响其它刀
+            pass
+
+    # ── 独立组降噪:只有一类统计信号时全部降档 ──
+    stat = [it for it in issues if it.get("group") in _STAT_GROUPS]
+    if len({it["group"] for it in stat}) == 1:
+        for it in stat:
+            it["level"] = LEVEL_LOW
+            it["explain"] += ("\n(本次表格取证里只有这一类信号报警,未经其它"
+                              "类别交叉印证,已按最低档提示。)")
+    issues.sort(key=lambda it: (0 if it.get("level") == LEVEL_MID else 1,
+                                it.get("category", "")))
+
     return {
         "ok": True,
         "tables": len(tables),
         "numeric_cells": len(flat),
         "decimal_numbers": sum(1 for *_x, d in flat if d > 0),
+        "groups_hit": sorted({it["group"] for it in stat}),
         "issues": issues,
         "note": "表格取证只覆盖 docx 结构化表格;每条发现都只是线索,"
-                "不代表造假。阈值刻意保守(数字少于 40 个不做末位/尾串判定)。",
+                "不代表造假。阈值刻意保守(按「列」判定:列内至少 20 个带"
+                "小数的值才做末位/尾串,概率均为多重比较校正后的口径);"
+                "只有一类信号时自动降档,避免单条弱线索吓人。",
     }

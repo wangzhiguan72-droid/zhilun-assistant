@@ -243,6 +243,162 @@ def _generic_hits(text: str) -> list[dict]:
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────
+# v2.36:段级「AI 风格高风险」定位 + 可套用的改写范例
+# ──────────────────────────────────────────────────────────────────────
+#: 段级命中扣分(只用上面已有的检测器,不另起一套评分口径)
+_PW = {"residue": 25, "conn": 12, "hype": 8, "generic": 8, "passive": 5,
+       "tone": 3, "redlist": 6}
+#: 成段落判为「AI 风格较集中」的阈值:两条信号起步,或一条强信号(残留)
+_PASSAGE_MIN = 20
+
+
+def _sentences_of(par: str) -> list[str]:
+    """段落切句(复用全文切句口径,不做二次过滤)。"""
+    return [s.strip() for s in _SENT_SPLIT.split(par) if s.strip()]
+
+
+def _passage_score(par: str) -> tuple[int, dict]:
+    """段落级命中(全部复用全文检测器,传入段落自身文本)。"""
+    sents = _sentences_of(par)
+    hit = {
+        "residue": len(_residue_hits(par)),
+        "conn": sum(1 for s in sents
+                    if any(w in s for ws in CONNECTIVES.values() for w in ws)),
+        "hype": len([h for h in _hype_hits(par) if not h["quantified"]]),
+        "generic": sum(h["count"] for h in _generic_hits(par)),
+        "passive": sum(1 for s in sents if _PASSIVE_RE.search(s)),
+        "tone": sum(h["count"] for h in _tone_find(par)),
+        "redlist": len([h for h in _redlist_hits(par) if not h["justified"]]),
+    }
+    return sum(_PW[k] * v for k, v in hit.items()), hit
+
+
+def _rewrite_passage(par: str) -> tuple[str, list[str]]:
+    """给一段套上「不改变事实」的改写:只动套话与语态,不碰数字与术语。
+
+    刻意不做的事:不编造数字(拔高词处留占位符)、不改动任何统计量/公式/文献
+    引用、不调整论证结构——那些属于作者的工作。
+    """
+    out = par
+    changes: list[str] = []
+    # 先按句处理:一句里除了套话什么都不剩的,整句删掉。前面删词后面补标点
+    # 只会留下「本方法各个领域。」这种残句,比不改还糟。
+    kept: list[str] = []
+    for sent in _sentences_of(par):
+        body, sent_changes = _rewrite_sentence(sent)
+        changes += sent_changes
+        # 删完只剩标点/几个字的句子整句扔掉——留下「本方法各个领域。」这种残句
+        # 比不改还糟。判定用「去掉标点后的实义字数」。
+        if len(re.sub(r"[\s，、；。！？,;]", "", body)) < 6:
+            changes.append("删掉整句（删去套话后已无实质内容）")
+            continue
+        kept.append(body + "。")
+    # 切句时丢了标点,这里逐句补回;最后一句原本可能是问号/感叹号
+    out = "".join(kept)
+    if out.endswith("。") and par.rstrip().endswith(("？", "！", "?")):
+        out = out[:-1] + "！"
+    out = re.sub(r"[，、；]{2,}", "，", out)
+    out = re.sub(r"[ \t]{2,}", " ", out).strip()
+    return out, list(dict.fromkeys(changes))
+
+
+#: 句内改写规则:(匹配, 替换, 改动说明)。顺序即应用顺序。
+_SENT_RULES = [
+    (re.compile(r"(好的[，,]\s*)?以下是?(我|为您)?(整理|撰写|生成|编写)的?"), "",
+     "删掉对话式开场——这是直接把 AI 回复贴进论文的痕迹"),
+    (re.compile(r"希望(这|以上|以下)(对您|能|些)[^。\n]{0,10}"), "",
+     "删掉面向读者的客套话"),
+    (re.compile("|".join(re.escape(w) for ws in CONNECTIVES.values() for w in ws)), "",
+     "删掉过渡套话;确有因果的地方换成具体表述"),
+    # 拔高词:保留原有的名词宾语,只把「显著/大幅」换成占位符,读起来才通
+    (re.compile(r"(显著|大幅|极大|有效|完美)(提高|提升|增强|改善|降低|解决|实现)"),
+     r"【补具体幅度】\2", "「显著/大幅」这类词换成你的实测数字(误差 / 指标 / 对比)"),
+    (re.compile(r"取得显著成果|极具潜力|无与伦比|至关重要|不容否认|毋庸置疑|"
+                r"不言而喻|众所周知"), "", "删掉没有依据的评价性套话"),
+    # 无边界推广:整段短语一起删(只删「广泛应用于」会留下「本方法各个领域。」)
+    (re.compile(r"(广泛)?应用于各个领域|在任何.{0,6}(领域|场景)(都|均)"), "",
+     "无边界推广改成有边界的说法(如「在本文样本范围内」)"),
+    (re.compile(r"适用范围(很)?广|可推广到各个.{0,4}|普适性强"), "",
+     "无边界推广改成有边界的说法(如「在本文样本范围内」)"),
+    # 「被……所……」是唯一能机械补出合法主动句的形态:被 X 所 V → 本研究 X 所 V。
+    # 裸「被 X V」不能这么补——「该结果被多组实验证实」照着换会得到
+    # 「该结果本研究多组实验证实」(缺「所」,不成句),所以只认带「所」的。
+    # 施动者已写明「本文/本研究」时不补前缀,否则成了「本研究本文所验证」。
+    (re.compile(r"被(?!(?:本文|本研究|笔者))([^，。；！？\n]{1,12})所(?=[^，。；！？\n])"),
+     r"本研究\1所", "「被……所……」改成明确的施动者(本研究 / 本文)"),
+    (re.compile(r"得以"), "可以",
+     "「得以」这类书面被动改成「可以」;若确有施动者请写明"),
+]
+
+
+def _rewrite_sentence(sent: str) -> tuple[str, list[str]]:
+    """单句改写:去掉套话、补施动者。返回 (改写后, 改动说明列表)。"""
+    out = sent
+    changes: list[str] = []
+    for rx, repl, why in _SENT_RULES:
+        if not rx.search(out):
+            continue
+        new = rx.sub(repl, out)
+        if new == out:
+            continue
+        out = new
+        changes.append(why)
+    out = re.sub(r"[，、；]{2,}", "，", out)
+    out = re.sub(r"^[，、；\s]+", "", out)          # 删除词后开头的悬空逗号
+    out = re.sub(r"[，、；]+(?=[。！？]|$)", "", out)  # 句尾的悬空逗号
+    return out.strip(), changes
+
+
+
+def _passage_scan(text: str, *, limit: int = 8) -> list[dict]:
+    """切段 → 定位「AI 风格较集中」的段落 → 每段给一条可套用的改写范例。
+
+    这是**定位**,不是判定:输出的是"这一段读起来模板化程度高",以及
+    "照着这样改"。事实、数据、公式原样保留。
+    """
+    paras = [p.strip() for p in re.split(r"\n\s*\n|\r\n\s*\r\n", text or "")
+             if len(p.strip()) >= 30]
+    out: list[dict] = []
+    for par in paras:
+        sents = _sentences_of(par)
+        if len(par) < 60 or len(sents) < 2:
+            continue                      # 单句/短段不定位,信息量不够
+        score, hit = _passage_score(par)
+        if score < _PASSAGE_MIN:
+            continue
+        # 信号密度:命中句少于两成,多半只是一两个词撞上,不定位
+        flagged = sum(1 for s in sents
+                      if any(w in s for ws in CONNECTIVES.values() for w in ws)
+                      or _PASSIVE_RE.search(s)) + hit["hype"] + hit["generic"]
+        if flagged < max(2, 0.2 * len(sents)) and not hit["residue"]:
+            continue
+        example, changes = _rewrite_passage(par)
+        if example == par or not changes:
+            continue                      # 改不动就不给空头建议
+        out.append({
+            "excerpt": par if len(par) <= 200 else par[:200] + "…",
+            "score": score,
+            "reasons": _passage_reasons(hit),
+            "suggestion": "；".join(dict.fromkeys(changes)),
+            "example": example if len(example) <= 200 else example[:200] + "…",
+        })
+    out.sort(key=lambda p: -p["score"])
+    return out[:limit]
+
+
+def _passage_reasons(hit: dict) -> list[str]:
+    """把命中翻成人话,只列真正命中的项。"""
+    labels = [("residue", "对话式 AI 输出残留"),
+              ("conn", "高频过渡套话密集"),
+              ("hype", "拔高词没有数字支撑"),
+              ("generic", "无边界推广"),
+              ("passive", "被动句偏多"),
+              ("tone", "空泛套话"),
+              ("redlist", "高风险模型未说明适配性")]
+    return [name for key, name in labels if hit.get(key)]
+
+
 def audit_ai_traces(text: str) -> dict:
     """对论文全文做 AI 风格自查，返回可 JSON 的报告。
 
@@ -362,6 +518,14 @@ def audit_ai_traces(text: str) -> dict:
                                        f"bigram 唯一率={rhythm.get('bigram_ttr')}）",
                             "action": "长短句交错、替换重复搭配、删掉复用"
                                       "的模板句式；这是风格线索，不判定作者身份"})
+    passages = _passage_scan(text)  # v2.36
+    if passages:
+        suggestions.append({
+            "priority": "P1",
+            "issue": f"定位到 {len(passages)} 处「AI 风格较集中」的段落"
+                     f"（最高的一处风险分 {passages[0]['score']}）",
+            "action": "报告下方逐段给出了原文、命中的信号与一条可直接套用的"
+                      "改写范例；改写只动套话与语态，数字、公式、引用请原样保留。"})
 
     return {
         "ok": True,
@@ -382,7 +546,9 @@ def audit_ai_traces(text: str) -> dict:
             "tone_hits": tone,
         },
         "suggestions": suggestions,
+        "passages": passages,
         "manual_checks": MANUAL_CHECKS,
         "disclaimer": ("本报告只评估文本呈现出的「AI 风格风险」，不判定是否由 AI 生成，"
-                       "不替代学校/赛事的正式检测；修改请保留事实、数据、公式与引用。"),
+                       "不替代学校/赛事的正式检测；范例改写只动套话与语态，"
+                       "请自行核对事实、数据、公式与引用未被改动。"),
     }

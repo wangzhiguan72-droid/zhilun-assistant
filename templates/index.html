@@ -2884,6 +2884,26 @@
            <span style="color:var(--c-muted);">→ ${escapeHtml(s.action)}</span>
          </div>`).join('') || '<div style="font-size:13px; color:#16a34a;">没有需要优先处理的问题。</div>';
       const manual = (d.manual_checks || []).map(m => `<li style="margin:3px 0;">${escapeHtml(m)}</li>`).join('');
+      const pass = (d.passages || []).map(p => `
+        <div style="margin:8px 0; padding:9px 11px; border-left:3px solid #f59e0b; background:#fffbeb; border-radius:0 8px 8px 0;">
+          <div style="font-size:12.5px; color:var(--c-muted); margin-bottom:4px;">
+            风险分 ${p.score} · ${escapeHtml((p.reasons || []).join('、'))}
+          </div>
+          <div style="font-size:13px; line-height:1.7; color:#78350f;">${escapeHtml(p.excerpt)}</div>
+          <div style="font-size:12.5px; line-height:1.7; margin-top:6px; color:var(--c-muted);">→ ${escapeHtml(p.suggestion)}</div>
+          <div style="font-size:13px; line-height:1.7; margin-top:6px; padding-top:6px; border-top:1px dashed var(--c-border); color:#166534;">
+            <b>范例：</b>${escapeHtml(p.example)}
+          </div>
+        </div>`).join('');
+      const passBlock = pass ? `
+          <details style="margin-top:10px;" open>
+            <summary style="cursor:pointer; font-size:12.5px; color:var(--c-muted);">
+              AI 风格较集中的 ${(d.passages || []).length} 处（逐段给改写范例）</summary>
+            <div style="margin-top:4px;">${pass}</div>
+            <div style="font-size:11.5px; color:var(--c-muted);">
+              范例只动套话与语态，一律不编造数字；套用前请自行核对事实与引用。
+            </div>
+          </details>` : '';
       $('aiAuditResult').innerHTML = `
         <div style="border:1px solid var(--c-border); border-radius:10px; padding:12px 14px; background:var(--c-card,#fff);">
           <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
@@ -2893,7 +2913,7 @@
             <span style="font-size:12.5px; color:var(--c-muted);">${escapeHtml(d.level_text)}</span>
           </div>
           <div style="margin:8px 0;">${bd}</div>
-          <div>${sugg}</div>
+          <div>${sugg}</div>${passBlock}
           <details style="margin-top:8px;">
             <summary style="cursor:pointer; font-size:12.5px; color:var(--c-muted);">机器查不了、需要人工核对的 ${d.manual_checks.length} 项</summary>
             <ul style="margin:6px 0 0 18px; padding:0; font-size:12.5px; color:var(--c-muted); line-height:1.7;">${manual}</ul>

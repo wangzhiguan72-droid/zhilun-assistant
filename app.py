@@ -3605,6 +3605,15 @@ def api_ai_audit():
                         "issue": f"【表格取证】{_f['title']}",
                         "action": f"{_f['evidence']}。→ {_f['suggestion']}",
                     })
+                # P1-2：把参评台账也送出去。「7 族中 3 族参评」这个数字本身
+                # 就是专业性的证据——只报 issues 的话,一条不响时用户什么都
+                # 看不到,会把「没查到」读成「这工具没用」。
+                if forensics.get("summary"):
+                    report.setdefault("suggestions", []).append({
+                        "priority": "P2",
+                        "issue": "【表格取证】本次参评情况",
+                        "action": forensics["summary"],
+                    })
     except Exception:  # noqa: BLE001
         pass
     return jsonify(report)

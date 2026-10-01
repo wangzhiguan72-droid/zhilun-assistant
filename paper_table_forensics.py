@@ -64,6 +64,19 @@ _MIN_TAIL_COUNT = 3      # 尾串至少出现 3 次才谈"重复"
 _TAIL_P_CORR = 1e-4      # 尾串过度集中的判据:多重比较校正后 p < 1e-4
 _MIN_REL_ROWS = 8        # 列间固定差 / 比至少 8 行
 _MIN_AP_RUN = 5          # 等差数列至少连续 5 项
+_MIN_PCT_ROWS = 3        # 频数↔百分比至少 3 个分项行
+_PCT_TOL = 0.6           # 百分比容差(百分数单位):0.5 给一位小数的四舍五入,
+                         # 余下 0.1 给「多选/缺失」一类轻微口径差
+_PCT_MIN_CONFORM = 0.5   # 对不上的行少于一半才认定两列同底(见 check_pct_consistency)
+
+#: 百分比列表头。「%」本身也算——不少论文表头就写一个「%」或「比例(%)」。
+_PCT_HDR_RE = re.compile(
+    r"百分比|占比|比例|百分率|构成比|相对频|percent|pct|%", re.IGNORECASE)
+#: 频数/计数列表头。注意「n」必须用 lookaround:中文与拉丁字母相邻时 \b 词边界
+#: 失效(CLAUDE.md 六节),「采用LSTM」那课的同一条坑。
+_CNT_HDR_RE = re.compile(
+    r"频数|频次|次数|人数|例数|个案数|数量|个数|样本数|样本量|"
+    r"count|freq|number|(?<![A-Za-z0-9])n(?![A-Za-z0-9])", re.IGNORECASE)
 
 #: 统计类线索的独立组标签 —— 单组报警时会统一降档(见 audit_paper_tables)。
 #: 合计矛盾与 GRIM 不可达属于「算术上不可能同时成立」,不在此列,单独一条也照报。
@@ -87,7 +100,7 @@ def _issue(level: str, category: str, title: str, evidence: str,
 #: 用户看到「7 族中 3 族参评」时能一眼对上是哪三族。
 FAMILIES = (
     ("F1", "末位偏好"), ("F2", "尾数重复"), ("F3", "小数位"),
-    ("F4", "等差/等比"), ("F5", "列间关系"), ("F6", "合计"),
+    ("F4", "等差/等比"), ("F5", "列间关系"), ("F6", "合计/百分比"),
     ("F7", "GRIM 可达性"),
 )
 
@@ -98,17 +111,30 @@ _LEDGER: contextvars.ContextVar = contextvars.ContextVar("_ptf_ledger")
 
 
 def _note(fam: str, why: str) -> None:
-    """记一笔「本族参评了」。`why` 写人话,直接进产物给用户看。"""
+    """记一笔「本族参评了」。`why` 写人话,直接进产物给用户看。
+
+    同一族可能有多把刀报到(F6 现在是「合计」+「频数↔百分比」两把),
+    所以理由是**追加**的,不是覆盖——否则后一把刀会把前一把的参评说明顶掉。
+    """
     led = _LEDGER.get(None)
-    if led is not None:
-        led["applicable"].setdefault(fam, why)
+    if led is None:
+        return
+    prev = led["applicable"].get(fam)
+    led["applicable"][fam] = f"{prev};{why}" if prev else why
+    #: 本族既已参评,先前记的弃权理由作废(那把刀后来开得了口了)。
+    led["abstained"].pop(fam, None)
 
 
 def _abstain(fam: str, why: str) -> None:
-    """记一笔「本族弃权」——**弃权不是通过**,必须与「查了没事」分开说。"""
+    """记一笔「本族弃权」——**弃权不是通过**,必须与「查了没事」分开说。
+
+    同族多把刀各自弃权时理由合并(见 _note);已参评的族由 _note 撤销弃权。
+    """
     led = _LEDGER.get(None)
-    if led is not None:
-        led["abstained"].setdefault(fam, why)
+    if led is None or fam in led["applicable"]:
+        return
+    prev = led["abstained"].get(fam)
+    led["abstained"][fam] = f"{prev};{why}" if prev else why
 
 
 def _nums_in(cell: str) -> list[float]:
@@ -619,6 +645,176 @@ def check_totals(tables) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 检查 8:频数 ↔ 百分比自洽(纯算术,零统计假设 —— 随 N 变大反而更准的一把刀)
+# ──────────────────────────────────────────────────────────────────────
+def _col_single_nums(rows, ci: int, header, *, allow_bare_pct: bool = False):
+    """取某列「单元格只含一个数字」的值,返回 [(行号, 值, 原文本)]。
+
+    带文字或带 ± 的格子整体跳过(与 _cols_of_table 同一纪律):混进来会让
+    分母跟着变。`allow_bare_pct` 为真时额外收「一格多个数字但带 %」的格子
+    ——那是「占比(%)」合并表头常见的 "120(33.3%)" 写法,这列里的其余数字
+    都是百分比。返回 None 表示该列有格子的形态**不可解释**。
+    """
+    out = []
+    for ri, r in enumerate(rows):
+        cell = (r[ci] if ci < len(r) else "") or ""
+        nums = _NUM_RE.findall(cell)
+        if not nums:
+            continue
+        if len(nums) == 1:
+            frac = (nums[0].split(".") + [""])[1]
+            out.append((ri, float(nums[0]), nums[0]))
+            continue
+        if allow_bare_pct and "%" in cell:
+            frac = (nums[0].split(".") + [""])[1]
+            out.append((ri, float(nums[0]), nums[0]))
+            continue
+        return None
+    return out
+
+
+def check_pct_consistency(tables) -> list[dict]:
+    """「频数 ↔ 百分比」自洽:每行的 count / 总人数 × 100 应等于该行百分比。
+
+    这是唯一一把**随 N 变大反而更准**的刀——纯算术,没有统计假设,不靠抽样。
+    频数百分比表是本科论文里占比最高的一类表,而七把统计刀在这类表上
+    只有 F4 开口(且查不出篡改),本刀把它补上。
+
+    判据(原始清单):`abs(cnt / total * 100 - pct) > _PCT_TOL`,容差 0.6 个
+    百分点给一位小数的四舍五入(最大 0.05)与「多选/缺失」的轻微口径差留量。
+
+    三条防误报纪律,每一条都对应一种「诚实但分母不同」的真表:
+
+    - **同底多数闸门**:多选题的百分比列合计 >100%、以「有效样本」为分母的
+      表合计 <100%。这类表**每一行都对不上**,但一个格子都没被改过。
+      所以:对不上的行**过半** → 整表弃权,不出任何卡片。反过来,只有少数
+      行对不上才是篡改的指纹——真被改了一格,其余行仍然自洽。
+      (阈值取半而非三成:3 行的小表里「1 行坏」就是 33%,三成闸门会把
+      最常见的男/女/其他三分类表误弃权。)
+    - **分子必须是非负整数**:频数列写 -3 或 12.5 就不是频数,本刀不开。
+    - **分母优先取作者自报的总人口**:表里有「合计/总计」行时用它的频数当
+      分母(作者自己说的总人口,最可靠)。没有合计行时退回**分项之和**——
+      这时「表里少了没列出的行」与「改了一格」的区别正是上面那条多数闸门
+      在做的事,不必额外弃权。
+
+    报 card 时用 LEVEL_MID、group 留空——与「合计矛盾」同为算术硬矛盾,
+    不参与独立组降噪(那是给统计类弱线索用的)。
+    """
+    issues = []
+    n_tab = 0
+    for ti, rows in enumerate(tables, 1):
+        if len(rows) < 2:
+            continue
+        header = rows[0] if rows else []
+        ncol = max(len(r) for r in rows)
+        body = rows[1:]
+
+        pct_col = cnt_col = None
+        for ci in range(ncol):
+            name = (header[ci] if ci < len(header) else "") or ""
+            if pct_col is None and _PCT_HDR_RE.search(name):
+                pct_col = ci
+            elif cnt_col is None and _CNT_HDR_RE.search(name):
+                cnt_col = ci
+        if pct_col is None or cnt_col is None or pct_col == cnt_col:
+            continue
+
+        # 表头可能被合并:占比列里是 "120(33.3%)" 这种「频数(百分比)」。
+        # 此时第一串数字是频数、带 % 的那个才是百分比。
+        ref = _col_single_nums(body, pct_col, header)
+        if ref is None:
+            cell = (body[0][pct_col] if pct_col < len(body[0]) else "") or ""
+            if "%" in cell and len(_NUM_RE.findall(cell)) > 1:
+                ref = _col_single_nums(body, pct_col, header, allow_bare_pct=True)
+        if ref is None:
+            continue
+
+        # 「合计/总计」行:作者自己报的总人口,优先用它当分母。
+        total_ri = None
+        for ri, _val, _raw in ref:
+            row = body[ri]
+            label = (row[0] if row else "") or ""
+            if _TOTAL_RE.search(label) and len(ref) >= _MIN_PCT_ROWS + 1:
+                total_ri = ri
+                break
+        items = [it for it in ref if it[0] != total_ri]
+        if len(items) < _MIN_PCT_ROWS:
+            continue
+
+        cnt = _col_single_nums(body, cnt_col, header)
+        if cnt is None:
+            continue
+        cmap, bad_cnt = {}, False
+        for ri, val, raw in cnt:
+            if val < 0 or abs(val - round(val)) > 1e-9:
+                bad_cnt = True     # 频数列里出现 -3 或 12.5 → 这不是频数
+                break
+            cmap[ri] = (val, raw)
+        if bad_cnt:
+            continue
+
+        # 没有合计行时分母取**分项之和**。注意这同时是「删了没列出的行」与
+        # 「改了一格」两种情形的判别点:前者会让**每一行**的百分比都偏低
+        # (真实分母比分项之和大),后者只动一行——下面的多数闸门负责分开。
+        if total_ri is not None and total_ri in cmap:
+            n_people = int(cmap[total_ri][0])
+        else:
+            n_people = sum(cmap[r][0] for r, _v, _rw in items if r in cmap)
+        if n_people <= 0:
+            continue
+
+        rows_bad = []
+        for ri, pct, praw in items:
+            if ri not in cmap:
+                continue
+            cval = cmap[ri][0]
+            exp = cval / n_people * 100.0
+            if abs(exp - pct) > _PCT_TOL:
+                rows_bad.append((ri, cval, pct, exp))
+        n_used = sum(1 for ri, _v, _rw in items if ri in cmap)
+        if n_used < _MIN_PCT_ROWS:
+            continue
+
+        if len(rows_bad) * 2 > n_used:
+            # 过半的行对不上 → 两列不同底(多选 / 有效样本分母 / 表里少了
+            # 「其他」行),不是篡改。真被改了一格时,其余行仍然自洽,对不上
+            # 的永远是少数;过半对不上只可能是分母本来就不同——那种表一个
+            # 格子都没被改过。
+            continue
+
+        #: 走到这里 = 这张表**真比过了**(不管有没有报)。参评率记的是「查了几
+        #: 张」而不是「报了几张」—— 一张没报的诚实表同样是本族开了口。
+        n_tab += 1
+
+        if not rows_bad:
+            continue
+
+        first = rows_bad[0]
+        label = (body[first[0]][0] if body[first[0]] else "") or f"第{first[0] + 1}行"
+        issues.append(_issue(
+            LEVEL_MID, "表格取证·频数与百分比不符",
+            f"第 {ti} 张表「{label}」行:{len(rows_bad)} 处 频数÷总数 与写出的"
+            f"百分比不符",
+            f"以总数 {n_people} 计,「{label}」行写 {first[1]:g} 人 = "
+            f"{first[3]:.1f}%,但表里写的是 {first[2]:g}%(差 "
+            f"{abs(first[3] - first[2]):.1f} 个百分点);同一张表另有 "
+            f"{len(rows_bad) - 1} 行同样对不上。其余 {n_used} 行是自洽的"
+            f"——同一张表里只有个别行不符,通常是某一格抄错或百分比是"
+            f"另一次统计的结果。",
+            "频数与百分比是同一件事的两种写法,应当互相推得出来。这一条是"
+            "纯算术核对,不含任何统计假设,也不涉及样本量大小——它与其它七"
+            "把刀不同,样本越多反而越准。",
+            "回到原始数据重算这一行的百分比(或核对频数是否抄错);"
+            "这只是线索,不代表造假。"))
+    if n_tab:
+        _note("F6", f"{n_tab} 张频数/百分比表做了算术自洽核对")
+    else:
+        _abstain("F6", "频数↔百分比未参评:没有同时具备「频数列 + 百分比列 + "
+                       "总人口」的表")
+    return issues
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 检查 4:GRIM 表格版(n × 均值 可达性)
 # ──────────────────────────────────────────────────────────────────────
 def check_grim(tables) -> list[dict]:
@@ -724,7 +920,8 @@ def audit_paper_tables(tables) -> dict:
     token = _LEDGER.set(led)
     try:
         for fn in (check_digits, check_mixed_precision, check_relations,
-                   check_progression, check_totals, check_grim):
+                   check_progression, check_totals, check_pct_consistency,
+                   check_grim):
             try:
                 issues += fn(tables)
             except Exception:  # noqa: BLE001 — 单把刀出错不影响其它刀

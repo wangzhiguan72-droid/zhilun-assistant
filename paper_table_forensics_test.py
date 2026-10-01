@@ -22,7 +22,7 @@ def check(name, cond, detail=""):
 
 from paper_table_forensics import (  # noqa: E402
     audit_paper_tables, check_digits, check_grim, check_mixed_precision,
-    check_progression, check_relations, check_totals)
+    check_pct_consistency, check_progression, check_relations, check_totals)
 
 print("[1] 尾串重复 + 末位偏好(一列全是 .33)")
 rows = [["组别", "得分A", "得分B"]]
@@ -164,6 +164,62 @@ check("算术硬矛盾(合计)不受降噪影响",
       tot10 and all(i["level"] == "mid" and "未经" not in i["explain"] for i in tot10),
       str([(i["category"], i["level"]) for i in tot10]))
 check("groups_hit 只记统计类命中", rep10["groups_hit"] == ["列间"], str(rep10["groups_hit"]))
+
+print("[11] 频数 ↔ 百分比自洽(P1-1;纯算术,随 N 变强)")
+# 判据: abs(cnt / total * 100 - pct) > 0.6。诚实表误报 0.00%,
+# 一格百分比改 ±3.0 后检出 100%——本批唯一「纯赚」的刀。
+_pctc = "表格取证·频数与百分比不符"
+_honest = [["性别", "频数", "百分比(%)"],
+           ["男", "120", "33.3"], ["女", "200", "55.6"],
+           ["其他", "40", "11.1"], ["合计", "360", "100.0"]]
+check("诚实表不报", pct_issues := [i for i in check_pct_consistency([_honest])
+                                if i["category"] == _pctc] == [], str(pct_issues))
+# 只把「男」那格的 33.3 改成 30.0,其余行不动
+_bad = [["性别", "频数", "百分比(%)"],
+        ["男", "120", "30.0"], ["女", "200", "55.6"],
+        ["其他", "40", "11.1"], ["合计", "360", "100.0"]]
+_pb = [i for i in check_pct_consistency([_bad]) if i["category"] == _pctc]
+check("改一格百分比即命中,且为中档(算术硬矛盾不降噪)",
+      len(_pb) == 1 and _pb[0]["level"] == "mid", str(_pb))
+check("证据里写出期望值与实写值", _pb and "33.3" in _pb[0]["evidence"]
+      and "30" in _pb[0]["evidence"], str(_pb[:1]))
+check("措辞不判造假", _pb and "不代表造假" in _pb[0]["suggestion"], str(_pb[:1]))
+
+# 防误报 1:多选题(百分比合计 >100)每一行都对不上,但一格没改过 → 整表弃权
+_multi = [["选项", "频数", "百分比(%)"],
+          ["A", "120", "60.0"], ["B", "100", "50.0"], ["C", "80", "40.0"],
+          ["合计", "300", "150.0"]]
+check("多选同底(合计>100%)不报",
+      [i for i in check_pct_consistency([_multi]) if i["category"] == _pctc] == [],
+      str(check_pct_consistency([_multi])))
+# 防误报 2:以「有效样本」为分母(合计 <100%)同理
+_valid = [["维度", "频数", "百分比(%)"],
+          ["甲", "60", "30.0"], ["乙", "60", "30.0"], ["丙", "60", "30.0"],
+          ["合计", "180", "90.0"]]
+check("分母=有效样本(合计<100%)不报",
+      [i for i in check_pct_consistency([_valid]) if i["category"] == _pctc] == [],
+      str(check_pct_consistency([_valid])))
+# 防误报 3:频数列里出现负数/小数 → 这列不是频数,本刀不开
+_notcnt = [["性别", "频数", "百分比(%)"],
+           ["男", "-3", "33.3"], ["女", "200", "55.6"], ["其他", "40", "11.1"]]
+check("频数列非整数/含负不报",
+      [i for i in check_pct_consistency([_notcnt]) if i["category"] == _pctc] == [],
+      str(check_pct_consistency([_notcnt])))
+# 无合计行时,分母退回分项之和;此时「改了一格」仍能被多数闸门分开
+_noT = [["性别", "频数", "百分比(%)"],
+        ["男", "120", "30.0"], ["女", "200", "55.6"], ["其他", "40", "11.1"]]
+check("无合计行也能抓改格(分母取分项之和)",
+      len([i for i in check_pct_consistency([_noT]) if i["category"] == _pctc]) == 1,
+      str(check_pct_consistency([_noT])))
+
+# P1-2 口径:参评的族不得同时挂在 abstained 上(弃权 ≠ 通过,但也不能既参评又弃权)
+_rep11 = audit_paper_tables([_bad])
+check("F6 记入 applicable", "F6" in _rep11["applicable"], str(_rep11["applicable"]))
+check("F6 参评后不再记 abstained",
+      "F6" not in _rep11["abstained"], str(_rep11["abstained"]))
+check("台账 reasons 写人话且含「百分比」",
+      "百分比" in _rep11["applicable"].get("F6", ""),
+      str(_rep11["applicable"].get("F6")))
 
 print()
 print(f"结果:{PASS} 通过 / {FAIL} 失败")

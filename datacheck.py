@@ -954,29 +954,87 @@ def check_terminal_digits(df: pd.DataFrame) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # 纯函数工具：GRIM（供论文交叉核查路径调用）
 # --------------------------------------------------------------------------------------
-def grim_check(mean: float, n: int, *, items: int = 1, decimals: int = 2) -> bool:
-    """GRIM 检验：论文报告的均值在给定样本量下是否"可能"。
+#: 三态结论。**弃权不是通过**——「没查」和「查了没事」必须分开，
+#: 否则大 N 下 GRIM 会把恒真的空转冒充成「核验通过」，用户据此以为查过了。
+GRIM_OK = "ok"                # 可能：存在合法计分与之相容
+GRIM_IMPOSSIBLE = "impossible"  # 不可能：整数计分下算不出这个均值
+GRIM_ABSTAIN = "abstain"      # 弃权：本次检验无信息量（不是"通过"）
 
-    原理：若每人得分是 `items` 项的整数之和（粒度 items），则
-    `n × mean` 必须是 `items` 的整数倍；否则该均值**不可能**由这份 n 产生。
 
-    返回 True = 可能（通过），False = 不可能（该均值有鬼）。
+def grim_verdict(mean: float, n: int, *,
+                 items: int = 1, decimals: int = 2) -> str:
+    """GRIM 检验三态结论：`ok` / `impossible` / `abstain`。
+
+    原理：若每人得分是 `items` 项的整数之和（粒度 g = items），则真实总分
+    `n × 真均值` 必须是 g 的整数倍。**关键在「真均值」不是论文写的那个数**：
+    论文里的 `M = 3.47` 表示真均值落在一个**区间** `[3.465, 3.475)` 内
+    （半宽 `0.5 × 10^(-decimals)`，decimals 是论文实际报告的小数位）。
+    所以判据是「**存在**某个合法整数格点 k·g 落进 `[n×M − tol, n×M + tol]`」，
+    其中 `tol = 0.5 × 10^(-decimals) × n`。
+
+    取"最近格点"是不对的：最近的不合法，不代表更远的也不合法（items>1 时
+    格点间距为 g，容差可能跨过多个格点）。这里逐个枚举容差内的候选格点。
+
+    弃权（两条，含义都是「本次没有信息量」，**不是通过**）：
+        - 样本量非法（n 非正 / 非整数 / 非有限）
+        - `tol >= 0.5`，即 `n × 10^(-decimals) >= 1`（2 位小数时 n >= 100）。
+          此时容差已宽到覆盖整个取值域，检验退化为恒真。
+          与实测量化吻合：n=50 可检出窗口 50%，n=100 归零。
 
     用法：
-        grim_check(3.47, 30)   # 30 × 3.47 = 104.1，不是整数 → False
-        grim_check(3.5, 30)    # 30 × 3.5  = 105   → True
-        grim_check(3.47, 100)  # 347 → True（换样本量后就可能了）
+        grim_verdict(3.47, 30)    # 30×3.47 = 104.1，离整数 0.10 < 容差 0.15 → "ok"
+        grim_verdict(3.46, 30)    # 30×3.46 = 103.8，离整数 0.20 > 容差 0.15 → "impossible"
+        grim_verdict(3.47, 100)   # n≥100 且 2 位小数 → "abstain"（检验无信息量）
+        grim_verdict(3.4, 9, decimals=1)   # tol=0.45 < 0.5，仍有信息量 → "ok"
+        grim_verdict(3.47, 30, decimals=1) # tol=1.5 ≥ 0.5 → "abstain"（不是 ok）
     """
-    if not n or n <= 0:
-        return True
-    g = max(1, int(items))
     try:
-        prod = float(mean) * int(n)
+        n_int = int(n)
     except (TypeError, ValueError):
-        return True
-    nearest = round(prod / g) * g
-    tol = max(1e-6, 1e-9 * abs(prod))
-    return abs(prod - nearest) <= tol
+        return GRIM_ABSTAIN
+    if n_int <= 0:
+        return GRIM_ABSTAIN
+    try:
+        g = max(1, int(items))
+    except (TypeError, ValueError):
+        return GRIM_ABSTAIN
+    try:
+        mean_f = float(mean)
+    except (TypeError, ValueError):
+        return GRIM_ABSTAIN
+    prod = mean_f * n_int
+    # nan / inf 一律弃权：输入本身不可判，绝不能让它一路走到 round() 抛异常
+    # （round(nan) → ValueError、round(inf) → OverflowError，会把整份审计带崩）。
+    if not math.isfinite(prod):
+        return GRIM_ABSTAIN
+    try:
+        dec = int(decimals)
+    except (TypeError, ValueError):
+        dec = 2
+    if dec < 0:
+        dec = 0
+    half = 0.5 * (10.0 ** -dec)
+    tol = half * n_int
+    if tol >= 0.5:                      # 退化：容差已覆盖整个取值域
+        return GRIM_ABSTAIN
+    # 枚举容差内的候选格点（items=1 时即至多两个整数）
+    lo = math.floor((prod - tol) / g)
+    hi = math.ceil((prod + tol) / g)
+    for k in range(lo, hi + 1):
+        if abs(prod - k * g) <= tol:
+            return GRIM_OK
+    return GRIM_IMPOSSIBLE
+
+
+def grim_check(mean: float, n: int, *, items: int = 1, decimals: int = 2) -> bool:
+    """`grim_verdict` 的布尔薄壳：仅**确定不可能**时为 False。
+
+    保留这个签名是为了让既有调用点（`audit.grim_cross_check`、
+    `grimmer._grim_ok`）不必改：它们都是"守门人"语义——不确定就别往下判。
+    因此 `abstain` 与 `ok` 在这里同为 True；**需要区分「没查」与「查了没事」
+    的地方请直接调 `grim_verdict`**。
+    """
+    return grim_verdict(mean, n, items=items, decimals=decimals) != GRIM_IMPOSSIBLE
 
 
 # 注意：GRIMMER（查标准差）不在本模块 —— 唯一真源是 `grimmer.py`

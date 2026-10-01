@@ -538,9 +538,14 @@ def grim_cross_check(paper_quantities: list[dict], n: int, *,
                            论文写的 n 本身可能就是错的，用实算值更硬）
     返回：
         [{"kind": "grim", "mean": float, "n": int, "passed": bool,
+          "verdict": "ok" | "impossible" | "abstain",
           "raw": str, "product": float, "explain": str}, ...]
+
+    `verdict` 是 v2.38 新增的三态。`passed` 保留为兼容字段（仅「确定不可能」
+    时为 False）。**需要区分「没查」与「查了没事」的地方必须看 `verdict`**：
+    n 大到容差覆盖整个取值域时检验退化为恒真，此时既不是通过也不是不通过。
     """
-    from datacheck import grim_check  # 延迟导入：与 datacheck 共用同一口径
+    from datacheck import GRIM_ABSTAIN, GRIM_IMPOSSIBLE, grim_verdict  # 延迟导入：与 datacheck 共用同一口径
 
     out: list[dict[str, Any]] = []
     try:
@@ -557,16 +562,27 @@ def grim_cross_check(paper_quantities: list[dict], n: int, *,
             mean = float(q.get("value"))
         except (TypeError, ValueError):
             continue
-        passed = bool(grim_check(mean, n_int, items=items, decimals=decimals))
         prod = mean * n_int
-        if passed:
-            explain = (f"n={n_int} 时，{mean:g} × {n_int} = {prod:g}，"
-                       f"与整数计分一致 —— 该均值**可能**出现。")
-        else:
-            explain = (f"n={n_int} 时，{mean:g} × {n_int} = {prod:g}，不是整数 —— "
+        try:
+            verdict = grim_verdict(mean, n_int, items=items, decimals=decimals)
+        except Exception:  # noqa: BLE001 — 判据自身异常时弃权，绝不误伤
+            verdict = GRIM_ABSTAIN
+        if verdict == GRIM_ABSTAIN:
+            # 大 n：容差已覆盖整个取值域，算出来什么都"一致"。
+            # 必须说成「未判定」，写「可能」等于把空转冒充成核验通过。
+            explain = (f"n={n_int} 时，容差已大到覆盖全部可能取值，"
+                       f"本项**未作判定**（检验在此样本量下没有信息量）。"
+                       f"这不等于核查通过。")
+        elif verdict == GRIM_IMPOSSIBLE:
+            explain = (f"n={n_int} 时，{mean:g} × {n_int} = {prod:g}，离开任何"
+                       f"合法整数取值都超过报告位数允许的舍入范围 —— "
                        f"若每个得分都是整数，这个均值**不可能**由 {n_int} 个观测得到。")
+        else:
+            explain = (f"n={n_int} 时，{mean:g} × {n_int} = {prod:g}，"
+                       f"落在整数取值的舍入区间内 —— 该均值**可能**出现。")
         out.append({
-            "kind": "grim", "mean": mean, "n": n_int, "passed": passed,
+            "kind": "grim", "mean": mean, "n": n_int,
+            "passed": verdict != GRIM_IMPOSSIBLE, "verdict": verdict,
             "raw": str(q.get("raw", "")), "product": round(prod, 6),
             "explain": explain,
         })
@@ -679,15 +695,25 @@ def _compare_quantity(paper_q: dict, real: dict) -> dict[str, Any]:
         return {"status": status, "kind": kind,
                 "paper": paper_q["raw"], "real": f"{real_val:.3f}",
                 "diff": f"{diff:.3f}"}
-    # p 值容忍度：0.01 内的差视为一致（p 经常 < 0.001 → 0.000 四舍五入）
+    # p 值：论文里的 p 有两副面孔，**必须分开比**，混在一起比必出假阴性。
+    #   ① 上界声明："p < 0.05" → 只要正文也落在同一侧就一致，不看差多少。
+    #   ② 点值声明："p = 0.018" → 差 0.05 内才算一致。
+    #   ③ 地板写法："p = 0.000" 其实是 "p < 0.001"（没有哪个检验真给出 p=0）。
+    #      地板不能当点值算差——|0.018 − 0.000| = 0.018 会被容差吞掉，
+    #      "摘要 p=0.018 vs 正文 p=0.000"（实为 <0.001）就此漏报。
+    # ⚠️ 这一支必须自己 return：下面 t/F/r 那档容差是 0.5，对 0–1 的 p 值宽松一百倍。
     if kind == "p":
-        # 论文写 P < 0.05 的，p=0.041 / p=0.022 都算一致
         op = paper_q.get("op", "lt")
-        same_side = (
-            (op == "lt" and paper_val is not None and real_val <= paper_val + 1e-4)
-            or (op == "eq" and diff < 0.05)
-        )
-        status = "ok" if same_side else "mismatch"
+        _FLOOR = 0.0005          # 写出来小到这个程度，按 "<0.001" 读
+        if op == "lt":
+            status = "ok" if real_val <= paper_val + 1e-4 else "mismatch"
+        elif paper_val < _FLOOR:
+            # 摘要是地板，正文必须也小到 0.001 以内
+            status = "ok" if real_val < 0.001 + 1e-9 else "mismatch"
+        elif real_val < _FLOOR:
+            status = "ok" if paper_val < 0.001 + 1e-9 else "mismatch"
+        else:
+            status = "ok" if diff < 0.05 else "minor_diff" if diff < 0.1 else "mismatch"
         return {"status": status, "kind": kind,
                 "paper": paper_q["raw"], "real": f"{real_val:.4f}",
                 "diff": None if status == "ok" else f"{diff:.4f}"}
@@ -1489,11 +1515,21 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     # 3.9) v2.37 · 摘要 ↔ 正文 统计量自查（零输入依赖：只要论文本身）。
     #      摘要区间由 extract_paper.extract_abstract_quantities 切出；
     #      切不到时它返回空列表 + 一句人话 note，这里如实透出，绝不静默。
-    from extract_paper import extract_abstract_quantities  # 延迟导入：与 extract_paper 共用同一口径
-    _abs_qs, _abs_note = extract_abstract_quantities(paper_claims.get("raw_text", "") or "")
-    # 正文量 = 全文量减去摘要量（不去重会比出"摘要在摘要里找不到"的荒谬结论）
-    _abs_sig = {(q.get("kind"), q.get("raw")) for q in _abs_qs}
-    _body_qs = [q for q in quantities if (q.get("kind"), q.get("raw")) not in _abs_sig]
+    from extract_paper import (  # 延迟导入：与 extract_paper 共用同一口径
+        extract_abstract_quantities, extract_quantities, find_abstract_span,
+    )
+    _raw_text = paper_claims.get("raw_text", "") or ""
+    _abs_qs, _abs_note = extract_abstract_quantities(_raw_text)
+    # 正文量 = 摘要区间之外的全文再抽一遍（推荐做法：按区间切，不按值去重）。
+    # 早期写成「全文量减去摘要量，(kind,raw) 去重」——同一统计量在摘要与正文
+    # 都出现时（论文摘要本就该重述正文结果），正文那一份会被误删，
+    # 于是摘要里的 F/r 被报成 "正文没有" 的假 missing。按区间切没有这个问题。
+    _abs_start, _abs_end = find_abstract_span(_raw_text)
+    if _abs_start:
+        _body_text = _raw_text[:_abs_start] + " " + _raw_text[_abs_end:]
+        _body_qs = extract_quantities(_body_text)
+    else:
+        _body_qs = list(quantities)      # 定位不到摘要 → 全文当正文，摘要侧本就为空
     abs_check = compare_abstract_vs_body(_abs_qs, _body_qs)
     abs_check["note"] = _abs_note
 
@@ -1729,7 +1765,15 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         md_lines.append("| 论文写法 | 均值 | 实算样本量 n | 均值 × n | 结论 |")
         md_lines.append("| --- | ---: | ---: | ---: | --- |")
         for g in grim:
-            flag = "✅ 可能" if g["passed"] else "🔴 不可能"
+            # 三态：`abstain` 是「本次没信息量」，既不是通过也不是不通过。
+            # 一律渲染成 ✅ 会让大 n 下的空转被读成「查过了没问题」。
+            _v = g.get("verdict")
+            if _v == "abstain":
+                flag = "➖ 未判定"
+            elif _v == "impossible" or not g["passed"]:
+                flag = "🔴 不可能"
+            else:
+                flag = "✅ 可能"
             md_lines.append(f"| {g['raw']} | {g['mean']:g} | {g['n']} | {g['product']:g} | {flag} |")
         failed = [g for g in grim if not g["passed"]]
         if failed:
@@ -1737,6 +1781,13 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
                 f"\n> ⚠️ 有 {len(failed)} 个均值在实算样本量下**不可能**出现。请核对："
                 "样本量口径（是否剔除缺失 / 分组报告）、计分粒度、或是否存在四舍五入。"
                 "**这不等于造假**，只说明这个数字需要解释。"
+            )
+        abstained = [g for g in grim if g.get("verdict") == "abstain"]
+        if abstained:
+            md_lines.append(
+                f"\n> ➖ 另有 {len(abstained)} 个均值**未作判定**：样本量已大到"
+                "「任何均值都算得出」，这项检验在这个规模下没有分辨力。"
+                "**这不等于核查通过**，只是本次没查到东西。"
             )
 
     # 5.5c GRIMMER 一致性检验（v2.10 · 查标准差是否可能）

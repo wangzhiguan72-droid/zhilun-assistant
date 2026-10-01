@@ -356,10 +356,17 @@ try:
 except Exception as _e:  # noqa: BLE001
     check("grimmer 模块可用", False, str(_e))
 
-check("GRIM：30 × 3.47 = 104.1 → 不可能", dc.grim_check(3.47, 30) is False)
+check("GRIM：30 × 3.46 = 103.8 → 不可能（偏离 0.20 > 容差 0.15）",
+      dc.grim_check(3.46, 30) is False)
 check("GRIM：30 × 3.5 = 105 → 可能", dc.grim_check(3.5, 30) is True)
 check("GRIM：100 × 3.47 = 347 → 可能", dc.grim_check(3.47, 100) is True)
 check("GRIM：n 非法 → 放行（不冤枉人）", dc.grim_check(3.47, 0) is True)
+# v2.38 口径：报告均值是区间 [M−half, M+half)，n=30 下 3.47 距整数 0.10 < 0.15
+check("GRIM：30 × 3.47 = 104.1 → 容差内，可能（旧版误判）",
+      dc.grim_check(3.47, 30) is True)
+# 大 N 归零：tol = 0.5×10⁻²×100 = 0.5 → 检验退化，必须弃权而非「通过」
+check("GRIM：n=100 已无信息量 → 三态为弃权",
+      dc.grim_verdict(3.47, 100) == dc.GRIM_ABSTAIN)
 
 
 # ===========================================================================

@@ -38,12 +38,13 @@ explain/suggestion/rows/columns),可直接并入体检卡片流渲染。
 """
 from __future__ import annotations
 
+import contextvars
 import re
 from collections import Counter
 
 from scipy import stats as _st
 
-from datacheck import LEVEL_MID, LEVEL_LOW
+from datacheck import LEVEL_MID, LEVEL_LOW, GRIM_ABSTAIN, GRIM_IMPOSSIBLE, grim_verdict
 
 #: 合计类单元格关键词(与 datacheck._TOTAL_KEYWORDS 对齐,表格场景补充英文)
 _TOTAL_RE = re.compile(r"合计|总计|总数|总和|总额|小计|total|sum", re.IGNORECASE)
@@ -79,6 +80,35 @@ def _issue(level: str, category: str, title: str, evidence: str,
     return {"level": level, "category": category, "title": title,
             "evidence": evidence, "explain": explain, "suggestion": suggestion,
             "rows": [], "columns": [], "group": group}
+
+
+# ── 参评台账 ──────────────────────────────────────────────────────────
+#: 七族的展示名与顺序:与产品文档 0.1 / 0.2 节的两张表同构,
+#: 用户看到「7 族中 3 族参评」时能一眼对上是哪三族。
+FAMILIES = (
+    ("F1", "末位偏好"), ("F2", "尾数重复"), ("F3", "小数位"),
+    ("F4", "等差/等比"), ("F5", "列间关系"), ("F6", "合计"),
+    ("F7", "GRIM 可达性"),
+)
+
+#: 每族的参评自述。各刀在自己的闸门处报到:参评 = 本次真的凑齐了判定
+#: 所需的样本,无论最后有没有报警。没用 contextvar 之外的传参方式,
+#: 是为了不把七把纯函数的签名全改一遍。
+_LEDGER: contextvars.ContextVar = contextvars.ContextVar("_ptf_ledger")
+
+
+def _note(fam: str, why: str) -> None:
+    """记一笔「本族参评了」。`why` 写人话,直接进产物给用户看。"""
+    led = _LEDGER.get(None)
+    if led is not None:
+        led["applicable"].setdefault(fam, why)
+
+
+def _abstain(fam: str, why: str) -> None:
+    """记一笔「本族弃权」——**弃权不是通过**,必须与「查了没事」分开说。"""
+    led = _LEDGER.get(None)
+    if led is not None:
+        led["abstained"].setdefault(fam, why)
 
 
 def _nums_in(cell: str) -> list[float]:
@@ -261,16 +291,22 @@ def check_digits(tables) -> list[dict]:
     「这一列的数字长得不像量出来的」。粗网格列(.0/.5)直接跳过。
     """
     issues = []
+    n_col = n_coarse = n_thin = 0
     for ti, rows in enumerate(tables, 1):
         header = rows[0] if rows else []
         for col in _cols_of_table(rows[1:] if len(rows) > 1 else rows, header):
             st = _col_stats(col["vals"])
             if st["coarse"]:
+                # 粗网格列(.0/.5):末位与尾串的不均匀是机械结果,不判。
+                # 这不是「查了没事」,是这两族在这张表上开不了口。
+                n_coarse += 1
                 continue
             dec = [(v, raw) for v, raw, d in col["vals"] if d > 0]
             n = len(dec)
             if n < _MIN_COL_DECIMALS:
+                n_thin += 1
                 continue
+            n_col += 1
             name = col["name"]
 
             # 1) 末位数字分布:卡方 p < 0.001 才谈偏好(顶层显著性再作收敛要求)
@@ -326,6 +362,19 @@ def check_digits(tables) -> list[dict]:
                     "逐行核对这些尾数对应的数值是否各自独立算出;这只是线索,"
                     "不代表造假。",
                     group="尾串"))
+    #: 参评/弃权按整份材料的**列**结算(不是按表):这两族是列级刀,
+    #: 「有的列能判、有的列不能」在用户眼里就是这一族参评了。
+    if n_col:
+        _note("F1", f"{n_col} 列达 {_MIN_COL_DECIMALS} 值门槛,做了末位卡方")
+        _note("F2", f"{n_col} 列达门槛,做了尾串集中度检验")
+    else:
+        why = []
+        if n_coarse:
+            why.append(f"{n_coarse} 列是 .0/.5 粗网格(不均匀是机械结果)")
+        if n_thin:
+            why.append(f"{n_thin} 列带小数的值不足 {_MIN_COL_DECIMALS} 个")
+        _abstain("F1", "末位分布未参评:" + (";".join(why) or "没有可判定的数值列"))
+        _abstain("F2", "尾数重复未参评:" + (";".join(why) or "没有可判定的数值列"))
     return issues
 
 
@@ -339,15 +388,21 @@ def check_mixed_precision(tables) -> list[dict]:
     一位(笔误),因此本项**恒定报最低档**,只在同列另有其它信号时才值得看。
     """
     issues = []
+    n_col = n_skip = 0
     for ti, rows in enumerate(tables, 1):
         header = rows[0] if rows else []
         for col in _cols_of_table(rows[1:] if len(rows) > 1 else rows, header):
             st = _col_stats(col["vals"])
             if st["coarse"] or st["int_col"]:
+                # 粗网格列与纯计数列本来就不该有小数位一说 → 本族绕开,
+                # 不是「查过没问题」。
+                n_skip += 1
                 continue
             decs = [d for _v, _raw, d in col["vals"]]
             if len(decs) < 10:
+                n_skip += 1
                 continue
+            n_col += 1
             hist = Counter(decs)
             modal_dec, modal_n = hist.most_common(1)[0]
             minority = len(decs) - modal_n
@@ -367,6 +422,11 @@ def check_mixed_precision(tables) -> list[dict]:
                 "只有当同一列还有别的取证信号时,它才多一层意义。",
                 "顺手把这一列的小数位统一到与其它行一致即可。",
                 group="精度"))
+    if n_col:
+        _note("F3", f"{n_col} 列做了精度齐整性检查")
+    else:
+        _abstain("F3", f"小数位未参评:{n_skip} 列是粗网格/整数计数列,"
+                       f"或不足 10 个值")
     return issues
 
 
@@ -380,6 +440,7 @@ def check_relations(tables) -> list[dict]:
     所以本项**只报最低档**,并在文案里先给出这些良性解释。
     """
     issues = []
+    n_pair = n_tab = 0
     for ti, rows in enumerate(tables, 1):
         if len(rows) < _MIN_REL_ROWS + 1:
             continue
@@ -388,9 +449,11 @@ def check_relations(tables) -> list[dict]:
                 if not _is_design_col(c["name"])]
         if len(cols) < 2 or len(cols) > 12:    # 列太多时两两组合爆炸且多为堆砌表
             continue
+        n_tab += 1
         for i in range(len(cols)):
             for j in range(i + 1, len(cols)):
                 a, b = cols[i], cols[j]
+                n_pair += 1
                 got = _fixed_relation(a["vals"], b["vals"])
                 if not got:
                     continue
@@ -410,6 +473,11 @@ def check_relations(tables) -> list[dict]:
                     "核对这两列是否各自独立测得;若确有换算关系,在表注里写明。"
                     "这只是线索,不代表造假。",
                     group="列间"))
+    if n_pair:
+        _note("F5", f"{n_tab} 张表共 {n_pair} 对列做了固定差/比检验")
+    else:
+        _abstain("F5", f"列间关系未参评:没有同时具备 ≥{_MIN_REL_ROWS + 1} 行"
+                       f"与 2–12 个非设计轴数值列的表")
     return issues
 
 
@@ -428,11 +496,15 @@ def check_progression(tables) -> list[dict]:
     等比生成(2/4/8/16…),漏掉它这把刀只算装了一半。
     """
     issues = []
+    n_col = n_skip = 0
     for ti, rows in enumerate(tables, 1):
         header = rows[0] if rows else []
         for col in _cols_of_table(rows[1:] if len(rows) > 1 else rows, header):
             if _is_design_col(col["name"]) or _col_stats(col["vals"])["int_col"]:
+                # 设计轴列(序号/剂量/年份)本身就是等差,纯计数列不适用。
+                n_skip += 1
                 continue
+            n_col += 1
             vals = col["vals"]
             a_runs = _arith_runs(vals)
             g_runs = _geo_runs(vals)
@@ -468,6 +540,11 @@ def check_progression(tables) -> list[dict]:
                     "确认这列是实测数据还是按公式递推的值;若是递推值,在表注中"
                     "说明生成方式。这只是线索,不代表造假。",
                     group="等差"))
+    if n_col:
+        _note("F4", f"{n_col} 列做了等差/等比游程扫描")
+    else:
+        _abstain("F4", f"等差/等比未参评:{n_skip} 列是设计轴列(序号/剂量/"
+                       f"年份)或整数计数列")
     return issues
 
 
@@ -476,6 +553,7 @@ def check_progression(tables) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────
 def check_totals(tables) -> list[dict]:
     issues = []
+    n_pair = 0
     for ti, rows in enumerate(tables, 1):
         flat_cnt = sum(len(_nums_in(c)) for r in rows for c in r)
         if flat_cnt < _MIN_CELLS:
@@ -494,6 +572,7 @@ def check_totals(tables) -> list[dict]:
                           if i != ti_cell for v in per]
                 if len(others) < 2:
                     continue
+                n_pair += 1
                 s = sum(others)
                 if abs(s - tv[0]) > max(0.05, 5e-3 * max(abs(s), 1)):
                     issues.append(_issue(
@@ -531,6 +610,11 @@ def check_totals(tables) -> list[dict]:
                                 "列合计不符最常见的原因是漏掉一行或把百分数"
                                 "与计数混加。",
                                 "核对列内每一行是否都应计入合计。"))
+    if n_pair:
+        _note("F6", f"检出 {n_pair} 处「合计 vs 分项」可核对关系")
+    else:
+        _abstain("F6", "合计未参评:表里没有「合计/总计」单元格,"
+                       "或合计行的可加数字不足 2 个")
     return issues
 
 
@@ -539,6 +623,7 @@ def check_totals(tables) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────
 def check_grim(tables) -> list[dict]:
     issues = []
+    n_row = n_abstain = 0
     for ti, rows in enumerate(tables, 1):
         header = rows[0] if rows else []
         for ri, row in enumerate(rows[1:], start=2):
@@ -569,8 +654,12 @@ def check_grim(tables) -> list[dict]:
             for ci, cell in enumerate(row):
                 msd = list(_MSD_RE.finditer(cell or ""))
                 for m in msd:
-                    means.append((float(m.group(1)), len(m.group(1).split(".")[-1]),
-                                  m.group(0)))
+                    #: 小数位按「小数点后真位数」取——"3" 是 0 位,不是 1 位。
+                    #: 早先用 split(".")[-1] 会把整数均值算成 1 位小数,容差
+                    #: 跟着放大 10 倍,整列判定就松了(同一模块 _decimals_in
+                    #: 一直是正确写法,两处口径必须一致)。
+                    frac = (m.group(1).split(".") + [""])[1]
+                    means.append((float(m.group(1)), len(frac), m.group(0)))
                 if msd:
                     # 本格是 M±SD 形态:SD 那半不是均值,绝不能进 GRIM
                     continue
@@ -581,42 +670,67 @@ def check_grim(tables) -> list[dict]:
             for mean, dec, raw in means:
                 if dec > 3:
                     continue
-                prod = n_val * mean
-                if abs(prod - round(prod)) > 1e-6:
-                    issues.append(_issue(
-                        LEVEL_MID, "表格取证·GRIM 可达性",
-                        f"第 {ti} 张表:n={n_val} 与均值 {raw} 组合不可达",
-                        f"n × 均值 = {n_val} × {mean} = {prod:.6f},不是"
-                        f"{1/10**dec:g} 的整数倍——在整数计分数据下,"
-                        f"n={n_val} 的样本**算不出**保留 {dec} 位小数的均值 "
-                        f"{mean}。",
-                        "GRIM 核查(Allular/Heathers 2017)是学术取证常用线索:"
-                        "这类矛盾通常意味着均值来自另一次计算、n 写错,"
-                        "或数字系拼凑。",
-                        "回查该表的 n 与均值是否来自同一次统计;"
-                        "这只是线索,不代表造假。"))
-                    break  # 每行只报第一个
+                n_row += 1
+                #: 与 datacheck 同一口径:报告位数下的舍入容差 + 大 n 弃权。
+                #: 三态里的「弃权」在这里不产生任何卡片——大 N 下 GRIM 本来
+                #: 就恒真,报「通过」等于把空转冒充成核验。
+                verdict = grim_verdict(mean, n_val, items=1, decimals=dec)
+                if verdict == GRIM_ABSTAIN:
+                    n_abstain += 1
+                    continue
+                if verdict != GRIM_IMPOSSIBLE:
+                    continue
+                issues.append(_issue(
+                    LEVEL_MID, "表格取证·GRIM 可达性",
+                    f"第 {ti} 张表:n={n_val} 与均值 {raw} 组合不可达",
+                    f"n × 均值 = {n_val} × {mean} = {n_val * mean:.6f},"
+                    f"落在任何合法取值的舍入区间之外——在整数计分数据下,"
+                    f"n={n_val} 的样本**算不出**保留 {dec} 位小数的均值 "
+                    f"{mean}(已按报告位数计入 ±{0.5 * 10 ** -dec:g} 的舍入容差)。",
+                    "GRIM 核查(Allular/Heathers 2017)是学术取证常用线索:"
+                    "这类矛盾通常意味着均值来自另一次计算、n 写错,"
+                    "或数字系拼凑。",
+                    "回查该表的 n 与均值是否来自同一次统计;"
+                    "这只是线索,不代表造假。"))
+                break  # 每行只报第一个
+    if n_row:
+        extra = f",其中 {n_abstain} 个因 n 过大而无信息量" if n_abstain else ""
+        _note("F7", f"{n_row} 个「n + 均值」组合做了可达性检验{extra}")
+    else:
+        _abstain("F7", "GRIM 未参评:表里没找到「n / 例数 / 样本量」列,"
+                       "或均值未标注报几位小数")
     return issues
 
 
 def audit_paper_tables(tables) -> dict:
-    """主入口:对论文 docx 表格做取证,返回 {ok, tables, numeric_cells, issues}。
+    """主入口:对论文 docx 表格做取证,返回 {ok, tables, numeric_cells, issues,
+    applicable, abstained, summary, note}。
 
     七把刀跑完后统一过一遍「独立组降噪」:统计类线索只在**跨类印证**时才
     保留中档,单类独响一律降为最低档并注明「未经交叉印证」——这样做的原因
     是单条弱线索(某一列末位偏多、某两列像有换算关系)在真实论文里出现得
     太频繁,堆到用户面前只会变成噪声,反而不如诚实地说「这条还没被印证」。
     算术硬矛盾(合计不符)不参与降噪:那是数学上不可能同时成立的两件事。
+
+    v2.38 起额外报「参评台账」:`applicable` / `abstained` 按族级 7 标签给出,
+    与产品文档 0.1 / 0.2 节的表格同构。**弃权不是通过**——n 太大时 GRIM 恒真、
+    表里没有合计单元格时合计刀无从下手,这些必须说成「本族没开口」而不是
+    「查过没问题」,否则用户会把空转当成体检通过。
     """
     tables = tables or []
     flat = _table_numbers(tables)
     issues = []
-    for fn in (check_digits, check_mixed_precision, check_relations,
-               check_progression, check_totals, check_grim):
-        try:
-            issues += fn(tables)
-        except Exception:  # noqa: BLE001 — 单把刀出错不影响其它刀
-            pass
+    led = {"applicable": {}, "abstained": {}}
+    token = _LEDGER.set(led)
+    try:
+        for fn in (check_digits, check_mixed_precision, check_relations,
+                   check_progression, check_totals, check_grim):
+            try:
+                issues += fn(tables)
+            except Exception:  # noqa: BLE001 — 单把刀出错不影响其它刀
+                pass
+    finally:
+        _LEDGER.reset(token)
 
     # ── 独立组降噪:只有一类统计信号时全部降档 ──
     stat = [it for it in issues if it.get("group") in _STAT_GROUPS]
@@ -628,15 +742,56 @@ def audit_paper_tables(tables) -> dict:
     issues.sort(key=lambda it: (0 if it.get("level") == LEVEL_MID else 1,
                                 it.get("category", "")))
 
+    applicable = {f: led["applicable"][f] for f, _cn in FAMILIES
+                  if f in led["applicable"]}
+    abstained = {f: led["abstained"][f] for f, _cn in FAMILIES
+                 if f in led["abstained"]}
+    #: 族 → 在 issues 里对应的 group 标签。F1/F2 的卡片 group 并不相同
+    #: (末位偏好="数字"、尾数重复="尾串"),所以这两族改按 category 后缀精确
+    #: 匹配——早先按 group 合并映射,只报其一也会把另一族一起算成"报警"。
+    #: 注意:**参评计数**仍按 group 合并看(F1/F2 走同一道闸门,参评集合恒等),
+    #: 只有报警计数需要逐族区分,两者口径不同,不可一起改。
+    _FAM_GROUP = {"F3": "精度", "F4": "等差", "F5": "列间"}
+    hit = {it["group"] for it in stat}
+    cats = {it.get("category", "") for it in issues}
+    alarmed = [f for f, _cn in FAMILIES
+               if _FAM_GROUP.get(f) in hit
+               or (f == "F1" and any(c.endswith("末位偏好") for c in cats))
+               or (f == "F2" and any(c.endswith("尾数重复") for c in cats))
+               or (f == "F6" and any(c.endswith("合计矛盾") for c in cats))
+               or (f == "F7" and any(c.endswith("GRIM 可达性") for c in cats))]
+    if not tables:
+        summary = "本次没有可供核查的结构化表格。"
+    elif not applicable:
+        summary = ("7 族中 0 族参评——表格里没有凑齐任何一把刀的判定条件,"
+                   "本次取证没有信息量(这不等于「核查通过」)。")
+    else:
+        summary = f"7 族中 {len(applicable)} 族参评:{_fam_names(applicable)}。"
+        summary += (f"其中 {len(alarmed)} 族报警:"
+                    f"{_fam_names({f: '' for f in alarmed})}。" if alarmed
+                    else "这 7 族里已开口的都没有发现异常。")
+    if abstained:
+        summary += f"另有 {len(abstained)} 族未开口:{_fam_names(abstained)}。"
+
     return {
         "ok": True,
         "tables": len(tables),
         "numeric_cells": len(flat),
         "decimal_numbers": sum(1 for *_x, d in flat if d > 0),
-        "groups_hit": sorted({it["group"] for it in stat}),
+        "groups_hit": sorted(hit),
+        "applicable": applicable,
+        "abstained": abstained,
+        "summary": summary,
         "issues": issues,
         "note": "表格取证只覆盖 docx 结构化表格;每条发现都只是线索,"
                 "不代表造假。阈值刻意保守(按「列」判定:列内至少 20 个带"
                 "小数的值才做末位/尾串,概率均为多重比较校正后的口径);"
-                "只有一类信号时自动降档,避免单条弱线索吓人。",
+                "只有一类信号时自动降档,避免单条弱线索吓人。"
+                "「未开口」的族是本次条件不够、没有信息量,不等于通过。",
     }
+
+
+def _fam_names(fams) -> str:
+    """族号 → 「F1 末位偏好 / F3 小数位」这种人话。"""
+    cn = dict(FAMILIES)
+    return " / ".join(f"{f} {cn[f]}" for f, _c in FAMILIES if f in fams)

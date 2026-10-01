@@ -1,16 +1,25 @@
-"""v2.1 · 论文侧 GRIM 交叉核查测试（audit.grim_cross_check + extract_paper mean）
+"""v2.38 · 论文侧 GRIM 交叉核查测试（audit.grim_cross_check + extract_paper mean）
 ================================================================================
 GRIM（Granularity-Related Inconsistency of Means）：
-论文报告「均值 = 3.47，样本 30 人」，而问卷是整数计分 ——
-那么 30 × 3.47 = 104.1，不可能是任何 30 个整数之和。这个均值**不可能**出现。
+论文报告「均值 = 3.46，样本 30 人」，而问卷是整数计分 ——
+那么 30 × 3.46 = 103.8，离最近的整数 104 差 0.20；
+论文写 3.46 时真值落在 [3.455, 3.465)，乘以 30 就是 [103.65, 103.95)，
+整段区间里没有任何整数 —— 这个均值**不可能**出现。
+
+⚠️ 3.47 是反例，不是正例：3.47 × 30 = 104.1，离 104 只差 0.10，而 n=30、
+报告 2 位小数的容差是 0.5×10⁻²×30 = 0.15 —— 真值可能落在 [3.465,3.475)，
+对应 [103.95, 104.25)，**含**整数 104，所以合法。旧实现拿四舍五入后的显示值
+直接比整数，把 3.47 这类值大面积误判（20 万次蒙特卡洛实测误报 85.0%，
+修正后 1.517%）。本测试自 v2.38 起用 3.46 作「不可能」的样本。
 
 测什么：
   1. `datacheck.grim_check` 与 `audit.grim_cross_check` 口径一致（两边同一纯函数）
   2. 不可能的均值必须被抓出来；可能的均值**不许误报**（生命线）
-  3. extract_paper 能抽出 "M = 3.47" / "均值为 3.47"，且**不把随便一个数字当均值**
-  4. 闭环：build_audit_report 的报告里出现 GRIM 表格 + 进改进建议
-  5. 健壮性：没写均值 / 空数据 / n<=0 → 不崩、不制造噪音
-  6. 红线：文案只说「不可能出现 / 需要解释」，绝不出现「造假」
+  3. 大 N 下检验退化为恒真时必须报「弃权」，不许冒充「通过」
+  4. extract_paper 能抽出 "M = 3.47" / "均值为 3.47"，且**不把随便一个数字当均值**
+  5. 闭环：build_audit_report 的报告里出现 GRIM 表格 + 进改进建议
+  6. 健壮性：没写均值 / 空数据 / n<=0 → 不崩、不制造噪音
+  7. 红线：文案只说「不可能出现 / 需要解释」，绝不出现「造假」
 
 跑法：.venv/Scripts/python.exe grim_test.py
 """
@@ -52,25 +61,52 @@ def section(title):
 # ===========================================================================
 section("1. 纯函数基线：grim_check")
 # ===========================================================================
-check("3.47 × 30 = 104.1 → 不可能", DC.grim_check(3.47, 30) is False)
+check("3.46 × 30 = 103.8 → 不可能（偏离 0.20 > 容差 0.15）",
+      DC.grim_check(3.46, 30) is False)
 check("3.50 × 30 = 105   → 可能", DC.grim_check(3.5, 30) is True)
 check("3.47 × 100 = 347  → 可能（换样本量就行）", DC.grim_check(3.47, 100) is True)
 check("n<=0 不崩（视为通过）", DC.grim_check(3.47, 0) is True)
+# v2.38 口径：报告均值带舍入区间。3.47 × 30 = 104.1，偏离 0.10 < 容差 0.15 → 合法
+check("3.47 × 30 = 104.1 → 容差内，合法（旧版误判为不可能）",
+      DC.grim_check(3.47, 30) is True)
+# 三态：大 N 下 tol ≥ 0.5，检验恒真 → **弃权**，绝不冒充「通过」
+check("3.47 × 200 → 弃权（tol=1.0，检验已无信息量）",
+      DC.GRIM_ABSTAIN == DC.grim_verdict(3.47, 200) == "abstain")
+check("弃权在布尔薄壳上不报警", DC.grim_check(3.47, 200) is True)
 
 
 # ===========================================================================
 section("2. grim_cross_check：该抓的抓，不该抓的不抓")
 # ===========================================================================
-qs_impossible = [{"kind": "mean", "value": 3.47, "raw": "M = 3.47"}]
+qs_impossible = [{"kind": "mean", "value": 3.46, "raw": "M = 3.46"}]
 r = A.grim_cross_check(qs_impossible, 30)
 check("检出 1 条", len(r) == 1, f"got={r}")
-check("3.47 / n=30 → passed=False", r and r[0]["passed"] is False, f"got={r}")
-check("记录乘积 104.1", r and abs(r[0]["product"] - 104.1) < 1e-6, f"got={r and r[0]}")
-check("带上原文写法（便于定位）", r and r[0]["raw"] == "M = 3.47")
+check("3.46 / n=30 → passed=False", r and r[0]["passed"] is False, f"got={r}")
+check("记录乘积 103.8", r and abs(r[0]["product"] - 103.8) < 1e-6, f"got={r and r[0]}")
+check("带上原文写法（便于定位）", r and r[0]["raw"] == "M = 3.46")
 
 qs_ok = [{"kind": "mean", "value": 3.5, "raw": "M = 3.5"}]
 r2 = A.grim_cross_check(qs_ok, 30)
 check("3.5 / n=30 → passed=True（不许误报）", r2 and r2[0]["passed"] is True, f"got={r2}")
+# 旧口径下的样本值 3.47 现在必须放行 —— 这是 v2.38 修正的核心
+r2b = A.grim_cross_check([{"kind": "mean", "value": 3.47, "raw": "M = 3.47"}], 30)
+check("3.47 / n=30 → passed=True（容差内的合法值，不许误报）",
+      r2b and r2b[0]["passed"] is True, f"got={r2b}")
+
+# v2.38 三态：n 大到 tol ≥ 0.5 时检验退化为恒真，必须报「未判定」。
+# 先前 audit 这一路只暴露布尔 `passed`，把弃权渲染成「与整数计分一致 —— 可能出现」，
+# 用户读到的是「查过了没问题」，而实际是「这个规模下查不出东西」。
+r2c = A.grim_cross_check([{"kind": "mean", "value": 3.47, "raw": "M = 3.47"}], 200)
+check("n=200 → verdict 为 abstain（不是 ok）",
+      r2c and r2c[0]["verdict"] == DC.GRIM_ABSTAIN, f"got={r2c}")
+check("n=200 → passed 仍为 True（薄壳兼容，不误报）",
+      r2c and r2c[0]["passed"] is True, f"got={r2c}")
+# 注意：判的是**结论句**不是「可能」二字——弃权说明里本身有
+# 「覆盖全部可能取值」，按字面断言会误红。
+check("弃权的说明里必须点明「未作判定」且不给「可能」结论",
+      r2c and "未作判定" in r2c[0]["explain"]
+      and "该均值**可能**出现" not in r2c[0]["explain"],
+      f"got={r2c and r2c[0]['explain']}")
 
 # 非 mean 类型的统计量不参与 GRIM
 r3 = A.grim_cross_check([{"kind": "p", "value": 0.03, "raw": "p < 0.05"}], 30)
@@ -78,7 +114,7 @@ check("p 值不参与 GRIM", r3 == [], f"got={r3}")
 
 # 多个均值混合
 r4 = A.grim_cross_check([
-    {"kind": "mean", "value": 3.47, "raw": "M = 3.47"},
+    {"kind": "mean", "value": 3.46, "raw": "M = 3.46"},
     {"kind": "mean", "value": 4.0, "raw": "M = 4.0"},
 ], 30)
 check("混合：只把不可能的标 False",
@@ -92,7 +128,7 @@ same = all(
     DC.grim_check(g["mean"], g["n"]) == g["passed"]
     for g in A.grim_cross_check(
         [{"kind": "mean", "value": v, "raw": f"M = {v}"}
-         for v in (3.47, 3.5, 2.33, 4.0, 5.25)], 30)
+         for v in (3.46, 3.47, 3.5, 2.33, 4.0, 5.25)], 30)
 )
 check("grim_cross_check 与 grim_check 结论逐条一致", same)
 
@@ -126,7 +162,7 @@ df = pd.DataFrame({
 })
 paper_text = (
     "本研究采用独立样本 T 检验比较两组差异。\n"
-    "实验组 M = 3.47，对照组 M = 4.00，t = 2.34，p = 0.023。\n"
+    "实验组 M = 3.46，对照组 M = 4.00，t = 2.34，p = 0.023。\n"
 )
 claims = {
     "methods": [],
@@ -143,7 +179,7 @@ rep = A.build_audit_report(claims, df, cols, directive="")
 grim = rep.get("grim") or []
 check("报告带出 grim 字段", isinstance(rep.get("grim"), list), f"keys={list(rep)[:8]}")
 check("grim 检出 2 条均值", len(grim) == 2, f"got={grim}")
-check("3.47 / n=30 被判不可能", any((not g["passed"]) and g["mean"] == 3.47 for g in grim),
+check("3.46 / n=30 被判不可能", any((not g["passed"]) and g["mean"] == 3.46 for g in grim),
       f"got={grim}")
 check("4.00 / n=30 判为可能（不许误报）",
       any(g["passed"] and g["mean"] == 4.0 for g in grim), f"got={grim}")

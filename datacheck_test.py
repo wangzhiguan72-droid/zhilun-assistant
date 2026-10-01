@@ -224,10 +224,33 @@ check("完整数据 → 不报", len(DC.check_missing_pattern(df_clean)) == 0)
 # ===========================================================================
 section("10. GRIM 工具（供论文交叉核查）")
 # ===========================================================================
-check("grim_check(3.47, 30) → 不可能（False）", DC.grim_check(3.47, 30) is False)
+check("grim_check(3.46, 30) → 不可能（False）", DC.grim_check(3.46, 30) is False)
 check("grim_check(3.5, 30) → 可能（True）", DC.grim_check(3.5, 30) is True)
 check("grim_check(2.0, 25) → 可能（True）", DC.grim_check(2.0, 25) is True)
 check("grim_check(n=0) → 放行（True）", DC.grim_check(3.47, 0) is True)
+
+# —— v2.38 口径修正：报告的均值是一个**区间**，不是点值 ——
+# n=30、M=3.47 → 104.1，离整数 0.10，而 2 位小数的容差是 0.5×10⁻²×30 = 0.15
+# → 落在区间内，**合法**。旧实现拿四舍五入后的显示值直接比整数，把它误判为
+# 不可能（20 万次蒙特卡洛实测误报 85.0%，修正后 1.517%）。
+check("grim_check(3.47, 30) → 容差内，可能（True）", DC.grim_check(3.47, 30) is True)
+check("grim_verdict(3.47, 30) == ok", DC.grim_verdict(3.47, 30) == DC.GRIM_OK)
+check("grim_verdict(3.46, 30) == impossible",
+      DC.grim_verdict(3.46, 30) == DC.GRIM_IMPOSSIBLE)
+# 大 N 空转：tol ≥ 0.5 时检验恒真，必须**弃权**而不是报「通过」
+check("grim_verdict(3.47, 200) == abstain（大 N 无信息量）",
+      DC.grim_verdict(3.47, 200) == DC.GRIM_ABSTAIN)
+check("grim_verdict(3.47, 100) == abstain（2 位小数的归零点）",
+      DC.grim_verdict(3.47, 100) == DC.GRIM_ABSTAIN)
+check("弃权在布尔薄壳上放行（n=200 不报）", DC.grim_check(3.47, 200) is True)
+# 位数不同 → 容差跟着变：1 位小数下 n=30 的容差是 1.5，检验已退化
+check("grim_check(3.47, 30, decimals=1) → 弃权放行",
+      DC.grim_check(3.47, 30, decimals=1) is True)
+check("grim_check(3.47, 30, decimals=2) 与默认一致",
+      DC.grim_check(3.47, 30, decimals=2) is DC.grim_check(3.47, 30))
+# nan / inf 必须弃权而不是把 round() 抛出的异常带崩整份报告
+check("grim_check(nan) → 弃权放行", DC.grim_check(float("nan"), 30) is True)
+check("grim_check(inf) → 弃权放行", DC.grim_check(float("inf"), 30) is True)
 
 # ===========================================================================
 section("10a. 本福特定律（学术级取证 · 纯 numpy）")

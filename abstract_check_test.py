@@ -133,6 +133,62 @@ check("正文无同类量 → 记 missing 而非 mismatch",
 check("正文无同类量时 checked 不增加", r4["checked"] == 0, str(r4["checked"]))
 
 print()
+print('=== 4b. p 值三副面孔（上界 / 点值 / 地板）必须分开比 ===')
+# 地板写法：论文写 "p = 0.000"，实为 "<0.001"。绝不能当点值按差算——
+# |0.018 − 0.000| = 0.018 落在容差内的话，"摘要 0.018 vs 正文 <0.001" 会漏报。
+_r5 = audit.compare_abstract_vs_body(
+    [{"kind": "p", "value": 0.018, "op": "eq", "raw": "p = 0.018", "context": "…"}],
+    [{"kind": "p", "value": 0.0, "op": "eq", "raw": "p = 0.000", "context": "…"}])
+check("摘要 p=0.018 vs 正文 p=0.000（地板）→ 报不一致",
+      len(_r5["mismatches"]) == 1, str(_r5["mismatches"]))
+
+# 但两侧都是地板 → 一致
+_r6 = audit.compare_abstract_vs_body(
+    [{"kind": "p", "value": 0.0, "op": "eq", "raw": "p = 0.000", "context": "…"}],
+    [{"kind": "p", "value": 0.0, "op": "eq", "raw": "p = 0.000", "context": "…"}])
+check("两侧都是地板 → 一致",
+      not _r6["mismatches"], str(_r6["mismatches"]))
+
+# p 值不能吃 t/F/r 那档 0.5 容差。反例必须落在**两档之间**才有鉴别力：
+# 差 0.182（0.018 vs 0.20）→ 按 0.05 判是 mismatch，按 0.5 判会放行成 ok。
+# （旧写法用 0.018 vs 0.30，差 0.282 两档都超，无论走哪一档都是 mismatch，
+#   断言恒真，等于没测。）
+_r7 = audit.compare_abstract_vs_body(
+    [{"kind": "p", "value": 0.018, "op": "eq", "raw": "p = 0.018", "context": "…"}],
+    [{"kind": "p", "value": 0.20, "op": "eq", "raw": "p = 0.20", "context": "…"}])
+check("p 值不吃 t/F/r 的 0.5 容差（差 0.182 必须报，走 0.5 档会漏）",
+      len(_r7["mismatches"]) == 1, str(_r7["mismatches"]))
+
+# 上界写法照旧：摘要 p<0.05，正文 p=0.041 → 一致
+_r8 = audit.compare_abstract_vs_body(
+    [{"kind": "p", "value": 0.05, "op": "lt", "raw": "p < 0.05", "context": "…"}],
+    [{"kind": "p", "value": 0.041, "op": "eq", "raw": "p = 0.041", "context": "…"}])
+check("摘要 p<0.05 vs 正文 p=0.041 → 一致",
+      not _r8["mismatches"], str(_r8["mismatches"]))
+
+print()
+print('=== 4c. 同一统计量在摘要与正文各出现一次，正文那份不能被吞 ===')
+# 回归：早期按 (kind, raw) 去重切正文，摘要与正文写同一个值时正文那份被误删，
+# 于是 "F = 8.12" 被报成 "正文没有"。改为按摘要区间切分后不再发生。
+_DUP_PAPER = (
+    "目  录\n摘  要 ····· I\nAbstract ····· II\n"
+    "\n摘  要\n摘  要\n"
+    "本研究以 96 名大学生为对象。三组差异显著，F(2, 93) = 8.12，"
+    "学习投入与成绩显著正相关，r = 0.54。\n"
+    "关  键  词：超重；身体活动\n"
+    "\n第一章 绪论\n"
+    "方差分析显示三组差异显著，F(2, 93) = 8.12。相关分析显示 r = 0.54。\n"
+)
+_abs_d, _ = ep.extract_abstract_quantities(_DUP_PAPER)
+_start, _end = ep.find_abstract_span(_DUP_PAPER)
+_body_d = ep.extract_quantities(_DUP_PAPER[:_start] + " " + _DUP_PAPER[_end:])
+_r9 = audit.compare_abstract_vs_body(_abs_d, _body_d)
+check("摘要与正文写同一个 F/r → 不算正文缺失",
+      not _r9["missing_in_body"], str(_r9["missing_in_body"]))
+check("摘要与正文写同一个 F/r → 也不算不一致",
+      not _r9["mismatches"], str(_r9["mismatches"]))
+
+print()
 print('=== 5. 接入审计报告（abstract_check 必须出现） ===')
 import inspect
 src = inspect.getsource(audit.build_audit_report)

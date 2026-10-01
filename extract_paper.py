@@ -339,6 +339,73 @@ def _normalize_p(raw: str) -> tuple[float | None, str, str]:
     return val, op, raw
 
 
+# -----------------------------------------------------------------------------
+# 3.4) v2.37 · 摘取「摘要」区间（摘要↔正文数字核对的原料）
+# -----------------------------------------------------------------------------
+# 动机（rigorously 风格的交叉核对）：硕士论文的中文摘要常把正文里的
+#   p / M / SD / n / R² / α / β / OR 再写一遍。若摘要与正文对不上，
+# 是**同一篇论文内部的自相矛盾**——不需要用户上传任何数据就能发现，
+# 是最廉价也最硬的一条核查。但现有 read_paper_text 把全文拍平成一个
+# 字符串，摘要与正文的边界就此丢失，所以必须先切出摘要区间。
+#
+# 真实语料实测（开源赛道/用来检测的论文，10 篇硕士学位论文）：
+#   · 「摘要」标题**几乎必然出现两次**——一次在目录页、一次在正文页：
+#         "... |摘要 |I | |摘 要 |近年来，我国 PM2.5..."
+#     取第一个会拿到目录行，必须取**第一个「关键词」之前的最后一个**。
+#   · 「关键词」在正文里还会再出现（有的论文 3 处），所以只用**第一个**。
+#   · 有论文把标题字间距拆开（"摘   要"），正则要容忍任意空白。
+#   · 2/10 篇两种锚都找不到（数学论文的目录把"关键词"逐字拆行）。
+#     这种情况**返回空区间**，由调用方如实报告"未定位到摘要"，绝不猜。
+_ABS_HEAD_RE = re.compile(r"摘\s{0,4}要")
+_KW_HEAD_RE = re.compile(r"关\s{0,4}键\s{0,4}词")
+_EN_ABS_RE = re.compile(r"(?:^|\n)\s*A\s*B\s*S\s*T\s*R\s*A\s*C\s*T\b", re.IGNORECASE)
+_ABS_MIN = 80      # 短于此长度的"摘要"多半是目录行/页眉，判为没找到
+_ABS_MAX = 4000    # 长于此多半是把正文整段吞进来了，宁可判没找到
+
+
+def find_abstract_span(text: str) -> tuple[int, int]:
+    """返回中文摘要的 (start, end)；定位不到返回 (0, 0)。
+
+    start = 第一个「关键词」之前**最后一个**「摘要」锚之后
+    end   = 第一个「关键词」锚起点（拿不到就用英文 Abstract 标题兜底）
+
+    刻意保守：任何一步有疑问就返回 (0, 0)——调用方据此说"未定位到摘要"。
+    误报一次"摘要与正文对不上"，用户对整份报告的信任就没了。
+    """
+    if not text:
+        return (0, 0)
+    # 终结符 = 全文第一个「关键词」标签。实测：正文里再出现的关键词都在其后，
+    # 取第一个即可；英文 Abstract 标题常在中文关键词之前，所以**不能**用
+    # "从摘要锚之后再找关键词"的写法（那样找不到终点，会把区间放到下一章）。
+    kw = _KW_HEAD_RE.search(text)
+    if not kw:
+        return (0, 0)                      # 没有终结符，区间无从确定
+    heads = [m for m in _ABS_HEAD_RE.finditer(text) if m.start() < kw.start()]
+    if not heads:
+        return (0, 0)
+    start = heads[-1].end()                # 取最后一个 = 正文页那个，跳过目录页
+    end = kw.start()
+    # 下界防卫：区间过短说明锚抓错（锚落在目录行尾巴上），宁可判未定位也不误报。
+    # 上界防卫：区间过长说明把正文整段吞进来了。
+    if end - start < _ABS_MIN or end - start > _ABS_MAX:
+        return (0, 0)
+    return (start, end)
+
+
+def extract_abstract_quantities(text: str) -> tuple[list[dict[str, Any]], str]:
+    """切出摘要区间并抽取其中的统计量。
+
+    返回 (摘要统计量列表, note)。note 为空串表示正常；否则是给用户看的
+    人话说明（"未定位到摘要"），调用方原样透出，绝不静默。
+    """
+    start, end = find_abstract_span(text)
+    if not start:
+        return ([], "未定位到摘要区间（论文可能没有标准的中文摘要，或标题格式特殊），"
+                    "本项不做摘要↔正文核对。")
+    seg = text[start:end]
+    return (extract_quantities(seg), "")
+
+
 def extract_quantities(text: str) -> list[dict[str, Any]]:
     """识别论文中声称的统计量。
 

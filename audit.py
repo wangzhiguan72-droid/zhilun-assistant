@@ -704,6 +704,79 @@ def _compare_quantity(paper_q: dict, real: dict) -> dict[str, Any]:
 
 
 # -----------------------------------------------------------------------------
+# 3.45) v2.37 · 摘要 ↔ 正文 统计量自查（rigorously 风格）
+# -----------------------------------------------------------------------------
+# 动机：硕士论文的中文摘要常把正文的核心统计量再写一遍。摘要与正文对不上，
+# 是**同一篇论文内部的自相矛盾**——不需要用户上传任何数据就能查出来。
+# 这是全项目里唯一一条"零输入依赖"的核查：只要论文本身。
+#
+# 纪律（与项目红线同源）：
+#   1. 只比**统计量**（p/t/F/r/χ²/R²/α/β/OR/M/SD），不比正文里的普通数字。
+#      普通数字（页码、年份、样本量叙述）在摘要里本来就会变口径，比了全是误报。
+#   2. 只报「摘要里的某个值，在正文同类值里**一个都对不上**」。
+#      摘要是压缩的，同一个量在正文里可能出现多次（分组各报一次），
+#      只要有一个对得上就算一致 —— 这是"宁可漏报，不可误报"的落点。
+#   3. 摘要里写、正文里没有的，不算错，只记一句 note。
+def compare_abstract_vs_body(abs_qs: list[dict], body_qs: list[dict]) -> dict[str, Any]:
+    """摘取出的摘要统计量 vs 正文统计量，逐条找"一个都对不上"的。
+
+    返回 {"checked": int, "mismatches": [...], "missing_in_body": [...]}
+    """
+    # 正文按 kind 分桶：比同类才有意义（摘要的 p 只能和正文的 p 比）
+    by_kind: dict[str, list[dict]] = {}
+    for q in body_qs:
+        by_kind.setdefault(q.get("kind", ""), []).append(q)
+
+    checked = 0
+    mismatches: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+
+    for aq in abs_qs:
+        kind = aq.get("kind", "")
+        peers = by_kind.get(kind) or []
+        if not peers:
+            # 正文里没有同类量：不算错，记一笔备查（可能是正文放在表里/图里）
+            missing.append({"kind": kind, "raw": aq.get("raw"),
+                            "context": aq.get("context", "")})
+            continue
+        checked += 1
+        # 只要有一个正文同类量比对结果为 ok，就认为摘要与正文一致。
+        # 正文的一条统计量要点包装成 _compare_quantity 认的 "real" 形状——
+        # 它只读 real[kind]，所以灌一个同 kind 的值进去即可。
+        traced = []
+        for p in peers:
+            r = _compare_quantity(aq, {kind: p.get("value")})
+            r["body_raw"] = p.get("raw")
+            traced.append(r)
+        best = _best_status(traced)
+        if best["status"] == "ok":
+            continue
+        mismatches.append({
+            "kind": kind,
+            "kind_cn": _KIND_CN.get(kind, kind),
+            "abstract_raw": aq.get("raw"),
+            "abstract_context": aq.get("context", ""),
+            "body_values": [p.get("raw") for p in peers[:5]],
+            "best_match": best.get("body_raw"),
+            "best_real": best.get("real"),
+            "reason": "摘要中的该统计量在正文同类值中找不到对得上的（容差同「用数据重跑」口径）。",
+        })
+    return {"checked": checked, "mismatches": mismatches, "missing_in_body": missing}
+
+
+def _best_status(statuses: list[dict]) -> dict[str, Any]:
+    """从多条比较里挑「最一致」的那条（ok > minor_diff > mismatch）。
+
+    用意：摘要写 p<0.05，正文有 p=0.041 与 p=0.31 两条 —— 只要 0.041 对得上，
+    这条就该判一致，绝不能因为 0.31 对不上而误报。
+    """
+    rank = {"ok": 0, "minor_diff": 1, "mismatch": 2}
+    if not statuses:
+        return {"status": "unknown"}
+    return sorted(statuses, key=lambda s: rank.get(s.get("status", "unknown"), 9))[0]
+
+
+# -----------------------------------------------------------------------------
 # 3.5) 单条比对摘要（v1.6 · ②审计对话的数据底座）
 # -----------------------------------------------------------------------------
 # 目的：把「一条 comparison」压缩成一小段**自包含、可审、无原始数据**的文本，
@@ -1413,6 +1486,17 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     )
     table_check_text = table_cross_check(paper_claims.get("raw_text", "") or "", df)
 
+    # 3.9) v2.37 · 摘要 ↔ 正文 统计量自查（零输入依赖：只要论文本身）。
+    #      摘要区间由 extract_paper.extract_abstract_quantities 切出；
+    #      切不到时它返回空列表 + 一句人话 note，这里如实透出，绝不静默。
+    from extract_paper import extract_abstract_quantities  # 延迟导入：与 extract_paper 共用同一口径
+    _abs_qs, _abs_note = extract_abstract_quantities(paper_claims.get("raw_text", "") or "")
+    # 正文量 = 全文量减去摘要量（不去重会比出"摘要在摘要里找不到"的荒谬结论）
+    _abs_sig = {(q.get("kind"), q.get("raw")) for q in _abs_qs}
+    _body_qs = [q for q in quantities if (q.get("kind"), q.get("raw")) not in _abs_sig]
+    abs_check = compare_abstract_vs_body(_abs_qs, _body_qs)
+    abs_check["note"] = _abs_note
+
     # 4) 改进建议
     suggestions = _generate_suggestions(real, methods, quantities)
     # 4.05) GRIM 未通过 → 直接进建议列表（用户最容易看到的地方）
@@ -1445,6 +1529,15 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
             f"写的是 {tm['raw']}，用原始数据实算（列「{tm['column']}」，n={tm['n']}）"
             f"得到 {tm['real']:.4f}，相差 {tm['diff']:.4f}（超出容差 {tm['tol']:g}）。"
             "请核对是否换过数据、复制错行，或该行样本量口径不同。"
+        )
+    # 4.09) v2.37 摘要↔正文对不上 → 进建议（这是"论文自相矛盾"，用户最该先看）
+    for am in abs_check["mismatches"]:
+        body_s = "、".join(str(v) for v in am["body_values"] if v) or "（无）"
+        suggestions.append(
+            f"[摘要核对] 摘要里的 {am['kind_cn']}「{am['abstract_raw']}」"
+            f"在正文同类值（{body_s}）中找不到对得上的。"
+            "摘要与正文出自同一篇论文，对不上通常是改数据后只更新了一处，"
+            "请核对哪一处是最终结果。"
         )
     # 4.1) v1.5 ③人话解释卡片：结构化 explanations 与 suggestions 并行输出
     #      （suggestions 保持 list[str] 原样，旧前端 / 报告正文不受影响）
@@ -1698,6 +1791,33 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     _tct = render_table_section(table_check_text) if table_check_text else []
     md_lines.extend(_tct)
 
+    # 5.5f 摘要 ↔ 正文 数字自查（v2.37 · 零输入依赖）
+    #      定位不到摘要就如实说一句"未定位到"，不留空白让人以为查过了。
+    md_lines.append("\n**摘要 ↔ 正文 数字自查：**\n")
+    if abs_check["note"]:
+        md_lines.append(f"⚪ {abs_check['note']}")
+    elif abs_check["checked"] == 0:
+        md_lines.append("摘要与正文中都没有识别到可互相比对的统计量。")
+    elif not abs_check["mismatches"]:
+        md_lines.append(f"✅ 摘要中的 {abs_check['checked']} 个统计量在正文中都能对上。")
+    else:
+        md_lines.append(
+            f"共比对 **{abs_check['checked']}** 个摘要统计量，"
+            f"发现 **{len(abs_check['mismatches'])}** 处摘要与正文对不上：\n")
+        md_lines.append("| 统计量 | 摘要写的 | 正文同类值 | 状态 |")
+        md_lines.append("| --- | --- | --- | --- |")
+        for am in abs_check["mismatches"]:
+            body_s = "、".join(str(v) for v in am["body_values"] if v) or "（无）"
+            md_lines.append(f"| {am['kind_cn']} | {am['abstract_raw']} | {body_s} | 🔴 对不上 |")
+        md_lines.append(
+            "\n> 摘要与正文出自同一篇论文。对不上通常意味着改过数据但只更新了一处，"
+            "请确认哪一处是最终结果。**这不等于造假**，也可能是摘要上报了不同分组/口径。")
+    if abs_check["missing_in_body"]:
+        kinds = "、".join(sorted({m["kind_cn"] for m in abs_check["missing_in_body"]}))
+        md_lines.append(
+            f"\n- ⚪ 摘要里还有 {len(abs_check['missing_in_body'])} 个统计量在正文中没找到同类值"
+            f"（{kinds}）——可能是放在表格/图里，或正文用了别的写法。此项不计为不一致。")
+
     # 5.6 改进建议
     md_lines.append("\n### 六、改进建议（按优先级）\n")
     for i, s in enumerate(suggestions, 1):
@@ -1732,6 +1852,8 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         "table_check_text": table_check_text,
         # v2.11 P3 表格交叉核对（docx 描述统计表 vs 分组实算）
         "table_check": table_check,
+        # v2.37 摘要 ↔ 正文 统计量自查（零输入依赖）
+        "abstract_check": abs_check,
         "suggestions": suggestions,
         "explanations": explanations,
         "markdown": "\n".join(md_lines),

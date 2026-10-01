@@ -46,17 +46,24 @@ from typing import Any
 _SD_TOL = 1e-6
 
 
-def _grim_ok(mean: float, n: int, items: int) -> bool:
-    """复用 datacheck.grim_check 的口径（延迟导入避免循环依赖）。"""
+def _grim_ok(mean: float, n: int, items: int, decimals: int = 2) -> bool:
+    """复用 datacheck.grim_check 的口径（延迟导入避免循环依赖）。
+
+    `decimals` 是论文实际报告的位数——GRIM 判据的容差正比于它
+    （`tol = 0.5 × 10⁻ᵈᵉᶜ × n`），必须一路传下去，否则 1 位小数与
+    4 位小数的表会用同一个容差判，两个方向都会判错。
+
+    兜底分支**刻意不再自己重写一遍算法**：那正是 v2.38 修掉的三处同源
+    bug 的成因（另两处见 datacheck.grim_verdict / paper_table_forensics.
+    check_grim）。取不到共用核心时按**弃权**处理（返回 True = 不报），
+    这与三态口径一致，也符合红线 #2：宁可不报，绝不误伤。
+    """
     try:
-        from datacheck import grim_check  # noqa: PLC0415 - 延迟导入
-        return bool(grim_check(mean, n, items=items))
-    except Exception:  # noqa: BLE001 - datacheck 不可用时退化为本地判定
-        if not n or n <= 0:
-            return True
-        g = max(1, int(items))
-        prod = float(mean) * int(n)
-        return abs(prod - round(prod / g) * g) <= max(1e-6, 1e-9 * abs(prod))
+        from datacheck import GRIM_IMPOSSIBLE, grim_verdict  # noqa: PLC0415
+        return grim_verdict(mean, n, items=items,
+                            decimals=decimals) != GRIM_IMPOSSIBLE
+    except Exception:  # noqa: BLE001 - 取不到共用核心时弃权，不自行判定
+        return True
 
 
 def _integer_sum(mean: float, n: int, items: int) -> int:
@@ -186,12 +193,16 @@ def _sd(values: list[int]) -> float:
 
 
 def grimmer_check(mean: float, sd: float, n: int, *, items: int = 1,
-                  lo: int | None = None, hi: int | None = None) -> dict[str, Any]:
+                  lo: int | None = None, hi: int | None = None,
+                  decimals: int = 2) -> dict[str, Any]:
     """GRIMMER 检验：论文报告的 (均值, SD, n) 组合是否**可能**。
 
     `lo` / `hi` 为单题取值的合法域（如 Likert 1–5 传 `lo=1, hi=5`）。
     **强烈建议传入**：不传时默认下界 0、上界不限，SD 上界会被高估 → 漏报。
     若论文写明了量表范围（几乎都会写），就该传。
+
+    `decimals` 是论文**实际报告**的小数位数（默认 2）。它决定 GRIM 前置
+    那一步的容差（`0.5 × 10⁻ᵈᵉᶜ × n`），必须按论文原样传。
 
     返回结构化结论（而非简单的 True/False），因为答辩场景需要解释：
 
@@ -205,7 +216,7 @@ def grimmer_check(mean: float, sd: float, n: int, *, items: int = 1,
 
     判定顺序（任一不过即"不可能"）：
         1. 输入合法性（n >= 2、sd >= 0、mean 有限）
-        2. GRIM：n × mean 必须是 items 的整数倍（均值本身要先可能）
+        2. GRIM：n × mean 必须落在 items 整数倍的舍入容差内（均值本身要先可能）
         3. SD 落在 [sd_min, sd_max] 内（含容差）
 
     ⚠️ 文案红线：**只报"不可能 / 可疑，请核对"，永不判定"造假"。**
@@ -236,11 +247,14 @@ def grimmer_check(mean: float, sd: float, n: int, *, items: int = 1,
         items = 1
 
     # --- 2. GRIM 前置：均值本身必须可能 ---
-    if not _grim_ok(mean, n, items):
+    if not _grim_ok(mean, n, items, decimals):
+        half = 0.5 * (10.0 ** -max(0, int(decimals)))
         result.update(
             possible=False,
             reason=(f"均值 {mean} 在 n={n} 下不可能（GRIM 不通过）："
-                    f"{n} × {mean} = {mean * n:.4g} 不是 {items} 的整数倍。"
+                    f"{n} × {mean} = {mean * n:.6g}，与任何合法取值的差都超过"
+                    f"报告 {decimals} 位小数所允许的舍入容差 ±{half:g}"
+                    f"（即该均值对应的总分区间内没有 {items} 的整数倍）。"
                     f"均值都不成立，标准差更无从谈起。"),
         )
         return result
@@ -276,10 +290,11 @@ def grimmer_cross_check(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """批量交叉核查：给一批论文声称的 (mean, sd, n)，逐条报告不可能的项。
 
     `pairs` 形如：
-        [{"label": "实验组", "mean": 3.47, "sd": 0.52, "n": 30,
-          "items": 1, "lo": 1, "hi": 5}, ...]
+        [{"label": "实验组", "mean": 3.46, "sd": 0.52, "n": 30,
+          "items": 1, "lo": 1, "hi": 5, "decimals": 2}, ...]
 
     `lo`/`hi` 为该量表的合法取值域（**建议提供**，否则 SD 上界偏高会漏报）。
+    `decimals` 为该论文实际报告的小数位数（缺省 2）。
 
     返回**只含不通过项**的列表（每条附 label / reason / 可达区间），
     便于直接塞进 `audit.py` 的改进建议。
@@ -292,6 +307,7 @@ def grimmer_cross_check(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 items=int(p.get("items", 1) or 1),
                 lo=(int(p["lo"]) if p.get("lo") is not None else None),
                 hi=(int(p["hi"]) if p.get("hi") is not None else None),
+                decimals=int(p.get("decimals", 2) or 0),
             )
         except Exception:  # noqa: BLE001 - 单条失败不影响整批
             continue

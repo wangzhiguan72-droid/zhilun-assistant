@@ -110,11 +110,18 @@ check("两极序列总和守恒", sum(_sp) == 20, f"got={sum(_sp)}")
 section("2. 必须报：不可能的 (mean, sd, n) 组合")
 # ===========================================================================
 # ① GRIM 前置失败 → 均值本身就不可能
-_r = grimmer_check(3.47, 0.5, 30)
+# 用 3.46 而不是 3.47：3.47 × 30 = 104.1 离整数 0.10，落在 2 位小数、
+# n=30 的舍入容差 0.15 之内，v2.38 起判定为**可能**，拿它当「不可能」的
+# 样本会在 GRIM 通过后顺流进 SD 分支，测的就不是这条路径了。
+_r = grimmer_check(3.46, 0.5, 30)
 check("均值 GRIM 不过 → possible=False", _r["possible"] is False)
-check("原因里点明 GRIM 与乘积", "GRIM" in _r["reason"] and "104.1" in _r["reason"],
+check("原因里点明 GRIM 与乘积", "GRIM" in _r["reason"] and "103.8" in _r["reason"],
       f"got={_r['reason']}")
 check("原因里不判造假", "造假" not in _r["reason"], f"got={_r['reason']}")
+# 反向守一条：容差内的 3.47 不许再被当成「均值不可能」
+_r1b = grimmer_check(3.47, 0.5, 30)
+check("容差内的 3.47 不再触发 GRIM 前置", "GRIM" not in _r1b["reason"],
+      f"got={_r1b['reason']}")
 
 # ② SD 过大：均值 4.0、n=10、Likert 1-5 域内不可能有 sd=5.0
 _r2 = grimmer_check(4.0, 5.0, 10, lo=1, hi=5)
@@ -207,7 +214,7 @@ section("6. 批量交叉核查 grimmer_cross_check")
 # ===========================================================================
 _pairs = [
     {"label": "正常组", "mean": 3.5, "sd": 0.5, "n": 30, "lo": 1, "hi": 5},
-    {"label": "不可能组A", "mean": 3.47, "sd": 0.5, "n": 30},          # GRIM 不过
+    {"label": "不可能组A", "mean": 3.46, "sd": 0.5, "n": 30},          # GRIM 不过
     {"label": "不可能组B", "mean": 3.0, "sd": 2.2, "n": 10, "lo": 1, "hi": 5},
     {"label": "边界组", "mean": 2.5, "sd": 1.118, "n": 4, "lo": 1, "hi": 5},
 ]

@@ -252,6 +252,64 @@ check("grim_check(3.47, 30, decimals=2) 与默认一致",
 check("grim_check(nan) → 弃权放行", DC.grim_check(float("nan"), 30) is True)
 check("grim_check(inf) → 弃权放行", DC.grim_check(float("inf"), 30) is True)
 
+# —— items>1：**题均分口径**（v2.40 修正）——
+# 论文对多题量表报的是题均分 M = 各题之和 ÷ items，所以 n 人的总分
+# S = M × n × items 必须是整数；容差同样按总分口径放大为
+# tol = 0.5×10^(-dec) × n × items。旧实现要求「n×M 是 items 的整数倍」，
+# 粒度方向正好搞反了（有 1/items 粒度的是每人总分，不是聚合后的题均分），
+# 比正确判据强得多，会把合法样本成批误判成不可能。
+#
+# 取 n=10 而非 n=30：n=30、items=5 时 tol=0.75 ≥ 0.5，整数粒度这一条已经
+# 退化（那是另一条断言要测的），这里要的是**有信息量**的用例。
+check("items>1 缺 hi 一律弃权（不凭空默认 1/5，否则 1–7 量表被误判）",
+      DC.grim_verdict(3.5, 10, items=5) == DC.GRIM_ABSTAIN)
+check("同一样本给了域(1–5)才敢判：总分 175 ∈ [50,250] 且为整数 → ok",
+      DC.grim_verdict(3.5, 10, items=5, lo=1, hi=5) == DC.GRIM_OK)
+# 新口径的实际检出能力：S = 3.47×10×5 = 173.5，离最近整数 0.5 > 容差 0.25
+check("题均分出半整数：3.47 × 10 × 5 = 173.5，容差 0.25 够不着 → impossible",
+      DC.grim_verdict(3.47, 10, items=5, lo=1, hi=5) == DC.GRIM_IMPOSSIBLE)
+check("相邻的整数总分放行：3.48 × 10 × 5 = 174 → ok",
+      DC.grim_verdict(3.48, 10, items=5, lo=1, hi=5) == DC.GRIM_OK)
+# 域两端是闭区间：正好压在界上是合法的
+check("总分压域下界（1.0→50）放行", DC.grim_verdict(1.0, 10, items=5, lo=1, hi=5) == DC.GRIM_OK)
+check("总分压域上界（5.0→250）放行", DC.grim_verdict(5.0, 10, items=5, lo=1, hi=5) == DC.GRIM_OK)
+check("总分越域下界（0.98→49 < 50）→ impossible",
+      DC.grim_verdict(0.98, 10, items=5, lo=1, hi=5) == DC.GRIM_IMPOSSIBLE)
+check("总分越域上界（5.1→255 > 250）→ impossible",
+      DC.grim_verdict(5.1, 10, items=5, lo=1, hi=5) == DC.GRIM_IMPOSSIBLE)
+# 7 题量表：域 [70,490]
+check("7 题量表域内放行：4.5 × 10 × 7 = 315 ∈ [70,490] → ok",
+      DC.grim_verdict(4.5, 10, items=7, lo=1, hi=7) == DC.GRIM_OK)
+check("7 题量表越域：21.0 × 10 × 7 = 1470 > 490 → impossible",
+      DC.grim_verdict(21.0, 10, items=7, lo=1, hi=7) == DC.GRIM_IMPOSSIBLE)
+
+# —— 域约束优先于退化规则（顺序回归护栏）——
+# n=30、items=5、2 位小数 → tol=0.75 ≥ 0.5，整数粒度已退化。但退化只废掉
+# 「S 是不是整数」这一条，**域约束照旧有效**：总分 1350 是量表上限 750 的
+# 近两倍，白纸黑字不可能，不能以「没信息量」的名义洗成弃权（那是漏报）。
+check("退化不豁免域约束：30 人 5 题 1–5，M=9.0 → 总分 1350 > 750 → impossible",
+      DC.grim_verdict(9.0, 30, items=5, lo=1, hi=5) == DC.GRIM_IMPOSSIBLE)
+check("同参数域内的值仍按退化处理 → abstain（不是 ok）",
+      DC.grim_verdict(4.0, 30, items=5, lo=1, hi=5) == DC.GRIM_ABSTAIN)
+# 104/30 那桩历史误判：S = 520 ∈ [150,750]，只是 tol 退化 → 弃权而非不可能
+check("104/30 × 30 × 5 = 520，域内但 tol 退化 → abstain（v2.39 曾误判 impossible）",
+      DC.grim_verdict(104 / 30, 30, items=5, lo=1, hi=5) == DC.GRIM_ABSTAIN)
+
+# items=1 的既有路径必须逐位不变（生产四个调用点全是 items=1/省略）
+check("items=1 时域参数不影响结果",
+      DC.grim_verdict(3.47, 30) == DC.grim_verdict(3.47, 30, lo=1, hi=5)
+      == DC.GRIM_OK)
+
+# —— v2.40 精度缺口（B3）：位数多到 double 判不了时弃权，不判不可能 ——
+# 复现：grim_verdict(3.47, 10, decimals=15)。tol=0.5×10⁻¹⁵×10 = 5e-15，
+# 而 prod=34.7 的浮点分辨率 ULP ≈ 7.1e-15 —— 容差比表示误差还小，
+# `abs(prod - k) <= tol` 的比较已经不可信，两个方向都可能被判错。
+check("decimals=15 超过 double 有效位 → 弃权（不是 impossible）",
+      DC.grim_verdict(3.47, 10, decimals=15) == DC.GRIM_ABSTAIN,
+      f"got={DC.grim_verdict(3.47, 10, decimals=15)}")
+check("同为低位数的对照仍在判定：decimals=2 → impossible（确实够不着）",
+      DC.grim_verdict(3.47, 10, decimals=2) == DC.GRIM_IMPOSSIBLE)
+
 # ===========================================================================
 section("10a. 本福特定律（学术级取证 · 纯 numpy）")
 # ===========================================================================

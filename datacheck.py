@@ -460,26 +460,84 @@ _PRE_TOKENS = ("前测", "前", "pre", "pretest", "t1", "_1")
 _POST_TOKENS = ("后测", "后", "post", "posttest", "t2", "_2")
 
 
-def _strip_tokens(name: Any, tokens: tuple[str, ...]) -> str:
-    s = str(name)
-    for t in tokens:
-        s = re.sub(re.escape(t), "", s, flags=re.IGNORECASE)
-    return re.sub(r"[_\-\s]+", "", s).lower()
+#: 前后测标记，**长的排前面**（命中即停，`前测` 必须压住 `前`、`pretest` 压住 `pre`）
+_PRE_TOKENS = ("前测", "前", "pretest", "pre", "t1", "_1")
+_POST_TOKENS = ("后测", "后", "posttest", "post", "t2", "_2")
+
+#: 配对判据里要剥掉的「测量类型词」——剥掉它们，`成绩_前测` 与 `前测成绩`
+#: 才会落到同一个基数上。⚠️ **绝不能把 前/后/pre/post/t1/t2/_1/_2 加进来**：
+#: 那些正是区分前后测的标记，剥掉之后两侧同名，前测会被配到后测上。
+_MEASURE_WORDS = re.compile(r"(成绩|得分|分数|数值|变量|指标)")
+_SEP = re.compile(r"[\s\-\.]+")
+
+
+def _canon_col(s: Any) -> str:
+    """列名规范化：小写 + 分隔符统一成 `_`。
+
+    ⚠️ 分隔符是**换成 `_` 而不是删掉**。删掉的话 `pre_score` 会粘成 `prescore`，
+    `pre` 再无边界可依——这正是 v2.46 实测「`pre_score`/`post_score` 永远配不上」
+    的根因（ASCII 词边界 `\\b` 在 `_` 上不成立，`(?<![a-z])pre` 也救不了粘连）。
+    """
+    return _SEP.sub("_", str(s)).strip("_").lower()
+
+
+def _token_re(t: str) -> re.Pattern:
+    """标记 → 匹配式。三类写法各自定边界，别指望一个 `\\b` 通吃。"""
+    if re.search(r"[a-z]", t):                      # pre / post / pretest / t1
+        return re.compile(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])")
+    if t.startswith("_"):                           # _1 / _2
+        return re.compile(rf"(?<![0-9]){re.escape(t)}(?![0-9])")
+    return re.compile(re.escape(t))                 # 中文直接查子串
+
+
+def _col_side(s: Any) -> tuple[str, str | None]:
+    """拆出 (基数, 'pre'|'post'|None)。
+
+    基数 = 规范化列名 − 命中的标记 − 测量类型词 − 分隔符。例：
+        `成绩_前测` → ('', 'pre')      `前测成绩` → ('', 'pre')
+        `pre_score` → ('score', 'pre') `score_t1` → ('score', 'pre')
+        `test1`     → ('test1', None)  `s1_score` → ('s1score', None)
+    """
+    canon = _canon_col(s)
+    for tokens, side in ((_PRE_TOKENS, "pre"), (_POST_TOKENS, "post")):
+        for t in tokens:
+            if _token_re(t).search(canon):
+                base = _token_re(t).sub("", canon, count=1)
+                base = _MEASURE_WORDS.sub("", base).strip("_")
+                return base, side
+    return canon, None
 
 
 def _find_pre_post_pairs(cols: list[str]) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
+    """找出「前测 → 后测」列对，返回 [(前测列名, 后测列名)]。
+
+    两侧都走 `_col_side`，基数口径因此完全一致——早先那版「逐个关键词从列名里
+    删掉、再看剩下什么」的写法有两个实测坑（v2.46 踩过，故不再走那条路）：
+
+    **坑一**：判据是「剥完还剩东西」时，列名恰好就叫「前测」「后测」的会被
+    剥成空串而被跳过——那恰恰是最常见的列名。
+
+    **坑二**：顺序删词会吃出**不对称的残留**，`成绩_后测` 与 `成绩_前测`
+    剩下不同的字，两侧基数不同名 → 永远配不上。
+    """
     posts: dict[str, str] = {}
     for c in cols:
-        base = _strip_tokens(c, _POST_TOKENS)
-        if base and base != str(c).lower():
-            posts.setdefault(base, c)
+        s = str(c)
+        base, side = _col_side(s)
+        if side == "post" and not base.startswith("_"):
+            posts.setdefault(base, s)
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for c in cols:
-        base = _strip_tokens(c, _PRE_TOKENS)
-        if not base or base == str(c).lower():
+        s = str(c)
+        base, side = _col_side(s)
+        if side != "pre" or base.startswith("_"):
             continue
-        if base in posts and posts[base] != c:
-            pairs.append((c, posts[base]))
+        post = posts.get(base)
+        if post and post != s and (s, post) not in seen:
+            seen.add((s, post))
+            pairs.append((s, post))
     return pairs
 
 
@@ -513,7 +571,140 @@ def check_diff_regularity(df: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# ⑥ 全列常数
+# ⑥b v2.46 · 声称的设计 ↔ 数据实际形状（B 档③）
+# ---------------------------------------------------------------------------
+#: 论文里声称「同一批人前后各测一次」的方法
+_PAIRED_KEYS = {"paired_t", "wilcoxon", "repeated_measures_anova"}
+#: 论文里声称「把人/单位分成几组比」的方法
+_GROUP_KEYS = {"independent_t", "anova", "mann_whitney"}
+
+
+def _claimed_keys(paper_claims: Any) -> set[str]:
+    """从论文解析结果里取出声称的方法 key 集合（容错：dict/list 都收）。"""
+    if not paper_claims or not isinstance(paper_claims, dict):
+        return set()
+    out: set[str] = set()
+    for m in (paper_claims.get("methods") or []):
+        k = m.get("method_key") if isinstance(m, dict) else m
+        if k:
+            out.add(str(k))
+    return out
+
+
+def _categorical_cols(df: pd.DataFrame) -> list[str]:
+    """能当「分组变量」用的列。
+
+    数值列也算候选是必须的——中国学生数据里分组变量写成 1/2 或 1/2/3
+    （性别、年级）极其常见，只看 dtype 会把它们全漏掉。
+
+    ⚠️ 但**只看「取值 2~20」会误判**（v2.46 实测踩过）：一个 12 行的连续
+    变量列（成绩、得分）也就十来个不同值，会被当成分组列，
+    于是「论文声称分组比较、数据里却只有连续量」这条**该报的反而漏报**。
+    所以加两道闸：
+      1. **必须是整数**。分组编码是整数；`72.5` 这种是测量值。
+      2. **必须真的在重复**（每个取值平均出现 ≥2 次）。分组变量的定义就是
+         「一类人共享同一个值」；行号列、且一人行的列会被这道闸挡掉。
+    """
+    out: list[str] = []
+    rows = int(len(df))
+    for c in df.columns:
+        s = df[c].dropna()
+        if s.empty:
+            continue
+        if not pd.api.types.is_numeric_dtype(df[c]):
+            out.append(str(c))
+            continue
+        vals = pd.to_numeric(s, errors="coerce").dropna()
+        if vals.empty or not (vals == vals.round()).all():
+            continue                       # 有小数 → 是测量值，不是分组编码
+        u = int(vals.nunique())
+        if 2 <= u <= 20 and len(vals) >= 2 * u:
+            out.append(str(c))
+    return out
+
+
+def check_declared_design(df: pd.DataFrame, paper_claims: Any) -> list[dict[str, Any]]:
+    """论文声称的研究设计 ↔ 数据实际形状。（v2.46 · B 档③）
+
+    为什么需要这一条：`audit` 那边比的是**数值**（声称的 M/t/p 有没有实算出来），
+    但有一类矛盾比数值更早、更硬——**论文说做了前后测，数据里却根本没有第二
+    个时间点**。数值比对在这种情况下会整条空转（没有 pre/post 列，就没有可比
+    的统计量），用户什么都看不到，而实际上这是个当场就能确认的硬矛盾。
+
+    ## 只做两条（刻意不做第三条，见文末）
+
+    **① 声称配对设计，但数据里找不到前后测列对。**
+      论文写「采用配对样本 T 检验」/「重复测量方差分析」/「Wilcoxon 符号秩」，
+      而表里没有任何一对列能被 `_find_pre_post_pairs` 认出来（前测/后测、pre/post、
+      t1/t2、_1/_2）。合法解释极少——多半是数据交错了、或者前后测拆成了两个文件。
+
+    **② 声称分组比较，但数据里没有任何可分组的列。**
+      论文写「独立样本 T 检验」/「单因素方差分析」/「Mann-Whitney U」，
+      而全表既没有非数值列、也没有取值 2~20 的整数列。
+      合法解释：分组变量写在另一个文件里（如被试信息表）。
+
+    ## 纪律
+
+    - **只在传了论文时才跑**。没传论文（纯数据体检）时整条不产生任何输出——
+      这是它不能进 `_CHECKS` 常驻表的原因，`run_datacheck(df)` 的签名与行为一字不变。
+    - **只报「找不到」，不报「找错了」**。两条都建立在「上述识别函数返回空」
+      这个确定事实之上，不做任何「我猜你这列应该是分组」的推断。
+    - 措辞恒定含「请核对」，永不出现「造假」。level 一律 MID：
+      数据交错是常见操作失误，不是硬矛盾，也不该吓人。
+    - **数值编码的分组列认不出来**（如把性别编成 0/1 但只有 0 或 1 一种取值、
+      或编码成 101/102 超出 2~20 范围）。所以两条的措辞都留了「如果分组变量
+      是用数字编码的，请自行确认」，不把话说死。
+    """
+    issues: list[dict[str, Any]] = []
+    if df is None or df.empty:
+        return issues
+    keys = _claimed_keys(paper_claims)
+    if not keys:
+        return issues
+
+    cols = [str(c) for c in df.columns]
+
+    # ---- ① 配对设计与前后测列 ----
+    claimed_paired = keys & _PAIRED_KEYS
+    if claimed_paired and not _find_pre_post_pairs(cols):
+        issues.append(_issue(
+            LEVEL_MID, "设计",
+            "论文声称做了前后测/重复测量，但数据里找不到成对的列",
+            f"论文提到：{'、'.join(sorted(claimed_paired))}；"
+            f"数据表里 {len(cols)} 列（{'、'.join(cols[:8])}"
+            f"{' 等' if len(cols) > 8 else ''}）没有任何一对能被识别为前后测。",
+            "配对 T 检验 / 重复测量 ANOVA / Wilcoxon 都要求**同一批对象在同一张表里**"
+            "至少有两个测量点（前测与后测各一列）。识别依据是列名里的"
+            "「前测/后测」「pre/post」「t1/t2」「_1/_2」这类标记。",
+            "请核对：前后测是否拆成了两个文件、是否在合并时丢了列名标记、"
+            "或列名是否用了其它写法（如「干预前/干预后」可在列名中保留「前/后」二字）。",
+            columns=cols,
+        ))
+
+    # ---- ② 分组设计与分组列 ----
+    claimed_group = keys & _GROUP_KEYS
+    if claimed_group and not _categorical_cols(df):
+        issues.append(_issue(
+            LEVEL_MID, "设计",
+            "论文声称做了组间比较，但数据里找不到可分组的列",
+            f"论文提到：{'、'.join(sorted(claimed_group))}；"
+            f"数据表 {len(cols)} 列全部是连续数值量，没有一列能表示「被试属于哪一组」。",
+            "独立样本 T 检验 / 单因素 ANOVA / Mann-Whitney U 都要求表里有一列"
+            "**分组变量**（性别、年级、实验组/对照组）。没有它就无法把被试划成几组。",
+            "请核对：分组变量是否写在另一个文件里（如被试信息表）？"
+            "如果分组是用数字编码的（如 1=男 2=女），且编码值超出了 2~20 的范围，"
+            "本项也会提示——这种情况请自行确认数据里确实有分组列。",
+            columns=cols,
+        ))
+
+    return issues
+    # 刻意不做「声称组间设计但数据里只有前后测列」的反向检查：
+    # 一篇论文同时写「实验组/对照组比较」和「各组前后测」是常态，
+    # 反向报会大面积误伤。宁可漏报。
+
+
+# ---------------------------------------------------------------------------
+# ⑦ 全列常数
 # ---------------------------------------------------------------------------
 def check_low_variance(df: pd.DataFrame) -> list[dict[str, Any]]:
     """数值列所有取值完全相同 —— 没有信息量。"""

@@ -127,6 +127,21 @@ def run_suite(name: str, timeout: int = 900, retry: bool = True):
     return rc, summary + retried, time.time() - t0, detail
 
 
+def _count_skips(txt: str) -> int:
+    """数套件输出里的 `[SKIP]` 行。
+
+    【为什么不能只靠「合计 N」】v2.46 实测：`table_cross_test` 有 3 项端到端
+    用例包在 `if _d is not None:` 里，服务没起（或吃 429）时静默不执行、
+    只打一行 `[SKIP]`，退出码照样 0。该套件**不打印「合计」**，于是
+    `_run_once` 里那道 `tot and ...` 的校验直接短路，26 项反而被记成
+    `complete=True`——测试没跑，汇总上却和 29 项全跑长得一模一样。
+
+    这与 v2.43 修的「遗留报告骗过门控」是同一条纪律：**静默跳过必须浮到汇总**，
+    而不是指望每个套件自觉去补「合计」。
+    """
+    return len(re.findall(r"^\s*\[SKIP\]", txt, re.M))
+
+
 def _run_once(name: str, timeout: int):
     """跑一次套件，返回 (rc, summary, detail, complete)。
 
@@ -143,22 +158,25 @@ def _run_once(name: str, timeout: int):
         return -2, "ERROR %s" % e, "", False
 
     txt = _decode(r.stdout + r.stderr)
+    skips = _count_skips(txt)
+    skip_note = "  ⚠ %d 项按环境 SKIP（未执行）" % skips if skips else ""
     m = re.findall(r"(\d+)\s*通过[^\d]{0,12}(\d+)\s*失败", txt)
     if m:
         passed, failed = int(m[-1][0]), int(m[-1][1])
-        summary = "%s 通过 / %s 失败" % (passed, failed)
+        summary = "%s 通过 / %s 失败%s" % (passed, failed, skip_note)
         # 大多数套件会打印「合计 N 项」，据此判断用例是否跑全
         tot = re.findall(r"合计\s*(\d+)", txt)
         if tot and (passed + failed) != int(tot[-1]):
             summary += "  ⚠ 应有 %s 项，只跑了 %d 项（多半是服务未就绪）" % (
                 tot[-1], passed + failed)
             return r.returncode, summary, txt, False
-        return r.returncode, summary, txt, True
+        # 没有「合计」的套件靠 SKIP 计数兜底：跳过 = 没跑，就不是 complete
+        return r.returncode, summary, txt, not skips
     if r.returncode == 2 and name in ENV_DEPENDENT:
         # rc=2 是既定的「环境未就绪」码，不是失败 —— 别写成 NONZERO 吓人
         return r.returncode, "环境未就绪（需先启服务）", txt, False
     return (r.returncode,
-            "OK" if r.returncode == 0 else "NONZERO(rc=%d)" % r.returncode,
+            ("OK" if r.returncode == 0 else "NONZERO(rc=%d)" % r.returncode) + skip_note,
             txt, False)
 
 
@@ -199,6 +217,7 @@ def main():
     failed = []
     env_not_ready = []
     logs = {}          # name -> 原始输出（失败时落盘，方便直接看失败详情）
+    summaries = {}     # name -> 汇总行文案（用于最后扫出「有 SKIP 的套件」）
     t_start = time.time()
 
     if do_unit:
@@ -218,6 +237,7 @@ def main():
                 failed.append(t)
             if rc not in (0, 2):
                 logs[t] = txt
+            summaries[t] = summary
             out.append("%s%-26s rc=%-4d %-26s %5.1fs" % (mark, t, rc, summary, secs))
             print("%s%-26s rc=%-4d %s" % (mark, t, rc, summary))
         if env_not_ready:
@@ -240,6 +260,7 @@ def main():
         print("%s%-26s rc=%-4d %s" % (mark, EXE_E2E, rc, summary))
 
     elapsed = time.time() - t_start
+    skipped_suites = [t for t, s in summaries.items() if "SKIP" in s]
     out.append("")
     out.append("=" * 74)
     if failed:
@@ -253,6 +274,10 @@ def main():
                    % (len(env_not_ready), elapsed))
     else:
         out.append("结果：全部通过 · 耗时 %.0fs" % elapsed)
+    # 静默跳过要浮到结果行——明细里写了没人看得到（v2.46）
+    if skipped_suites:
+        out.append("注意：%d 个套件有按环境 SKIP 的用例，未真正执行 → %s"
+                   % (len(skipped_suites), ", ".join(skipped_suites)))
     out.append("=" * 74)
 
     io.open(SUMMARY, "w", encoding="utf-8").write("\n".join(out))

@@ -165,6 +165,43 @@ df_likert_diff = pd.DataFrame({"焦虑_前": [1, 2, 3, 4, 5, 2, 3, 4],
 check("Likert 前后测（均匀 +1）→ 不报（防误报护栏）",
       len(DC.check_diff_regularity(df_likert_diff)) == 0)
 
+# ---- 5.1 列名识别（v2.46 回归：两版判据各自栽过的写法）----
+# 旧版用「剥完还剩什么」+ `\b` ASCII 词边界，`_` 两侧咬不住 `\b`，
+# 于是 pre_score / score_t1 这整类写法永远配不上；中文侧又反过来把
+# 「前测」「后测」剥成空串而跳过——最该认的两个名字反倒不认。
+for _cols, _want, _why in [
+    (["pre_score", "post_score"], [("pre_score", "post_score")], "ASCII + 下划线"),
+    (["score_t1", "score_t2"], [("score_t1", "score_t2")], "t1/t2 后缀"),
+    (["score_1", "score_2"], [("score_1", "score_2")], "_1/_2 后缀"),
+    (["pretest", "posttest"], [("pretest", "posttest")], "整词就是标记"),
+    (["pre", "post"], [("pre", "post")], "裸标记（基数剥空）"),
+    (["成绩_前测", "成绩_后测"], [("成绩_前测", "成绩_后测")], "中文 + 测量词"),
+    (["前测", "后测"], [("前测", "后测")], "裸中文标记"),
+    (["前测成绩", "后测成绩"], [("前测成绩", "后测成绩")], "测量词在标记之后"),
+    (["post_score", "pre_score"], [("pre_score", "post_score")], "顺序颠倒"),
+    (["焦虑_前", "焦虑_后", "抑郁_前"], [("焦虑_前", "焦虑_后")], "多前缀只配同名"),
+]:
+    _got = DC._find_pre_post_pairs(_cols)
+    check(f"配对：{_why}", _got == _want, f"got={_got} want={_want}")
+
+# 反例才是这条链的命门：多认一对 = 凭空给用户报一条"数据规律"，
+# 比漏报伤得多（红线②：只报可疑，不冤枉）。
+for _cols, _why in [
+    (["test1", "test2"], "test1/test2 不该被 t1 命中"),
+    (["s1_score", "s2_score"], "s1_score 不该被 _1 命中"),
+    (["pre_score", "pre_score_copy"], "同侧两份不互配"),
+    (["gpa", "成绩", "得分"], "无前后测标记不配对"),
+    (["从前", "以后"], "前/后只是词的一部分 → 基数不同不配"),
+]:
+    _got = DC._find_pre_post_pairs(_cols)
+    check(f"不误配：{_why}", _got == [], f"got={_got}")
+
+# ---- 5.2 端到端：ASCII 列名也要真报出来（判据通过≠刀生效）----
+_df_ascii = pd.DataFrame({"pre_score": pre, "post_score": [v + 5 for v in pre]})
+check("ASCII 列名端到端 → 报 mid",
+      len(DC.check_diff_regularity(_df_ascii)) == 1,
+      f"got={_titles(DC.check_diff_regularity(_df_ascii))}")
+
 # ===========================================================================
 section("6. 常数列（规律）")
 # ===========================================================================

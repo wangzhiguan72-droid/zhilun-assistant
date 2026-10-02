@@ -962,31 +962,68 @@ GRIM_ABSTAIN = "abstain"      # 弃权：本次检验无信息量（不是"通�
 
 
 def grim_verdict(mean: float, n: int, *,
-                 items: int = 1, decimals: int = 2) -> str:
+                 items: int = 1, decimals: int = 2,
+                 lo: float | None = None, hi: float | None = None) -> str:
     """GRIM 检验三态结论：`ok` / `impossible` / `abstain`。
 
-    原理：若每人得分是 `items` 项的整数之和（粒度 g = items），则真实总分
-    `n × 真均值` 必须是 g 的整数倍。**关键在「真均值」不是论文写的那个数**：
-    论文里的 `M = 3.47` 表示真均值落在一个**区间** `[3.465, 3.475)` 内
-    （半宽 `0.5 × 10^(-decimals)`，decimals 是论文实际报告的小数位）。
-    所以判据是「**存在**某个合法整数格点 k·g 落进 `[n×M − tol, n×M + tol]`」，
-    其中 `tol = 0.5 × 10^(-decimals) × n`。
+    口径（v2.40 修正）：论文对多题量表报告的是**题均分**——每人得分
+    `M = 各题之和 ÷ items`。于是每个人的原始总分是 `M × items`，n 人的
+    总和 `S = M × n × items` 必须是**整数**（各题都是整数分）。判据即
+    「**存在**某个整数 k 落进 `[S − tol, S + tol]`」，而 `tol` 是论文那点
+    舍入不确定折算到总分口径的宽度：`tol = 0.5 × 10^(-decimals) × n × items`。
+    **关键在「真均值」不是论文写的那个数**：`M = 3.47` 表示真值落在一个
+    **区间** `[3.465, 3.475)` 内（半宽 `0.5 × 10^(-decimals)`）。
 
-    取"最近格点"是不对的：最近的不合法，不代表更远的也不合法（items>1 时
-    格点间距为 g，容差可能跨过多个格点）。这里逐个枚举容差内的候选格点。
+    v2.39 及以前写成「`n × M` 必须是 `items` 的整数倍」，方向正好反了：
+    那是在要求 *题均分本身* 有 1/items 的粒度，可有 1/items 粒度的其实是
+    **每个人的总分**，聚合到 n 人就是要求 S 是整数。旧口径强得多，会把合法
+    样本成批误判成不可能（`104/30, n=30, items=5` 即其一）。
 
-    弃权（两条，含义都是「本次没有信息量」，**不是通过**）：
-        - 样本量非法（n 非正 / 非整数 / 非有限）
-        - `tol >= 0.5`，即 `n × 10^(-decimals) >= 1`（2 位小数时 n >= 100）。
-          此时容差已宽到覆盖整个取值域，检验退化为恒真。
-          与实测量化吻合：n=50 可检出窗口 50%，n=100 归零。
+    取"最近整数"是不对的：最近的不合法，不代表更远的也不合法（tol < 0.5
+    时容差至多跨两个整数，两个都要试）。
+
+    `items > 1` 时还要多一道**域约束**：总分 S 必须落在
+    `[n × lo × items, n × hi × items]` 内（lo/hi 是单题取值的合法域，
+    如 Likert 1–5）。缺 `hi` 时格点在不在域内无从判断 → **弃权**，
+    不猜一个默认域：凭空默认 1/5 会把 1–7 量表误判成不可能。
+
+    **域约束先于退化**：`tol >= 0.5` 只废掉「S 是不是整数」这一条，域约束是
+    硬的、与 tol 无关。所以判序固定为「域 → 退化 → 精度」，否则 30 人 5 题
+    1–5 量表的 M=9.0（总分 1350，上限才 750）会被以「没信息量」的名义洗成
+    弃权——那是漏报，等于给不可能的组合盖章。
+
+    弃权（四条，含义都是「本次没有信息量」，**不是通过**）：
+        - 样本量非法（n 非正 / 非整数 / 非有限），或 prod 为 nan / inf
+        - `items > 1` 且未给 `hi`：量表取值上界未知，格点是否合法无从判断
+        - `tol >= 0.5`，即 `n × items × 10^(-decimals) >= 1`
+          （items=1、2 位小数时 n >= 100）。此时容差已宽到覆盖整个整数格点，
+          检验退化为恒真。与实测量化吻合：n=50 可检出窗口 50%，n=100 归零。
+        - 精度缺口（B3）：`tol` 小到与 `prod` 的浮点分辨率同量级，比较不可信
 
     用法：
         grim_verdict(3.47, 30)    # 30×3.47 = 104.1，离整数 0.10 < 容差 0.15 → "ok"
         grim_verdict(3.46, 30)    # 30×3.46 = 103.8，离整数 0.20 > 容差 0.15 → "impossible"
-        grim_verdict(3.47, 100)   # n≥100 且 2 位小数 → "abstain"（检验无信息量）
+        grim_verdict(3.47, 100)   # n≥100 且 2 位小数 → "abstain"（退化，无信息量）
         grim_verdict(3.4, 9, decimals=1)   # tol=0.45 < 0.5，仍有信息量 → "ok"
         grim_verdict(3.47, 30, decimals=1) # tol=1.5 ≥ 0.5 → "abstain"（不是 ok）
+        grim_verdict(3.47, 30, items=5)    # items>1 且没给域 → "abstain"（不猜）
+
+        # 多题量表（题均分口径）：10 人 × 5 题、Likert 1–5
+        # 每人总分 ∈ [5, 25] → 全班总分 S ∈ [50, 250]
+        # 取 n=10 而非 30：n=30 时 tol=0.75 已退化，下面是 n=10 的 tol=0.25
+        grim_verdict(3.5, 10, items=5, lo=1, hi=5)     # S = 175 ∈ 域且为整数 → "ok"
+        grim_verdict(3.47, 10, items=5, lo=1, hi=5)    # S = 173.5，离整数 0.5 > 0.25 → "impossible"
+        grim_verdict(3.48, 10, items=5, lo=1, hi=5)    # S = 174，相邻整数 → "ok"
+        grim_verdict(1.0, 10, items=5, lo=1, hi=5)     # S = 50 压域下界（闭区间）→ "ok"
+        grim_verdict(5.1, 10, items=5, lo=1, hi=5)     # S = 255 > 250 → "impossible"
+
+        # 30 人 × 5 题：tol = 0.5×10⁻²×30×5 = 0.75 ≥ 0.5 → 整数粒度退化，
+        # 域内的值一律弃权；但**域外**仍判不可能（域约束不随 tol 退化）
+        grim_verdict(4.0, 30, items=5, lo=1, hi=5)     # S = 600 域内 → "abstain"
+        grim_verdict(9.0, 30, items=5, lo=1, hi=5)     # S = 1350 > 750 → "impossible"
+        grim_verdict(104/30, 30, items=5, lo=1, hi=5)  # S = 520 域内但退化 → "abstain"
+                                                       # （v2.39 曾误判 impossible）
+        grim_verdict(3.47, 10, decimals=15)  # double 有效位不够 → "abstain"
     """
     try:
         n_int = int(n)
@@ -1002,7 +1039,7 @@ def grim_verdict(mean: float, n: int, *,
         mean_f = float(mean)
     except (TypeError, ValueError):
         return GRIM_ABSTAIN
-    prod = mean_f * n_int
+    prod = mean_f * n_int * g
     # nan / inf 一律弃权：输入本身不可判，绝不能让它一路走到 round() 抛异常
     # （round(nan) → ValueError、round(inf) → OverflowError，会把整份审计带崩）。
     if not math.isfinite(prod):
@@ -1014,27 +1051,61 @@ def grim_verdict(mean: float, n: int, *,
     if dec < 0:
         dec = 0
     half = 0.5 * (10.0 ** -dec)
-    tol = half * n_int
-    if tol >= 0.5:                      # 退化：容差已覆盖整个取值域
+    tol = half * n_int * g
+    # 域约束先判，再谈退化——顺序有讲究。
+    # 退化规则（tol ≥ 0.5 → 弃权）只管**整数粒度**这一条约束：容差宽到每个
+    # 舍入区间都必含整数，所以「S 是不是整数」不再有信息量。但**域约束不受
+    # 它影响**：一个连量表总分域都够不着的均值，无论舍入怎么读都不可能，
+    # 与 tol 多大无关。若先判退化，就把这类明摆着的越界洗成了「没查到」——
+    # 用户看到「未参评」而不是「不可能」，是漏报（M=9.0、30 人 5 题、1–5 分
+    # 量表：总分 1350 > 上限 750，白纸黑字不可能）。
+    if g > 1 and hi is None:
+        return GRIM_ABSTAIN          # 域未知 → 弃权，不猜默认 1/lo
+    if hi is None:
+        s_lo, s_hi = -math.inf, math.inf
+    else:
+        s_lo = n_int * (0.0 if lo is None else float(lo)) * g
+        s_hi = n_int * float(hi) * g
+        # 整个舍入区间都落在域外 → 不可能（与 tol 是否退化无关）
+        if prod + tol < s_lo or prod - tol > s_hi:
+            return GRIM_IMPOSSIBLE
+    if tol >= 0.5:                   # 退化：整数粒度这一条已无信息量
         return GRIM_ABSTAIN
-    # 枚举容差内的候选格点（items=1 时即至多两个整数）
-    lo = math.floor((prod - tol) / g)
-    hi = math.ceil((prod + tol) / g)
-    for k in range(lo, hi + 1):
-        if abs(prod - k * g) <= tol:
+    # 精度缺口（B3）：tol 已经小到和 prod 的浮点分辨率（ULP）同量级甚至更小，
+    # `abs(prod - k) <= tol` 这个比较就不可信了——prod 本身有表示误差，
+    # 可能把「落在容差内」算成「在容差外」，凭空判出 impossible。
+    # 留 4 ULP 的余量而不是 1：prod 是三个浮点数连乘（mean × n × items），
+    # 每步都可能引入约半个 ULP 的相对误差，贴着 1 ULP 卡线仍可能误判。
+    # 此时唯一诚实的结论是**弃权**：不是「不可能」，是「这个位数下 double 判不了」。
+    # ⚠️ 别把这个下限加回来：给 tol 设一个最小值（floor）会把「判不了」变成
+    # 「一定通过」，是更坏的错误方向——漏报永远比误报安全，但这里的漏报会
+    # 反过来把 impossible 洗成 ok，等于给假数据盖章。
+    # 触发条件等价于「报告位数 ≳ double 能表示的位数（约 15–16 位有效数字）」。
+    if abs(prod) > 0 and tol <= 4.0 * math.ulp(abs(prod)):
+        return GRIM_ABSTAIN
+    # 枚举容差内的候选整数格点（tol < 0.5 时即至多两个）。
+    k_min = math.floor(prod - tol)
+    k_max = math.ceil(prod + tol)
+    for k in range(k_min, k_max + 1):
+        if abs(prod - k) <= tol and s_lo <= k <= s_hi:
             return GRIM_OK
     return GRIM_IMPOSSIBLE
 
 
-def grim_check(mean: float, n: int, *, items: int = 1, decimals: int = 2) -> bool:
+def grim_check(mean: float, n: int, *, items: int = 1, decimals: int = 2,
+               lo: float | None = None, hi: float | None = None) -> bool:
     """`grim_verdict` 的布尔薄壳：仅**确定不可能**时为 False。
 
     保留这个签名是为了让既有调用点（`audit.grim_cross_check`、
     `grimmer._grim_ok`）不必改：它们都是"守门人"语义——不确定就别往下判。
     因此 `abstain` 与 `ok` 在这里同为 True；**需要区分「没查」与「查了没事」
     的地方请直接调 `grim_verdict`**。
+
+    `items > 1` 时请一并给出单题取值域 `lo`/`hi`：只给 `items` 不给域会弃权
+    （放行为 True），那是**没查到**，不是查了没事。
     """
-    return grim_verdict(mean, n, items=items, decimals=decimals) != GRIM_IMPOSSIBLE
+    return grim_verdict(mean, n, items=items, decimals=decimals,
+                        lo=lo, hi=hi) != GRIM_IMPOSSIBLE
 
 
 # 注意：GRIMMER（查标准差）不在本模块 —— 唯一真源是 `grimmer.py`

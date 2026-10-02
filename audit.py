@@ -528,8 +528,42 @@ def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
     return {"mismatches": mismatches, "notes": notes, "checked": checked}
 
 
+_QTY_NUM_RE = re.compile(r"-?\d+(?:\.(\d+))?")
+
+
+def _decimals_of(raw: str, fallback: int = 2) -> int:
+    """从论文原文串里反推该统计量**实际报告**的小数位数。
+
+    口径（v2.40 修正）：GRIM / GRIMMER 的容差正比于报告位数
+    （`tol = 0.5 × 10⁻ᵈ × n × items`），所以位数必须**逐条从原文取**。
+    以前这里写死 2，对 `M = 3.5` 会按 0.005 的宽度去卡 —— 比论文实际
+    承诺的 0.05 严十倍，把合法样本判成不可能（误报）；反过来
+    `M = 3.4700` 又放松十倍（漏报）。
+
+    取 `raw` 里**最后一个**数字的小数位：raw 形如 `M = 3.47`、
+    `SD = 0.52`、`t(28) = 2.31`，自由度 `28` 在前、真值在后，取末尾那个
+    才拿到真值的位数（`t(28)=2.31` → 2，不是 0）。取不到时回落到 `fallback`。
+    """
+    ms = _QTY_NUM_RE.findall(raw or "")
+    if not ms:
+        return fallback
+    return len(ms[-1])
+
+
+def _decimals_for(raw: str, override: int | None) -> int:
+    """单条统计量的有效位数：原文反推优先，显式 `override` 只在反推不到时兜底。
+
+    注意顺序 —— 原文写的位数是**论文的承诺**，比调用方拍的缺省更硬；
+    override 只是「raw 里没数字」时的安全网，不是覆盖开关。
+    """
+    if override is None:
+        return _decimals_of(raw)
+    ms = _QTY_NUM_RE.findall(raw or "")
+    return len(ms[-1]) if ms else int(override)
+
+
 def grim_cross_check(paper_quantities: list[dict], n: int, *,
-                     items: int = 1, decimals: int = 2) -> list[dict[str, Any]]:
+                     items: int = 1, decimals: int | None = None) -> list[dict[str, Any]]:
     """对论文里声称的每个「均值」做 GRIM 检验。
 
     入参：
@@ -564,7 +598,8 @@ def grim_cross_check(paper_quantities: list[dict], n: int, *,
             continue
         prod = mean * n_int
         try:
-            verdict = grim_verdict(mean, n_int, items=items, decimals=decimals)
+            dec_q = _decimals_for(str(q.get("raw", "")), decimals)
+            verdict = grim_verdict(mean, n_int, items=items, decimals=dec_q)
         except Exception:  # noqa: BLE001 — 判据自身异常时弃权，绝不误伤
             verdict = GRIM_ABSTAIN
         if verdict == GRIM_ABSTAIN:
@@ -591,7 +626,8 @@ def grim_cross_check(paper_quantities: list[dict], n: int, *,
 
 def grimmer_cross_check_reported(paper_quantities: list[dict], n: int,
                                  *, items: int = 1,
-                                 value_range: tuple[int, int] | None = None
+                                 value_range: tuple[int, int] | None = None,
+                                 decimals: int = 2
                                  ) -> list[dict[str, Any]]:
     """对论文里声称的 (均值, 标准差, 样本量) 三元组做 GRIMMER 检验。
 
@@ -648,7 +684,12 @@ def grimmer_cross_check_reported(paper_quantities: list[dict], n: int,
             sd = float(sq.get("value"))
         except (TypeError, ValueError):
             continue
-        res = grimmer_check(mean, sd, n_int, items=items, lo=lo, hi=hi)
+        # 位数逐条从原文取（GRIM 前置那一步的容差正比于它）。
+        # 均值与 SD 的位数可能不同（"M = 3.47, SD = 0.5"），取**均值**那侧：
+        # GRIM 前置卡的是均值，SD 只是被区间框住，本身没有舍入容差参与判据。
+        dec_q = _decimals_of(str(mq.get("raw", "")), fallback=decimals)
+        res = grimmer_check(mean, sd, n_int, items=items, lo=lo, hi=hi,
+                            decimals=dec_q)
         if not res.get("applicable"):
             continue
         passed = bool(res.get("possible"))
@@ -1495,9 +1536,11 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
 
     # 3.5) v2.1 GRIM 交叉核查：论文声称的均值 × 真实样本量 → 这个均值可能出现吗？
     #      样本量取**实算值**（不采信论文写的 n）：论文里的 n 本身可能就是错的。
+    #      v2.40：容差位数不再写死 2，逐条从 `q["raw"]` 反推（见 _decimals_of）。
     grim = grim_cross_check(quantities, int(len(df)))
     # 3.6) v2.10 GRIMMER 交叉核查：进一步查 (均值, 标准差, n) 三元组是否可能。
     #      只在论文同时写了 mean 与 sd 时才产出（没写就不制造噪音）。
+    #      v2.40：同上，位数逐条从原文取（`decimals` 形参保留为取不到时的回落值）。
     grimmer = grimmer_cross_check_reported(quantities, int(len(df)))
     # 3.7) v2.11 P3 表格交叉核查：docx 描述统计表 vs 按同样分组实算。
     #      标签匹配不到唯一数据列的表只记 note，绝不硬猜硬报。

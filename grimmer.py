@@ -67,30 +67,42 @@ def _grim_ok(mean: float, n: int, items: int, decimals: int = 2) -> bool:
 
 
 def _integer_sum(mean: float, n: int, items: int) -> int:
-    """该均值对应的"总分"（整数）：n × mean ÷ items 的整数形式。
+    """该均值对应的"总分"（整数）：n × 题均分 × items。
+
+    口径（v2.40 修正）：论文对多题量表报的是**题均分** `M = 各题之和 ÷ items`，
+    所以每人的原始总分是 `M × items`，n 人的总和即 `n × M × items`。
+    v2.39 及以前写成 `n × mean ÷ items`——粒度方向正好反了（把题均分的粒度
+    当成了 1/items，其实有 1/items 粒度的是每人总分），items>1 时会得到一个
+    小得离谱的总分，SD 区间随之坍塌 → 漏报或误报。
 
     调用前应先用 `_grim_ok` 确认它是整数（或近似整数）。
     """
-    prod = float(mean) * int(n)
-    return int(round(prod / max(1, int(items))))
+    prod = float(mean) * int(n) * max(1, int(items))
+    return int(round(prod))
 
 
 def _sd_bounds(mean: float, n: int, items: int,
                lo: int | None = None,
                hi: int | None = None) -> tuple[float, float]:
-    """给定 n 与均值，能产生的 SD 的**闭区间** [下界, 上界]。
+    """给定 n 与题均分，能产生的 **SD（题均分口径）** 的闭区间 [下界, 上界]。
 
-    构造两种极端整数序列（总和 S = n × mean ÷ items 固定）：
+    构造两种极端整数序列（每人**总分** S_person = mean × items 固定）：
 
     - **最集中**：所有值尽量贴近均值 → SD 最小
     - **最分散**：两极序列（k 个下界、(n-k) 个上界）→ SD 最大
 
     `lo`/`hi` 是单题取值的合法域（如 Likert 1–5）。**强烈建议传入**：
     不传时默认下界 0、上界不限，会把不现实的极端序列算进上界 → 漏报。
+
+    ⚠️ **量纲**：内部序列是**每人总分**，所以上面算出的 SD 是总分口径的；
+    而论文报的 SD 是**题均分**口径的，两者差一个 `items` 因子。返回前除以
+    `items` 折算回题均分口径，否则 items>1 时上界被放大 items 倍 → 漏报。
+    （items=1 时该折算为恒等，既有调用点逐位不变。）
     """
     total = _integer_sum(mean, n, items)
     if n <= 1:
         return 0.0, 0.0
+    g = max(1, int(items))
 
     # --- 最集中：把 total 尽量均匀分成 n 份 ---
     base, rem = divmod(total, n)
@@ -101,7 +113,7 @@ def _sd_bounds(mean: float, n: int, items: int,
     spread = _maximally_spread(total, n, lo=lo, hi=hi)
     sd_max = _sd(spread)
 
-    return min(sd_min, sd_max), max(sd_min, sd_max)
+    return min(sd_min, sd_max) / g, max(sd_min, sd_max) / g
 
 
 def _maximally_spread(total: int, n: int, lo: int | None = None,

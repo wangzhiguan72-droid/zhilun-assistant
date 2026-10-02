@@ -120,6 +120,40 @@ r4 = A.grim_cross_check([
 check("混合：只把不可能的标 False",
       r4 and r4[0]["passed"] is False and r4[1]["passed"] is True, f"got={r4}")
 
+# —— v2.40 · 位数逐条从原文反推（此前 audit 写死 2 位）——
+# 容差正比于报告位数，写死 2 位既误报也漏报：
+#   写 3.4700 的论文承诺到 0.0001，按 2 位放行会把不可能的组合洗成 ok（漏报）；
+#   写 3.5 的论文只承诺到 0.1，按 2 位去卡会把合法值判成不可能（误报）。
+check("_decimals_of：取 raw 里最后一个数的小数位",
+      A._decimals_of("M = 3.47") == 2
+      and A._decimals_of("M = 3.4700") == 4
+      and A._decimals_of("M = 3.5") == 1
+      and A._decimals_of("M = 4") == 0,
+      f"got={[A._decimals_of(s) for s in ('M = 3.47','M = 3.4700','M = 3.5','M = 4')]}")
+check("_decimals_of：t(28)=2.31 取真值那侧（不是自由度）",
+      A._decimals_of("t(28) = 2.31") == 2, f"got={A._decimals_of('t(28) = 2.31')}")
+check("_decimals_of：取不到数字时回落到缺省", A._decimals_of("", 2) == 2)
+
+# 同一个数值、只换原文位数，结论必须跟着变（这是本次修正的核心断言）
+_v4 = A.grim_cross_check([{"kind": "mean", "value": 3.47, "raw": "M = 3.47"}], 30)
+_v4b = A.grim_cross_check([{"kind": "mean", "value": 3.47, "raw": "M = 3.4700"}], 30)
+check("M = 3.47（2 位）→ 容差内 ok", _v4 and _v4[0]["verdict"] == DC.GRIM_OK,
+      f"got={_v4}")
+check("M = 3.4700（4 位）→ 同样数值却不可能（写死 2 位时会被漏报）",
+      _v4b and _v4b[0]["verdict"] == DC.GRIM_IMPOSSIBLE, f"got={_v4b}")
+_v4c = A.grim_cross_check([{"kind": "mean", "value": 3.5, "raw": "M = 3.5"}], 30)
+check("M = 3.5（1 位）→ 容差 1.5 已退化，弃权而非 ok（写死 2 位时会误判 ok）",
+      _v4c and _v4c[0]["verdict"] == DC.GRIM_ABSTAIN, f"got={_v4c}")
+# 显式 decimals= 只是「raw 里取不到数字」时的回落值，不是覆盖开关——
+# 原文写的位数是论文的承诺，比调用方拍的缺省更硬。
+check("raw 里有数字时，显式 decimals= 不覆盖（原文优先）",
+      A.grim_cross_check([{"kind": "mean", "value": 3.47, "raw": "M = 3.47"}],
+                         30, decimals=4)[0]["verdict"] == DC.GRIM_OK,
+      f"got={A.grim_cross_check([{'kind':'mean','value':3.47,'raw':'M = 3.47'}], 30, decimals=4)}")
+check("raw 里无数值时，显式 decimals= 才生效",
+      A.grim_cross_check([{"kind": "mean", "value": 3.47, "raw": "见附表"}],
+                         30, decimals=4)[0]["verdict"] == DC.GRIM_IMPOSSIBLE,
+      f"got={A.grim_cross_check([{'kind':'mean','value':3.47,'raw':'见附表'}], 30, decimals=4)}")
 
 # ===========================================================================
 section("3. 与 datacheck 口径一致（两处复用同一纯函数）")

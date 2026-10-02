@@ -192,6 +192,19 @@ def _server_up():
         return False
 
 
+def _rate_limited(exc) -> bool:
+    """HTTPError 是不是限流（429）——这是**环境**，不是被测代码的问题。
+
+    回归时一个进程里连打多次，60 秒滑窗必吃 429（v2.27 扫描报告 P1-1）。
+    本套件发的是真实 HTTP，限流在**服务端** `before_request` 里跑，
+    测试进程设 `RATE_LIMIT_DISABLE=1` 管不到它。既然本套件自带
+    「服务没起就 SKIP」的契约，限流也该走同一条路：跳过，而不是崩成假红。
+    """
+    code = getattr(exc, "code", None)
+    return code == 429
+
+
+_d = None
 if _server_up():
     boundary = "----tblcross"
     paper_bytes = make_docx([GOOD, bad_n]).getvalue()
@@ -210,17 +223,24 @@ if _server_up():
     req = urllib.request.Request(
         BASE + "/api/check_paper", data=body, method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        d = _json.loads(r.read())
-    check("端到端 check_paper 成功", d.get("ok"))
-    audit = d.get("audit", {})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            _d = _json.loads(r.read())
+    except Exception as exc:  # noqa: BLE001
+        # 429 = 环境（限流），不是被测代码的问题 → 与「服务没起」同样跳过
+        if not _rate_limited(exc):
+            raise
+
+if _d is None:
+    print("  [SKIP] 端到端部分跳过（本地服务未启动，或触发限流）")
+else:
+    check("端到端 check_paper 成功", _d.get("ok"))
+    audit = _d.get("audit", {})
     md_txt = audit.get("markdown", "") or ""
     check("端到端报告含表格核对小节", "表格交叉核对" in md_txt)
     check("端到端只报篡改那张（1 条 table_n）",
           sum(1 for c in audit.get("comparisons", [])
               if c.get("kind") == "table_n") == 1)
-else:
-    print("  [SKIP] 本地服务未启动（python app.py），端到端部分跳过")
 
 print(f"\n{'=' * 50}")
 print(f"表格交叉核查测试：{PASS} 通过 / {FAIL} 失败")

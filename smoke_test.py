@@ -8,9 +8,9 @@
 """
 import json
 import os
-import os
 import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
+import urllib.error
 import urllib.request
 import urllib.parse
 
@@ -34,6 +34,26 @@ def _require_server():
 
 _require_server()
 
+
+def _open(req, timeout=30):
+    """发请求；被限流（429）时按「环境未就绪」退出（码 2），不当成测试失败。
+
+    限流在**服务端** `before_request` 里跑，测试进程设 RATE_LIMIT_DISABLE
+    管不到它。回归时连打多次必吃 429 —— 那是环境，不是代码缺陷。
+    """
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            print("=" * 70)
+            print("⚠️  本地服务触发了限流（429），本测试无法运行。")
+            print("    这是环境问题，不是代码缺陷。")
+            print("    请重启服务（或错开几分钟）后再跑：python app.py")
+            print("=" * 70)
+            sys.exit(2)
+        raise
+
+
 def post_multipart(path, file_path, field="file"):
     boundary = "----smoke123456"
     with open(file_path, "rb") as f:
@@ -50,7 +70,7 @@ def post_multipart(path, file_path, field="file"):
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with _open(req) as r:
         return json.loads(r.read().decode())
 
 def post_json(path, payload):
@@ -60,7 +80,7 @@ def post_json(path, payload):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with _open(req) as r:
         return json.loads(r.read().decode())
 
 print("=" * 70)

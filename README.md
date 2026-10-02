@@ -1,18 +1,24 @@
 # 智论助手 · ZhiLun Assistant
 
-**本地运行的毕业论文「数据体检 + 统计核查 + 写作副驾」。**
+**装在你电脑里的毕业论文「答辩前自查闸机」。**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-3.x-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
-[![Tests](https://img.shields.io/badge/tests-55%2B%20suites%20auto--discovered-brightgreen)](#七测试)
+[![Tests](https://img.shields.io/badge/tests-59%20suites%20auto--discovered-brightgreen)](#七测试)
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 [![No Build](https://img.shields.io/badge/build-none%20required-success)](#二快速开始)
 
-从 Excel/CSV 到可写进论文的统计结果，再到用真实数据反向核查论文里的统计量是否对得上——
-一条**可追踪、不越界**的流水线。
+论文被知网查一次要花钱，被老师打回来一次要重改一遍。与其反复交学费，
+不如**提交前先自己查一遍**：数据有没有硬伤、论文里写的统计量和你的原始数据对得上对不上、
+哪些段落写得像模板。**查完只标出「这里有疑点，请核对」——不替你写一个字，也不下任何定论。**
 
-> 核心统计全部由 Python 计算，**不配任何 API Key 也能完整跑通**。AI 能力是可选的「翻译层」，
-> 只把已算好的结果讲成人话；它挂了，功能不中断。
+- **省钱**：自查在本地跑，查多少次都不花钱。统计计算全部由本机 Python 完成，
+  **不配任何 API Key 也能完整跑通**。
+- **不泄密**：论文和数据不出你的电脑。本地版默认只监听本机；纯统计功能**零联网、零 LLM**。
+- **不越界**：只做检查与提醒，不做代写、不绕检测；对 AI 风格只评「风格风险」，不判定作者身份。
+
+> 可选接入 AI 时，它只是把**已经算好的结果**讲成人话（「翻译层」），
+> 拿不到你的原始数据；它挂了，功能不中断。
 
 ---
 
@@ -36,26 +42,7 @@
 
 ## 一、它能做什么
 
-### 十二个统计方法（全部纯 Python 实现，不依赖 statsmodels）
-
-| 方法 | 关键产出 |
-| --- | --- |
-| 独立样本 T 检验 | 方差齐性 / Welch 校正、Cohen's d、95% CI |
-| 配对样本 T 检验 | Cohen's d_z、Shapiro 正态性提示 |
-| 单因素 ANOVA | Levene、η²、Bonferroni 事后多重比较 |
-| 双因素 ANOVA | Type III 平方和、主效应 + 交互效应 |
-| 重复测量 ANOVA | Mauchly 球形度检验、Greenhouse-Geisser 校正、Bonferroni 事后比较 |
-| Pearson 相关 | r、95% CI、t、效应量解释 |
-| 卡方检验 | χ²、Cramér's V、期望频数警告 |
-| Mann-Whitney U | 非参数两组、效应量 r、中位数 + IQR |
-| Wilcoxon 符号秩 | 非参数配对、零差值剔除、效应量 r |
-| 多元线性回归 | OLS、R²/调整 R²、F 检验、系数 t 检验 + 95% CI、VIF |
-| 二元 Logistic 回归 | IRLS、Wald z、OR 值、McFadden 伪 R² |
-| Cronbach's α | α、删项后 α、CITC、信度等级建议 |
-
-每个方法都自动产出：描述统计表格、前提条件检验、**可直接引用进论文的结论段**、
-以及对应的图表（柱图 / 散点 / 箱线 / 连线）。结果可一键导出 Word
-（标题/表格/列表自动排版 + 图表嵌入，宋体 + Times New Roman）。
+拿到一篇快写完的论文和数据，你会顺序用到下面两件事。**先看数据，再对论文。**
 
 ### 数据体检（产品入口）
 
@@ -101,6 +88,29 @@
 **写作模板化自查**（无需数据）：只传论文，纯本地规则检查高频套话密度、句长均匀性、被动句、拔高词无数据、AI 对话残留、数模高风险模型未说明等 8 类 AI 风格特征，给出分项扣分与修改建议。只评估风格风险，不判定作者身份。
 
 论文是 **.docx** 时，还会把里面的**描述统计表**（组别 | n | M | SD）逐格和你的数据核对——分组对得上才核对、对不上不硬猜，表格数字与数据不符会点名到行。
+
+### 要自己算的时候：十二个统计方法（全部纯 Python 实现，不依赖 statsmodels）
+
+上面两件事是「查」。要**从零跑出自己的结果**（写论文的第三章），这套也齐了：
+
+| 方法 | 关键产出 |
+| --- | --- |
+| 独立样本 T 检验 | 方差齐性 / Welch 校正、Cohen's d、95% CI |
+| 配对样本 T 检验 | Cohen's d_z、Shapiro 正态性提示 |
+| 单因素 ANOVA | Levene、η²、Bonferroni 事后多重比较 |
+| 双因素 ANOVA | Type III 平方和、主效应 + 交互效应 |
+| 重复测量 ANOVA | Mauchly 球形度检验、Greenhouse-Geisser 校正、Bonferroni 事后比较 |
+| Pearson 相关 | r、95% CI、t、效应量解释 |
+| 卡方检验 | χ²、Cramér's V、期望频数警告 |
+| Mann-Whitney U | 非参数两组、效应量 r、中位数 + IQR |
+| Wilcoxon 符号秩 | 非参数配对、零差值剔除、效应量 r |
+| 多元线性回归 | OLS、R²/调整 R²、F 检验、系数 t 检验 + 95% CI、VIF |
+| 二元 Logistic 回归 | IRLS、Wald z、OR 值、McFadden 伪 R² |
+| Cronbach's α | α、删项后 α、CITC、信度等级建议 |
+
+每个方法都自动产出：描述统计表格、前提条件检验、**可直接引用进论文的结论段**、
+以及对应的图表（柱图 / 散点 / 箱线 / 连线）。结果可一键导出 Word
+（标题/表格/列表自动排版 + 图表嵌入，宋体 + Times New Roman）。
 
 ### 答辩准备包（v2.10 · 八站流程最后一站）
 

@@ -20,6 +20,7 @@
 """
 import argparse
 import io
+import os
 import re
 import subprocess
 import sys
@@ -86,6 +87,24 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", "replace")
 
 
+def _child_env() -> dict:
+    """子进程环境：强制 UTF-8 输出。
+
+    【为什么必须显式传 env】子进程的 stdout 是管道，Python 按系统 ANSI 代码页
+    选编码——Windows 上是 GBK。而套件里到处在 print 中文和「⚠️」这类符号，
+    写不进去就 UnicodeEncodeError 崩在 print 上，**测试一条没跑就退出**。
+    更坏的是下面 _decode 一直按 UTF-8 读，等于写 GBK 读 UTF-8，本来就是错配。
+
+    实测（v2.45）：`paper_check_test` / `smoke_test` / `regression_audit_test`
+    三个套件在同一次 429 场景下全部 rc=1，崩点都在那一行 print("⚠️ …")。
+    修在这里而不是逐个改套件：错配在启动器，一处修好四个套件。
+    """
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.setdefault("PYTHONUTF8", "1")
+    return env
+
+
 def run_suite(name: str, timeout: int = 900, retry: bool = True):
     """跑一个测试套件，返回 (rc, summary, seconds, detail)。
 
@@ -116,7 +135,8 @@ def _run_once(name: str, timeout: int):
     """
     try:
         r = subprocess.run([PY, name + ".py"],
-                           cwd=str(ROOT), capture_output=True, timeout=timeout)
+                           cwd=str(ROOT), capture_output=True, timeout=timeout,
+                           env=_child_env())
     except subprocess.TimeoutExpired:
         return -1, "TIMEOUT(%ds)" % timeout, "", False
     except Exception as e:  # noqa: BLE001

@@ -736,6 +736,16 @@ def _compare_quantity(paper_q: dict, real: dict) -> dict[str, Any]:
         return {"status": status, "kind": kind,
                 "paper": paper_q["raw"], "real": f"{real_val:.3f}",
                 "diff": f"{diff:.3f}"}
+    # v2.46 样本量 n：**整数硬指标，必须相等**。
+    # ⚠️ 必须自己 return —— 下面 t/F/r 那档容差是 0.5，
+    # 对 120 这种量级等于"差半个样本也算一致"，119 vs 120 会被放过。
+    # 样本量是最不该有容差的统计量：它不涉及四舍五入，只涉及口径
+    # （是否剔除缺失）。差 1 就是口径变了，正是要报出来的东西。
+    if kind == "n":
+        status = "ok" if diff < 1e-9 else "mismatch"
+        return {"status": status, "kind": kind,
+                "paper": paper_q["raw"], "real": f"{real_val:.0f}",
+                "diff": None if status == "ok" else f"{diff:.0f}"}
     # p 值：论文里的 p 有两副面孔，**必须分开比**，混在一起比必出假阴性。
     #   ① 上界声明："p < 0.05" → 只要正文也落在同一侧就一致，不看差多少。
     #   ② 点值声明："p = 0.018" → 差 0.05 内才算一致。
@@ -844,6 +854,75 @@ def _best_status(statuses: list[dict]) -> dict[str, Any]:
 
 
 # -----------------------------------------------------------------------------
+# 3.46) v2.46 · 正文声称的样本量 n ↔ 表格 n / 数据行数（A 档②）
+# -----------------------------------------------------------------------------
+# 动机：样本量是论文里**最容易被说错又最容易查**的一个数。用户上传的数据行数
+# 是已知的，论文正文常写「共抽取 120 名」，描述统计表里还常有一列 n。三者
+# 对不上就是不依赖任何外部资料的自相矛盾。
+#
+# 纪律（与 3.45 同源，宁可漏报不可误报）：
+#   1. 正文里识别到的 n 可能**不止一个**——分组样本量（男 58 / 女 62）、
+#      各年级人数、有效回收数……这些都合法。所以不是"任意一个对不上就报"。
+#      只有**主口径**对不上才报，主口径按出现次数取众数（论文提总样本量的
+#      次数天然多于提某个分组）。众数并列时按最大值取（总样本量≥分组）。
+#   2. 表格 n 只作**佐证**不做主判：一张表里既有分组 n 又有合计行时，
+#      求和会翻倍。所以只在"正文 n == 某个表格 n"时记 ok，不搞算术推导。
+#   3. 有多个互不相同的正文 n 且数据行数与其中之一相等时，判一致——
+#      论文把"有效样本"与"发放数"分列是常见且正当的。
+def compare_declared_n(quantities: list[dict], row_count: int,
+                       table_ns: list[dict] | None = None) -> dict[str, Any]:
+    """正文声称的样本量 vs 数据实际行数 / 表格里写的 n。
+
+    返回 {"checked", "claimed", "mismatch": {...} | None, "note"}
+    """
+    ns = [int(q["value"]) for q in (quantities or [])
+          if q.get("kind") == "n" and isinstance(q.get("value"), (int, float))]
+    table_ns = table_ns or []
+    table_vals = {t["n"] for t in table_ns if t.get("n")}
+
+    if not ns:
+        return {"checked": 0, "claimed": [], "mismatch": None,
+                "note": "论文正文里没有识别到明确的样本量写法"
+                        "（需形如「共 120 名」「样本量 118」「n = 120」），"
+                        "本项不做核对。"}
+    if not row_count:
+        return {"checked": 0, "claimed": sorted(set(ns)), "mismatch": None,
+                "note": "没有可对照的数据行数，本项不做核对。"}
+
+    # 主口径：出现次数最多的那个（并列取大）。见上方纪律 1。
+    from collections import Counter
+    counts = Counter(ns)
+    top = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    main_n = top[0]
+
+    # 表格里出现过写同样的 n → 佐证一致，直接放行
+    if main_n in table_vals:
+        return {"checked": 1, "claimed": sorted(set(ns)), "mismatch": None,
+                "note": ""}
+
+    # 数据行数与正文中的**任意一个** n 相等 → 一致（见纪律 3）
+    if row_count in set(ns):
+        return {"checked": 1, "claimed": sorted(set(ns)), "mismatch": None,
+                "note": ""}
+
+    return {
+        "checked": 1, "claimed": sorted(set(ns)),
+        "mismatch": {
+            "kind": "n",
+            "kind_cn": "样本量 n",
+            "declared": main_n,
+            "declared_raw": next((q.get("raw") for q in quantities
+                                  if q.get("kind") == "n"
+                                  and q.get("value") == main_n), f"n = {main_n}"),
+            "rows": row_count,
+            "table_n": sorted(table_vals),
+            "diff": main_n - row_count,
+        },
+        "note": "",
+    }
+
+
+# -----------------------------------------------------------------------------
 # 3.5) 单条比对摘要（v1.6 · ②审计对话的数据底座）
 # -----------------------------------------------------------------------------
 # 目的：把「一条 comparison」压缩成一小段**自包含、可审、无原始数据**的文本，
@@ -867,6 +946,8 @@ _KIND_CN = {
     # 原始 key（"table_mean"）而不是中文，前端 chip 里出现一坨英文很出戏。
     "table_n": "表格样本量 n", "table_mean": "表格均值",
     "table_sd": "表格标准差",
+    # v2.46：正文声称的样本量（A 档②）
+    "n": "样本量 n",
 }
 
 
@@ -1584,6 +1665,13 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     from coherence import run_coherence_checks, summarize as _coh_summarize
     coherence = run_coherence_checks(_raw_text, methods)
 
+    # 3.11) v2.46 · 正文声称的样本量 n ↔ 数据行数 / 表格 n（A 档②）
+    #      与 3.8/3.9 的分工：3.8 比的是「表格每格的 M/SD 与数据」，
+    #      这里比的是「论文说的样本量」这**一个数**——论文最常见的口误现场。
+    #      表格 n 只作佐证（见 compare_declared_n 的纪律 2）。
+    declared_n = compare_declared_n(quantities, int(len(df)),
+                                    (table_check_text or {}).get("claimed_n"))
+
     # 4) 改进建议
     suggestions = _generate_suggestions(real, methods, quantities)
     # 4.05) GRIM 未通过 → 直接进建议列表（用户最容易看到的地方）
@@ -1794,9 +1882,13 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     # v2.16：表格核查条目（table_n / table_mean / table_sd）在 5.5d / 5.5e
     # 有专门的、信息更全的表（含表名、行标签、容差），这里不再重复一行，
     # 否则同一处不一致在报告里出现两次，反而让人以为查出了两倍的问题。
+    # v2.46：样本量 n 同理 —— 5.5h 有专节，且比的是「数据行数」这个总口径，
+    # 而这里 `real` 里的 n 只有部分方法（相关/卡方/回归）才有，t 检验那几支
+    # 压根没有 → 会渲染成一串「⚪ 未跑出对应统计量」的假象噪音。
     _cmp_rows = [c for c in comparisons
                  if c.get("status") != "no_real"
-                 and not str(c.get("kind") or "").startswith("table_")]
+                 and not str(c.get("kind") or "").startswith("table_")
+                 and c.get("kind") != "n"]
     if _cmp_rows:
         md_lines.append("| 统计量 | 论文写法 | 真实数据 | 差异 | 状态 |")
         md_lines.append("| --- | --- | --- | --- | --- |")
@@ -1996,6 +2088,29 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
                 "\n> 均值型置信区间以点估计为中心。中点对不上，通常意味着"
                 "区间与估计值取自不同的输出，请核对原始结果文件。")
 
+    # 5.5h 正文样本量 n ↔ 数据行数（v2.46 · A 档②）
+    md_lines.append("\n**样本量核对（论文声称的 n vs 你上传的数据）：**\n")
+    _dn = declared_n
+    if _dn.get("note"):
+        md_lines.append(f"⚪ {_dn['note']}")
+    elif _dn.get("mismatch"):
+        _dm = _dn["mismatch"]
+        md_lines.append(
+            f"- 🔴 论文正文写的样本量是 **{_dm['declared']}**"
+            f"（原文「{_dm['declared_raw']}」），"
+            f"你上传的数据是 **{_dm['rows']}** 行，相差 {_dm['diff']}。")
+        if _dm.get("table_n"):
+            md_lines.append(f"- 论文表格里出现的 n 有："
+                            f"{'、'.join(str(x) for x in _dm['table_n'])}。")
+        md_lines.append(
+            "\n> 常见且正当的原因：数据里删过缺失值、论文报的是「发放/回收」数"
+            "而非「有效分析」数、或该 n 是某个分组的样本量。"
+            "**这不等于造假**，请确认你的数据行数是否就是论文的分析样本。")
+    else:
+        _claimed = "、".join(str(x) for x in (_dn.get("claimed") or []))
+        md_lines.append(f"✅ 论文正文写的样本量（{_claimed}）与上传的数据"
+                        f"（{len(df)} 行）一致。")
+
     # 5.6 改进建议
     md_lines.append("\n### 六、改进建议（按优先级）\n")
     for i, s in enumerate(suggestions, 1):
@@ -2034,6 +2149,8 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         "abstract_check": abs_check,
         # v2.45 论文内部自洽核查（零数据依赖：措辞/假设/图表编号/置信区间）
         "coherence": coherence,
+        # v2.46 正文声称的样本量 vs 数据行数 / 表格 n（A 档②）
+        "declared_n": declared_n,
         "suggestions": suggestions,
         "explanations": explanations,
         "markdown": "\n".join(md_lines),

@@ -36,6 +36,30 @@ def _require_server():
 
 
 _require_server()
+
+
+def _open(req, timeout=30):
+    """发请求；被限流（429）时按「环境未就绪」退出（码 2），不当成测试失败。
+
+    与 smoke_test / paper_check_test / table_cross_test 同一约定。
+    限流在**服务端** `before_request` 里跑，测试进程设 RATE_LIMIT_DISABLE
+    管不到它——回归时连打多次必吃 429，那是环境，不是代码缺陷。
+    少了这一步，HTTPError 会直接逃逸成 rc=1，而 rc=1 不在
+    `regress_run.ENV_DEPENDENT` 的豁免范围内，于是每次限流都记一次假红。
+    """
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            print("=" * 70)
+            print("⚠️  本地服务触发了限流（429），本测试无法运行。")
+            print("    这是环境问题，不是代码缺陷。")
+            print("    请重启服务（或错开几分钟）后再跑：python app.py")
+            print("=" * 70)
+            sys.exit(2)
+        raise
+
+
 def post_multipart_2files(path, paper_path, data_path):
     boundary = "----papercheck_reg"
     def part(name, filename, body, ctype="application/octet-stream"):
@@ -59,7 +83,7 @@ def post_multipart_2files(path, paper_path, data_path):
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with _open(req, timeout=30) as r:
         return json.loads(r.read().decode())
 
 

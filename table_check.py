@@ -38,6 +38,10 @@ import pandas as pd
 _MEAN_HEADERS = ("m", "mean", "均值", "平均值", "平均数", "平均分", "平均")
 #: 标准差列的表头关键词
 _SD_HEADERS = ("sd", "s.d.", "std", "标准差", "标准偏差", "标准差sd")
+#: v2.46 样本量列的表头关键词（A 档② 表格侧原料）
+#  刻意不含 "num"/"count"/"频次" —— 那些在描述统计表里多指数值列的计数，
+#  不是样本量。宁可漏报。
+_N_HEADERS = ("n", "样本量", "样本数", "样本容量", "人数", "例数", "被试数")
 
 #: 明显不是统计表的表头（出现即跳过整表，避免把文献表/人口学表当统计表）
 _SKIP_HEADER_TOKENS = ("作者", "年份", "文献", "来源", "期刊", "序号", "编号")
@@ -61,6 +65,11 @@ def _is_mean_header(h: str) -> bool:
 def _is_sd_header(h: str) -> bool:
     n = _norm_header(h)
     return n in {_norm_header(x) for x in _SD_HEADERS}
+
+
+def _is_n_header(h: str) -> bool:
+    """v2.46：样本量列表头判定（A 档② 表格侧原料）。"""
+    return _norm_header(h) in {_norm_header(x) for x in _N_HEADERS}
 
 
 def _to_num(cell: str) -> float | None:
@@ -239,12 +248,13 @@ def table_cross_check(raw_text: str, df: pd.DataFrame, *,
           "checked": int,           # 比对了几格
           "mismatches": [ {...} ],  # 不一致的格子
           "skipped": [ {...} ],     # 跳过原因（行标签对不上等）
+          "claimed_n": [ {...} ],   # v2.46 表格里写的样本量（A 档② 用）
           "note": str,
         }
     """
     result: dict[str, Any] = {
         "tables": 0, "checked": 0, "mismatches": [], "skipped": [],
-        "note": "",
+        "claimed_n": [], "note": "",
     }
     if df is None or df.empty:
         result["note"] = "没有原始数据，无法做表格核查。"
@@ -268,12 +278,27 @@ def table_cross_check(raw_text: str, df: pd.DataFrame, *,
         # 找出均值/标准差列的下标
         mean_idx = [i for i, h in enumerate(hdr) if _is_mean_header(h)]
         sd_idx = [i for i, h in enumerate(hdr) if _is_sd_header(h)]
+        n_idx = [i for i, h in enumerate(hdr) if _is_n_header(h)]
         label_idx = 0  # 第 0 列约定为行标签
 
         for row in t["rows"]:
             if len(row) <= label_idx:
                 continue
             label = row[label_idx]
+            # v2.46：先采表格写的 n **再** 做列匹配 —— 匹配不到数据列的
+            # 行标签（如分组名与数据列名不一致）也要进 claimed_n，
+            # 因为「正文 n ↔ 表格 n」这条核对根本不需要匹配到数据列。
+            # 若放在 continue 之后采，这半条链就在最常见的场景下永远空转。
+            for i in n_idx:
+                if i >= len(row):
+                    continue
+                nv = _to_num(row[i])
+                if nv is None or nv <= 0 or nv != int(nv):
+                    continue
+                result["claimed_n"].append({
+                    "table": t["title"], "label": str(label), "n": int(nv),
+                    "raw": str(row[i]).strip(),
+                })
             col = _match_column(label, df)
             if col is None:
                 result["skipped"].append({

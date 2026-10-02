@@ -1576,6 +1576,14 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     abs_check = compare_abstract_vs_body(_abs_qs, _body_qs)
     abs_check["note"] = _abs_note
 
+    # 3.10) v2.45 · 论文内部自洽核查（零数据依赖 · coherence.py）
+    #      与 3.9 的分工：3.9 比的是「同一个量在两处的数值」，
+    #      这里比的是「论文的措辞/条目/编号 与 它自己实际报了什么」。
+    #      四把刀全部**不需要用户数据**——不用上传数据就能跑，
+    #      所以它也是隐私承诺最硬的一层。
+    from coherence import run_coherence_checks, summarize as _coh_summarize
+    coherence = run_coherence_checks(_raw_text, methods)
+
     # 4) 改进建议
     suggestions = _generate_suggestions(real, methods, quantities)
     # 4.05) GRIM 未通过 → 直接进建议列表（用户最容易看到的地方）
@@ -1652,6 +1660,9 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
     # 让它们可被追问、也能出现在协作审阅的逐条比对里（见 _table_text_comparisons）。
     comparisons = comparisons + _table_text_comparisons(table_check_text)
     comparisons = _attach_comparison_summaries(comparisons, real, methods)
+
+    # 4.08) v2.45 论文内部自洽核查 → 直接进建议列表
+    suggestions.extend(_coh_summarize(coherence))
 
     # 5) 渲染 Markdown
     md_lines: list[str] = []
@@ -1912,6 +1923,79 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
             f"\n- ⚪ 摘要里还有 {len(abs_check['missing_in_body'])} 个统计量在正文中没找到同类值"
             f"（{kinds}）——可能是放在表格/图里，或正文用了别的写法。此项不计为不一致。")
 
+    # 5.5g 论文内部自洽核查（v2.45 · 零数据依赖）
+    #      与 5.5f 的分工：5.5f 比数值，这里比「论文自己说的话与它自己报的结果」。
+    #      四条刀都只在有发现时才展开，没发现就一行说明，不占版面。
+    md_lines.append("\n**论文内部自洽核查（不需要你的数据，只看论文自身）：**\n")
+    _coh = coherence
+    _coh_bits: list[str] = []
+    _causal = _coh.get("causal") or {}
+    if _causal.get("hits"):
+        _coh_bits.append("因果措辞")
+    _hypo = _coh.get("hypothesis") or {}
+    if _hypo.get("applicable") and _hypo.get("missed", 0) >= 2:
+        _coh_bits.append("假设覆盖")
+    if (_coh.get("chart_numbering") or {}).get("issues"):
+        _coh_bits.append("图表编号")
+    if (_coh.get("ci") or {}).get("mismatches"):
+        _coh_bits.append("置信区间")
+
+    if _coh.get("note"):
+        md_lines.append(f"⚪ {_coh['note']}")
+    elif not _coh_bits:
+        # 逐条说明"查过但没发现"，避免用户以为这项没跑
+        _skipped = []
+        if not _causal.get("applicable"):
+            _skipped.append(f"措辞↔方法（{_causal.get('reason', '')}）")
+        if not _hypo.get("applicable"):
+            _skipped.append(f"假设覆盖率（{_hypo.get('reason', '')}）")
+        md_lines.append("✅ 未发现措辞 / 假设 / 图表编号 / 置信区间方面的自相矛盾。")
+        for s in _skipped:
+            md_lines.append(f"- ⚪ 已跳过：{s}")
+    else:
+        md_lines.append(f"发现 **{_coh.get('findings', 0)}** 处可疑，逐条列出：\n")
+        if _causal.get("hits"):
+            md_lines.append(f"**① 措辞 ↔ 所用方法**：{_causal.get('reason', '')}\n")
+            md_lines.append("| 出现的措辞 | 原文上下文 | 位置 |")
+            md_lines.append("| --- | --- | --- |")
+            for h in _causal["hits"][:8]:
+                loc = "结果部分" if h.get("in_results") else "正文"
+                ctx = str(h.get("context", "")).replace("|", "｜")
+                md_lines.append(f"| 🔴 {h['verb']} | …{ctx}… | {loc} |")
+            md_lines.append(
+                "\n> 相关分析只能说明「A 与 B 同时变化」，不能说明「A 引起 B」。"
+                "这不涉及真假，只是表述与方法的相称性，请自行核对。")
+        if _hypo.get("applicable") and _hypo.get("missed", 0) >= 2:
+            md_lines.append(
+                f"\n**② 假设条目 ↔ 检验次数**：列出 {len(_hypo['declared'])} 条"
+                f"（{'、'.join(_hypo['declared'][:8])}），"
+                f"全文识别到约 {_hypo['test_count']} 次检验/统计量报告。\n")
+            md_lines.append(
+                "> 识别靠正则，**可能少算**（检验写在表里、或用了本工具不认识的写法）。"
+                "请对照论文结果章自行核对，不要直接采信这个数字。")
+        _chart_issues = (_coh.get("chart_numbering") or {}).get("issues") or []
+        if _chart_issues:
+            md_lines.append("\n**③ 图表编号自洽**：\n")
+            for iss in _chart_issues:
+                if iss.get("number"):
+                    md_lines.append(
+                        f"- 🔴 正文引用「{iss['raw']}」（…{iss['context']}…），"
+                        f"但全文只找到 {iss['caption_count']} 个{iss['label_cn']}题"
+                        f"（最大编号 {iss['caption_max']}）。")
+                elif iss.get("unreferenced"):
+                    nums = "、".join(f"{iss['label_cn']}{n}" for n in iss["unreferenced"])
+                    md_lines.append(f"- ⚪ 以下{iss['label_cn']}有题无引用：{nums}。")
+        if (_coh.get("ci") or {}).get("mismatches"):
+            md_lines.append("\n**④ 置信区间 ↔ 点估计**：\n")
+            md_lines.append("| 置信区间 | 区间中点 | 同处写的点估计 | 差 |")
+            md_lines.append("| --- | --- | --- | --- |")
+            for cm in _coh["ci"]["mismatches"]:
+                md_lines.append(f"| 🔴 {cm['raw']} | {cm['midpoint']} | "
+                                f"{cm['peer_raw']} | {cm['delta']} |")
+            md_lines.append(
+                "\n> 均值型置信区间以点估计为中心。中点对不上，通常意味着"
+                "区间与估计值取自不同的输出，请核对原始结果文件。")
+
     # 5.6 改进建议
     md_lines.append("\n### 六、改进建议（按优先级）\n")
     for i, s in enumerate(suggestions, 1):
@@ -1948,6 +2032,8 @@ def build_audit_report(paper_claims: dict[str, Any], df: pd.DataFrame,
         "table_check": table_check,
         # v2.37 摘要 ↔ 正文 统计量自查（零输入依赖）
         "abstract_check": abs_check,
+        # v2.45 论文内部自洽核查（零数据依赖：措辞/假设/图表编号/置信区间）
+        "coherence": coherence,
         "suggestions": suggestions,
         "explanations": explanations,
         "markdown": "\n".join(md_lines),

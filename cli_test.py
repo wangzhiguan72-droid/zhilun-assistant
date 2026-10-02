@@ -165,6 +165,11 @@ claims = {
     "methods": extract_methods(paper_text),
     "quantities": extract_quantities(paper_text),
     "variables": extract_variables(paper_text),
+    # v2.45：raw_text 是网页端 /api/paper_check（app.py:3741）与 CLI（cli.py:203）
+    # 都带的键，本夹具漏了它 → audit.py 里所有读全文的检查（表格交叉核查、
+    # 摘要↔正文、内部自洽）在这里全部退化成"论文正文为空"。夹具必须与真实
+    # 负载同形，否则这条断言比的是"两个都不对的输出"。
+    "raw_text": paper_text,
     "raw_text_excerpt": paper_text[:1500],
     "raw_text_length": len(paper_text),
 }

@@ -39,6 +39,7 @@ datas = [
     ('audit.py', '.'),
     ('audit_chat.py', '.'),
     ('table_check.py', '.'),        # v2.12 文本形态表格交叉核查
+    ('coherence.py', '.'),          # v2.45 论文内部自洽核查（零数据依赖）
     ('grimmer.py', '.'),            # v2.13 GRIMMER 检验（唯一真源）
 
     # —— 数据体检（产品入口）——

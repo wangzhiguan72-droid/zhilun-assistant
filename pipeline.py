@@ -210,17 +210,38 @@ class Pipeline:
         return found, missing
 
     def is_complete(self, phase: Phase) -> bool:
-        """所有必需产出文件都在 → 视为完成。"""
+        """所有必需产出文件都在 **且**（门控阶段）体检记录为通过 → 视为完成。
+
+        ⚠️ 产出文件存在**不等于**该阶段跑过。曾经只查文件，于是一份遗留的
+        `datacheck_res.md`（上次运行残留 / 手工塞进来的）就能让第 0 关"凭空通关"，
+        后续阶段全部被解锁 —— 门控形同虚设。门控阶段的完成必须同时有
+        `.pipeline_state.json` 里的 `gate.passed` 记录作证。
+        """
         _, missing = self.check_outputs(phase)
-        return not missing
+        if missing:
+            return False
+        return self._gate_passed(phase)
+
+    def _gate_passed(self, phase: Phase, prev: dict[str, Any] | None = None) -> bool:
+        """门控阶段的通行判据：有 gate 记录且 `passed is True`。
+
+        非门控阶段恒为 True（不受门控约束）。
+        """
+        if not phase.gate:
+            return True
+        gate = (prev if prev is not None else self._load_state().get(phase.key, {})).get("gate")
+        return isinstance(gate, dict) and gate.get("passed") is True
 
     def _gate_failed(self, phase: Phase, prev: dict[str, Any]) -> bool:
-        """门控阶段是否未通过。
+        """门控阶段是否「跑过体检且没通过」。
 
-        语义：**只有「跑过体检且没通过」才挡人**。
+        语义（保持不变）：**只有「跑过体检且没通过」才挡人**。
         - 跑过、有硬矛盾 → `passed=False` → 挡（这才是门控的意义）。
         - 从没跑过（无 gate 记录）→ 不额外挡：产出文件缺失本身已经会挡，
           不该再叠一层"用户无法自行脱困"的锁。
+
+        注意这里**只读状态记录**，不碰产出文件 —— 与 `is_complete` 配合使用：
+        前者答"要不要重跑"，后者答"跑没跑过、过没过"。
         """
         if not phase.gate:
             return False
@@ -234,7 +255,7 @@ class Pipeline:
     def status(self) -> list[PhaseState]:
         """扫描全流水线，返回每个阶段的实时状态。
 
-        这是幂等的只读操作：只看文件系统，不改状态文件。
+        这是幂等的只读操作：只读产出文件与状态文件（门控要看 gate 记录），不改任何东西。
         """
         saved = self._load_state()
         out: list[PhaseState] = []
@@ -246,9 +267,10 @@ class Pipeline:
 
             if self.is_complete(phase):
                 st = "done"
-                # 门控阶段：报告在，但体检没过 → 仍视为未通关
-                if self._gate_failed(phase, prev):
-                    st = "blocked"
+            elif self._gate_failed(phase, prev):
+                # 跑过体检但没通过：产出文件可能在（报告照落盘），仍算未通关。
+                # 必须与上面的 is_complete 分开判 —— 否则会掉进下面的 pending。
+                st = "blocked"
             elif prev.get("status") == "in_progress":
                 st = "in_progress"
             elif blocked_seen:
@@ -352,12 +374,19 @@ class Pipeline:
         return state[key]
 
     def validate(self, key: str) -> dict[str, Any]:
-        """校验某阶段的产出文件是否齐备。"""
+        """校验某阶段的产出文件是否齐备；门控阶段还要看体检过没过。
+
+        与 `status()` 同口径：产出齐备 ≠ 可放行。第 0 关报告在但体检未通过时，
+        这里也必须说「不 ok」，否则前端会一边提示"产出齐备 ✅"、看板一边显示 blocked。
+        """
         phase = PHASE_BY_KEY.get(key)
         if not phase:
             raise KeyError(f"未知阶段: {key}")
         found, missing = self.check_outputs(phase)
-        ok = not missing
+        gate_ok = self._gate_passed(phase)
+        ok = not missing and gate_ok
+        if not missing and not gate_ok:
+            missing = [f"{self.GATE_PHASE_KEY}（体检未通过，需先核对修正后重跑）"]
         return {
             "phase": key,
             "ok": ok,

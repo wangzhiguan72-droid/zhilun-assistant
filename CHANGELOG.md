@@ -1,3 +1,45 @@
+## v2.43
+
+**第 0 关不再被一份「遗留报告」骗过：产出文件在 ≠ 这关跑过。**
+
+### v2.43：门控完成判据修正（P2-3）
+
+- **缺陷**：阶段是否完成，此前只看**产出文件在不在**（`is_complete` → `check_outputs`），
+  而「体检过没过」只存在 `.pipeline_state.json` 的 `gate` 字典里，两者从不互相印证。
+  后果有二：
+  1. 一份**遗留的 `datacheck_res.md`**（上次运行残留 / 手工塞进来 / 从别处拷来）没有
+     任何 `gate` 记录，却足以让第 0 关卡「凭空通关」——`next_phase()` 直接跳到 collect，
+     门控形同虚设，而 `status_dict()["gate"]` 同时还在说 `passed=False`。**自相矛盾的看板**。
+  2. `validate()` 与 `status()` 对**同一阶段**给出相反结论：体检没过时前者报
+     `ok: true`（文件齐备），后者报 `blocked`。前端于是 toast「产出齐备 ✅」、
+     看板同一格显示「等待前置」，用户不知道该信哪个
+- **修法（三处，口径统一为「文件在 且 有 gate 通过记录」）**：
+  - `is_complete` 改为 `产出齐备 and _gate_passed(phase)`。新增 `_gate_passed`：
+    门控阶段要求 `gate.passed is True`，非门控阶段恒真。遗留报告不再算完成
+  - `status()` 把「跑过但没过」的判据**移出** `is_complete` 为真的分支，独立成
+    `elif self._gate_failed(...)` → `blocked`。**这一步是必须的**：若只改 `is_complete`，
+    「跑过但没过」会掉进 `pending`——把「用户已知有硬矛盾、正卡在门口」说成
+    「还没开始」，既丢信息又误导
+  - `validate()` 同步看 gate，未过时不报 `ok`，`outputs_missing` 里点明
+    「datacheck（体检未通过，需先核对修正后重跑）」，不再拿「缺文件」的名义含糊过去
+- **`_gate_failed` 的宽松语义保持不变**（「只有跑过且没通过才挡人；从没跑过不额外挡」）：
+  遗留报告 + 无 gate 记录 → `datacheck` 显示 `pending`（等用户跑一次），
+  下游仍靠 `requires` 级联锁死。**只是它再也不能冒充 done 了** —— 这正是本次要堵的口子。
+  该函数的 docstring 补了一句：只读状态记录、不碰产出文件，与 `is_complete` 分工明确
+- 测试：`copilot_test` 新增三组断言（遗留报告不算完成 / 跑过没过 = blocked 且 validate 不放行 /
+  跑过且过 = done 且放行），103 → 117 项，全绿。前两组在改动前必然失败
+
+### v2.43：回归 runner 的 worktree 假绿（附带修复）
+
+- **缺陷**：`scripts/regress_run.py` 用 `(HERE.parent / ".venv").exists()` 定位仓库根。
+  在 **git worktree** 里没有 `.venv`，于是 `ROOT` 退化成 `scripts/`，
+  `ROOT.glob("*_test.py")` 一个都找不到 —— runner 却照样打印
+  「**全部通过** · 耗时 0s」。**测试没跑 ≠ 测试通过**，而这次它正好掩盖了上面那组断言
+- **修法**：改为向上查找**含 `*_test.py` 的那一级**作为根（worktree 里也能定位到真根）；
+  解释器优先用 `ROOT/.venv`，没有则退回当前 `sys.executable`；
+  并加一道保险 —— **单元测试一个都没发现时判为失败**（退出码 1），不再输出绿色的「全部通过」。
+  实测：修前发现 0 套件、修后 61 套件
+
 ## v2.42
 
 **把自查工具的入口名从「AI 痕迹」改成「写作模板化」——它查的是文风，不是作者身份。**

@@ -21,8 +21,9 @@ def check(name, cond, detail=""):
 
 
 from paper_table_forensics import (  # noqa: E402
-    audit_paper_tables, check_digits, check_grim, check_mixed_precision,
-    check_pct_consistency, check_progression, check_relations, check_totals)
+    _independent_votes, _VOTING_GROUPS, audit_paper_tables, check_digits,
+    check_grim, check_mixed_precision, check_pct_consistency,
+    check_progression, check_relations, check_totals)
 
 print("[1] 尾串重复 + 末位偏好(一列全是 .33)")
 rows = [["组别", "得分A", "得分B"]]
@@ -164,6 +165,28 @@ check("算术硬矛盾(合计)不受降噪影响",
       tot10 and all(i["level"] == "mid" and "未经" not in i["explain"] for i in tot10),
       str([(i["category"], i["level"]) for i in tot10]))
 check("groups_hit 只记统计类命中", rep10["groups_hit"] == ["列间"], str(rep10["groups_hit"]))
+
+print("[10b] 投票权重:同源证据只算一票(P1-3)")
+# 判据是「独立证据」数,不是「报警的组数」。同源证据被数两次会凭空捏出
+# 「跨类印证」,把单条弱线索抬成中档。
+check("F1+F2 同门(F1 末位偏好/F2 尾数重复走同一道闸门)→ 只算一票",
+      len(_independent_votes(["数字", "尾串"])) == 1,
+      str(_independent_votes(["数字", "尾串"])))
+check("F4+F5:F5 也报警时等差是同一条关系,合并为一票",
+      len(_independent_votes(["等差", "列间"])) == 1,
+      str(_independent_votes(["等差", "列间"])))
+# 反向:列间那刀没开口时,等差是另一条独立路径找到的,照常单独计票
+check("只有等差报警时仍是一票(不因合并而消失)",
+      _independent_votes(["等差"]) == {"等差"}, str(_independent_votes(["等差"])))
+check("只有列间报警时仍是一票", _independent_votes(["列间"]) == {"列间"})
+check("真正独立的两路(数字/尾串 + 精度)→ 两票",
+      len(_independent_votes(["数字", "尾串", "精度"])) == 2,
+      str(_independent_votes(["数字", "尾串", "精度"])))
+check("三路独立 → 三票",
+      len(_independent_votes(["数字", "精度", "列间"])) == 3)
+# F7 未修好前不参与投票(显式化;它本就不在统计组里,今天行为不变)
+check("F7(GRIM 可达性)不在投票名单里", "F7" not in _VOTING_GROUPS
+      and "GRIM" not in "".join(_VOTING_GROUPS), str(_VOTING_GROUPS))
 
 print("[11] 频数 ↔ 百分比自洽(P1-1;纯算术,随 N 变强)")
 # 判据: abs(cnt / total * 100 - pct) > 0.6。诚实表误报 0.00%,

@@ -81,6 +81,34 @@ _CNT_HDR_RE = re.compile(
 #: 统计类线索的独立组标签 —— 单组报警时会统一降档(见 audit_paper_tables)。
 #: 合计矛盾与 GRIM 不可达属于「算术上不可能同时成立」,不在此列,单独一条也照报。
 _STAT_GROUPS = ("数字", "精度", "尾串", "等差", "列间")
+#: 参与投票的组。F7(GRIM 可达性)刻意**不在**投票名单里:它尚未建起每张表的
+#: 整数计分矩阵,当前实现用取值域近似,可能把合法表误判成不可达(见 check_grim
+#: 的说明)。一把自己没修好的刀不该拿别人的证据给自己加权——等它建好计分矩阵
+#: 再列入。注意这只是显式化:F7 本就不在 `_STAT_GROUPS` 里,今天行为不变。
+_VOTING_GROUPS = ("数字", "尾串", "精度", "等差", "列间")
+#: 同源的组合并成一票。判据是**独立证据**数,不是**报警的组数**——同一条证据
+#: 被数两次会凭空捏出「跨类印证」:
+#:   「数字」+「尾串」——末位偏好与尾数重复走**同一道闸门**(同一批列、同一个
+#:   列内 20 值门槛),是同一批数字的两种看法,只该算一票。
+_VOTE_FOLD = {"数字": "数字/尾串", "尾串": "数字/尾串"}
+
+
+def _independent_votes(groups) -> set[str]:
+    """报警的组集合 → 独立证据票集合。
+
+    「等差/列间」这一对不能无条件合并:**只在列间关系真的报了警时**才把等差
+    降权(同一条关系被数两遍);列间那刀没开口而等差开口时,等差是**另一条**
+    独立路径找到的信号,照常计票。无条件合并会把「只有列间报警」算成两票。
+    """
+    gs = set(groups)
+    foldable = ("列间" in gs) and ("等差" in gs)
+    out: set[str] = set()
+    for g in gs:
+        if foldable and g in ("等差", "列间"):
+            out.add("等差/列间")
+        else:
+            out.add(_VOTE_FOLD.get(g, g))
+    return out
 #: 设计轴列名(序号 / 剂量 / 浓度 / 时间…):本身就是等差,不参与等差与列间判定
 _DESIGN_RE = re.compile(
     r"序号|编号|编码|组别|分组|年份|时间|剂量|浓度|梯度|水平|温度|重复|"
@@ -929,12 +957,15 @@ def audit_paper_tables(tables) -> dict:
     finally:
         _LEDGER.reset(token)
 
-    # ── 独立组降噪:只有一类统计信号时全部降档 ──
-    stat = [it for it in issues if it.get("group") in _STAT_GROUPS]
-    if len({it["group"] for it in stat}) == 1:
+    # ── 独立组降噪:只有**一票**统计证据时全部降档 ──
+    # ⚠️ 票数是「独立证据」数,不是「报警的组数」——同源的组已由 _independent_votes
+    # 合并。早先直接数 distinct group,「末位偏好+尾数重复」会被当成两路印证(其实
+    # 同一道闸门),「等差+列间」更是把一个等差列数了两遍,于是单条弱线索被抬成中档。
+    stat = [it for it in issues if it.get("group") in _VOTING_GROUPS]
+    if len(_independent_votes(it["group"] for it in stat)) == 1:
         for it in stat:
             it["level"] = LEVEL_LOW
-            it["explain"] += ("\n(本次表格取证里只有这一类信号报警,未经其它"
+            it["explain"] += ("\n(本次表格取证里只有一类信号报警,未经其它"
                               "类别交叉印证,已按最低档提示。)")
     issues.sort(key=lambda it: (0 if it.get("level") == LEVEL_MID else 1,
                                 it.get("category", "")))

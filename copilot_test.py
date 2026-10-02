@@ -98,6 +98,42 @@ check(all(x["status"] == "blocked" for x in _st2["phases"][1:]),
 # 回到干净数据，恢复放行，继续原有流程
 p.run_datacheck_gate(_clean, filename="clean.csv")
 
+# 门控不能被「遗留产出文件」绕过：一份孤儿 datacheck_res.md（上次运行残留 /
+# 手工塞进来的）没有 gate 记录作证 —— 曾经它足以让第 0 关卡"凭空通关"。
+_d2 = tempfile.mkdtemp()
+with open(os.path.join(_d2, "datacheck_res.md"), "w", encoding="utf-8") as f:
+    f.write("# 体检报告（遗留）\n无高优先级问题。\n")
+_p2 = pl.Pipeline(_d2)
+check(os.path.exists(os.path.join(_d2, "datacheck_res.md")), "孤儿报告确实存在")
+check(_p2.gate_state() == {"passed": False, "ran": False}, "孤儿报告：无 gate 记录")
+check(_p2.is_complete(pl.PHASE_BY_KEY["datacheck"]) is False,
+      "孤儿报告不算完成（文件在 ≠ 跑过）")
+_st3 = _p2.status_dict()
+check(_st3["phases"][0]["status"] == "pending",
+      "孤儿报告：datacheck = pending（从没跑过，不额外挡人；待用户跑一次）")
+check(all(x["status"] == "blocked" for x in _st3["phases"][1:]),
+      "孤儿报告：后续阶段不被解锁")
+check(_p2.next_phase().key == "datacheck", "孤儿报告：next 仍停在 datacheck（门控生效）")
+check(_p2.validate("datacheck")["ok"] is False, "孤儿报告：validate 与 status 同口径（都不放行）")
+
+# 真跑一次没通过 → 报告在 + gate 记录 passed=False → 同样是 blocked（不是 pending）
+_d3 = tempfile.mkdtemp()
+_p3 = pl.Pipeline(_d3)
+_p3.run_datacheck_gate(_dirty, filename="dirty.csv")
+_s4 = _p3.status_dict()
+check(_s4["phases"][0]["status"] == "blocked", "跑过但未通过：datacheck = blocked（非 pending）")
+check(_p3.next_phase().key == "datacheck", "跑过但未通过：next 停在 datacheck")
+_v4 = _p3.validate("datacheck")
+check(_v4["ok"] is False, "跑过但未通过：validate 不放行（不再假报『产出齐备』）")
+check("datacheck" in _v4["outputs_missing"][0], "跑过但未通过：validate 说明是体检未过")
+
+# 真跑一次通过 → 才是 done / 放行
+_p3.run_datacheck_gate(_clean, filename="clean.csv")
+_s5 = _p3.status_dict()
+check(_s5["phases"][0]["status"] == "done", "跑过且通过：datacheck = done")
+check(_p3.validate("datacheck")["ok"] is True, "跑过且通过：validate 放行")
+check(_p3.next_phase().key == "collect", "跑过且通过：next = collect")
+
 # 完成 collect
 os.makedirs(os.path.join(d, "papers"), exist_ok=True)
 with open(os.path.join(d, "papers", "_index.md"), "w", encoding="utf-8") as f:

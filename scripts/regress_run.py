@@ -27,11 +27,29 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-# 仓库根：本文件在 scripts/ 下，测试套件与 .venv 都在根目录
-ROOT = HERE.parent if (HERE.parent / ".venv").exists() else HERE
 
-# 绝对路径 —— 否则从别的目录调用会找不到 .venv / 测试文件
+
+def _find_root(start: Path) -> Path:
+    """向上找到真正的仓库根：含 `*_test.py` 的那一级。
+
+    为什么不用 `(HERE.parent / ".venv").exists()`：**从 git worktree 里跑会假绿**——
+    worktree 没有 `.venv`，于是 ROOT 退化成 scripts/，`ROOT.glob("*_test.py")`
+    一个都找不到，runner 却报「全部通过 · 0 套件」。测试没跑 ≠ 测试通过。
+    """
+    for d in (start, *start.parents):
+        if any(d.glob("*_test.py")):
+            return d
+    return start.parent
+
+
+ROOT = _find_root(HERE)
+
+# 解释器：worktree 无 .venv 时用主仓库那份（路径由上面的根查找保证不越界）
 PY = str(ROOT / ".venv" / "Scripts" / "python.exe")
+if not Path(PY).exists():
+    _fallback = Path(sys.executable)
+    if _fallback.exists():
+        PY = str(_fallback)
 EXE_E2E = str(ROOT / "scripts" / "exe_e2e.py")
 EXE_PATH = str(ROOT / "dist" / "智论助手.exe")
 SUMMARY = str(ROOT / "_tmp_reg.txt")
@@ -206,6 +224,10 @@ def main():
     out.append("=" * 74)
     if failed:
         out.append("结果：%d 套件失败 → %s" % (len(failed), ", ".join(failed)))
+    elif do_unit and not TESTS:
+        # 一个套件都没发现 ≠ 全通过。宁可红，也不能给假绿。
+        out.append("结果：未发现任何单元测试套件（ROOT=%s）—— 检查根目录查找是否跑偏" % ROOT)
+        failed.append("<no-suites>")
     elif env_not_ready:
         out.append("结果：全部通过（%d 项为环境未就绪，已忽略）· 耗时 %.0fs"
                    % (len(env_not_ready), elapsed))

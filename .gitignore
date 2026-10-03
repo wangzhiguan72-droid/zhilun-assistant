@@ -68,6 +68,14 @@ freellmapi_catalog.md
 _*.txt
 _*.py
 _tmp_*
+# v2.47 比赛资料包：docs+src+dist 的打包产物 ≈97MB，含 exe。
+# 加 _tmp_* 之外的单列一条——`_*.zip` 这种宽泛写法将来会误伤别的产物，
+# 这里点名到前缀，谁生成谁负责（scripts/pack_contest.py）。
+_资料包_*/
+_资料包_*.zip
+
+# 同样的道理：打包脚本临时产物、以及上面那条目录被删后残留的 zip
+contest_pack*.zip
 # v2.29：CI 临时产物（内联 JS 拼接后用 node --check 校验，不入仓）
 _inline_all.js
 methods_graph_preview.html

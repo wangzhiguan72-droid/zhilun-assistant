@@ -382,11 +382,29 @@ _EN_ABS_RE = re.compile(r"(?:^|\n)\s*A\s*B\s*S\s*T\s*R\s*A\s*C\s*T\b", re.IGNORE
 _ABS_MIN = 80      # 短于此长度的"摘要"多半是目录行/页眉，判为没找到
 _ABS_MAX = 4000    # 长于此多半是把正文整段吞进来了，宁可判没找到
 
+# 「摘要」锚之后紧跟一个**独占一行的页码**（阿拉伯或罗马数字）→ 这是页眉，不是标题。
+#
+# 【为什么必须有这道闸】PDF 里摘要跨页时，第二页的页眉会把「中文 摘要」重排一遍，
+# 后面跟着页码。而页眉位置**在正文的关键词之前**，于是旧写法 heads[-1] 恰好选中
+# 它，摘要区间被切成一句残段（杨喆《大数据政策…》实测只剩 161 字，真正的 p 值
+# 全被切掉）。要命的是失败长相和「这篇论文没有统计量」一模一样：不报错、
+# 抽 0 条、note 为空、报告写「未发现不一致」——用户分不出是查过了还是没查成。
+#
+# 判据取「后随页码」而不是「锚所在行很空」：真标题之后一定接正文，
+# 页眉之后一定接页码。宁漏勿错——全部锚都被滤掉时返回 (0,0)，
+# 调用方如实说「未定位到摘要」，不会伪造一份「核对通过」。
+_PAGE_NO_AFTER_RE = re.compile(r"^[\s　]{0,8}\n?[\s　]{0,8}(?:[IVXLCDM]{1,6}|\d{1,4})[\s　]*\n")
+
+
+def _is_header_anchor(text: str, m: re.Match[str]) -> bool:
+    """该「摘要」锚是不是翻页页眉（后随一个独占一行的页码）。"""
+    return bool(_PAGE_NO_AFTER_RE.match(text[m.end():m.end() + 24]))
+
 
 def find_abstract_span(text: str) -> tuple[int, int]:
     """返回中文摘要的 (start, end)；定位不到返回 (0, 0)。
 
-    start = 第一个「关键词」之前**最后一个**「摘要」锚之后
+    start = 第一个「关键词」之前**最后一个非页眉**「摘要」锚之后
     end   = 第一个「关键词」锚起点（拿不到就用英文 Abstract 标题兜底）
 
     刻意保守：任何一步有疑问就返回 (0, 0)——调用方据此说"未定位到摘要"。
@@ -400,7 +418,8 @@ def find_abstract_span(text: str) -> tuple[int, int]:
     kw = _KW_HEAD_RE.search(text)
     if not kw:
         return (0, 0)                      # 没有终结符，区间无从确定
-    heads = [m for m in _ABS_HEAD_RE.finditer(text) if m.start() < kw.start()]
+    heads = [m for m in _ABS_HEAD_RE.finditer(text)
+             if m.start() < kw.start() and not _is_header_anchor(text, m)]
     if not heads:
         return (0, 0)
     start = heads[-1].end()                # 取最后一个 = 正文页那个，跳过目录页

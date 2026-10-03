@@ -79,6 +79,28 @@ check("没有「关键词」锚 → (0,0)", ep.find_abstract_span(_BROKEN) == (0
 check("摘要锚过短（目录行尾巴）→ (0,0)",
       ep.find_abstract_span("摘  要\n太短了。\n关 键 词：x\n") == (0, 0))
 
+# ---- v2.48 回归：PDF 翻页页眉里的「摘要」会抢走锚 ----
+# 真实形态（杨喆《大数据政策…》实测）：摘要跨页时，第二页页眉重排
+# 「中文 摘要」+ 罗马页码，而它出现在正文「关键词」之前 —— 旧写法取
+# heads[-1]，选中页眉，区间被切成 161 字残段，摘要里的 p 值一个都进不来。
+# 症状与「这篇论文确实没统计量」完全一样：不报错、报 0 条、渠道正常。
+_HDR_PAPER = (
+    "目  录\n1 绪论 ········· 1\n摘  要 ········· I\nAbstract ········· II\n"
+    + "中文 摘 要\nI\n大数据政策对中国电力行业环境效率的影响研究\n"
+    + "中文 摘 要\n" + ABS_BODY
+    + "\n中文 摘 要\nII\n境效率。第四，城镇化水平起到正向调节作用。\n"
+    + "\n关  键  词：大数据政策；环境效率\n"
+)
+_s, _e = ep.find_abstract_span(_HDR_PAPER)
+check("页眉锚不抢锚（真实 PDF 翻页场景）", _s > 0, f"{_s},{_e}")
+check("区间是完整摘要而非残段",
+      _s > 0 and "96 名" in _HDR_PAPER[_s:_e] and _HDR_PAPER[_s:_e].strip()
+      .startswith("近年来"),
+      repr(_HDR_PAPER[_s:_e][:80]) if _s else "-")
+_hq, _ = ep.extract_abstract_quantities(_HDR_PAPER)
+check("页眉场景下摘要统计量不为空（旧写法恒为 0）",
+      len(_hq) > 0, f"n={len(_hq)}")
+
 qs, note = ep.extract_abstract_quantities(_BROKEN)
 check("未定位时统计量为空", qs == [], str(qs))
 check("未定位时给出人话 note（绝不静默）",

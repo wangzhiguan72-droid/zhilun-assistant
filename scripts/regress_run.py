@@ -205,6 +205,15 @@ def run_exe_e2e(timeout: int = 600):
 
 
 def main():
+    # 父进程自己的汇总行也带 ⚠ —— Windows GBK 控制台编不出来直接崩（不是套件失败，
+    # 是 runner 死在打印上，后面的套件一个都没跑）。子进程有 _child_env() 兜底，
+    # 父进程这儿必须自己来。
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(description="智论助手全量回归")
     ap.add_argument("--fast", action="store_true", help="跳过 exe 链路验证（快）")
     ap.add_argument("--only", choices=["unit", "exe"], help="只跑其中一类")

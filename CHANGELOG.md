@@ -2,6 +2,23 @@
 
 **两件事，都是「测试/判据看着在跑、其实没跑」这一类。**
 
+### v2.47 补记（2026-10-03）：CLAUDE.md 第五节远端地址更正
+
+第五节原写 `origin = tiandaozongsi/zhilun-assistant.git`，并给了
+`git remote add` / `git branch -M` / `git push -u` 三行首推命令。但 `git remote -v`
+显示真实 origin 是 `wangzhiguan72-droid/zhilun-assistant.git`——旧文从不是真实远端，
+任何会话照它跑都会推到不存在的仓库。本文件是「唯一真源」，这类**指向外部系统的地址**
+写错比不写更危险：不写会去查，写错会照做。
+
+顺带把本次推送实测的两条环境事实记进第五节，免得下一个会话再踩一遍：
+
+1. 推送用 `git push origin HEAD:main`（worktree 里别依赖本地 `main` 引用是否最新）；
+2. 本机 git 配了 `http.proxy = 127.0.0.1:7897`（Clash Verge），但该代理**不通 GitHub**
+   （对 github.com 返回 000），需 `git -c http.proxy=` 绕开；直连也仅约 1/3 成功率，
+   失败重试即可，非代码问题。
+
+「推送权在用户」一条不动，措辞收紧为「包括本约定写明的端点也要等用户发话」。
+
 ### v2.47：前后测列名配对重写（`datacheck._find_pre_post_pairs`）
 
 「前后测差值过于规律」这把刀**对英文列名的表等于从来没开过**。旧判据用

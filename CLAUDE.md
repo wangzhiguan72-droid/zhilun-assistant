@@ -68,10 +68,17 @@
 
 ## 五、提交与推送纪律
 
-- **推送权在用户**：任何会话不得 `git push`。首推三行（等用户发话）：
-  `git remote add origin https://github.com/tiandaozongsi/zhilun-assistant.git`
-  `git branch -M main`
-  `git push -u origin main`
+- **推送权在用户**：任何会话不得 `git push`——**包括本约定写明的端点，也要等用户发话**。
+- **远端地址（唯一真源）**：`origin` = `https://github.com/wangzhiguan72-droid/zhilun-assistant.git`，
+  已配置好，推送分支 `main`（v2.47 起 `main` 即生产分支）。
+  > 2026-10-03 更正：本节曾写作 `tiandaozongsi/zhilun-assistant.git`——那是**写错了**，
+  > 从来不是真实远端。照旧文跑 `git remote add` 会推到不存在的仓库。以 `git remote -v` 为准。
+- **推送命令**：
+  `git push origin HEAD:main`（worktree 里用 `HEAD:main`，别依赖本地 `main` 引用是否最新）。
+- **网络注意**：本机 git 配了 `http.proxy = http://127.0.0.1:7897`（Clash Verge），
+  但该代理**不通 GitHub**（对 github.com 返回 000）。推送需绕开：
+  `git -c http.proxy= push origin HEAD:main`
+  直连 `github.com:443` 本身也不稳（约 1/3 成功率），失败就重试，不是代码问题。
 - **commit 前置**：全量回归绿 + 看一眼 `git status`——并行会话的工作区经常有
   别人的半成品，`git add -p` 逐块确认，别把别人的中间态一起带走。
 - commit 信息用中文 conventional 风格（`feat: v2.XX — 一句话`），与 CHANGELOG

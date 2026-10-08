@@ -415,7 +415,24 @@ class Pipeline:
         report = dc.run_datacheck(df)
         s = report.get("summary", {}) or {}
         high = int(s.get("high", 0))
-        passed = high == 0
+        checks_run = s.get("checks_run")
+        checks_failed = s.get("checks_failed")
+        checks_total = s.get("checks_total")
+        metadata_valid = (
+            isinstance(checks_run, list)
+            and isinstance(checks_failed, list)
+            and type(checks_total) is int and checks_total > 0
+            and all(isinstance(label, str) and label for label in checks_run + checks_failed)
+            and len(checks_run) + len(checks_failed) == checks_total
+            and len(set(checks_run + checks_failed)) == checks_total
+        )
+        checks_complete = (
+            s.get("checks_complete") is True
+            and metadata_valid
+            and not checks_failed
+        )
+        checks_failed = checks_failed if isinstance(checks_failed, list) else []
+        passed = high == 0 and checks_complete
 
         os.makedirs(self.workdir, exist_ok=True)
         rel = "datacheck_res.md"
@@ -425,8 +442,22 @@ class Pipeline:
         except OSError:
             rel = ""
 
-        note = ("体检通过：无高优先级问题。" if passed
-                else f"体检未通过：{high} 处高优先级问题，请先核对修正。")
+        if not checks_complete:
+            if not metadata_valid or not checks_failed:
+                note = ("体检未完成或完整性信息缺失/不一致，不能据此判断数据正常；"
+                        "请重新体检或反馈。")
+            elif high:
+                failed_count = len(checks_failed)
+                note = (f"体检发现 {high} 处高优先级问题，另有 {failed_count} 项检测未完成；"
+                        "请先核对并重跑，不能据此放行。")
+            else:
+                failed_count = len(checks_failed)
+                note = (f"体检未完成：{failed_count} 项检测未完成，不能据此判断数据正常；"
+                        "请重试或反馈。")
+        elif passed:
+            note = "体检通过：无高优先级问题。"
+        else:
+            note = f"体检未通过：{high} 处高优先级问题，请先核对修正。"
         state = self._load_state()
         state[self.GATE_PHASE_KEY] = {
             "status": "done" if passed else "blocked",
@@ -439,6 +470,9 @@ class Pipeline:
                 "low": int(s.get("low", 0)),
                 "rows": s.get("rows", 0),
                 "cols": s.get("cols", 0),
+                "checks_complete": checks_complete,
+                "checks_failed": checks_failed,
+                "checks_total": checks_total if metadata_valid else 0,
                 "verdict": s.get("verdict", ""),
             },
         }
@@ -461,7 +495,8 @@ class Pipeline:
         gate = prev.get("gate")
         if not isinstance(gate, dict):
             return {"passed": False, "ran": False}
-        return {"passed": gate.get("passed") is True, "ran": True, **gate}
+        return {"passed": gate.get("passed") is True, "ran": True,
+                "note": prev.get("note", ""), **gate}
 
 
 def phase_catalog() -> list[dict[str, Any]]:

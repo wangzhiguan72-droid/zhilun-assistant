@@ -1,6 +1,6 @@
 """v2.0 · 数据体检测试（产品入口 · datacheck）
 ================================================================
-测 `datacheck` 的 9 个检测器 + GRIM 工具 + 聚合入口 + HTTP 接口。
+测 `datacheck` 的全部检测器 + GRIM 工具 + 聚合入口 + HTTP 接口。
 
 测试重点（双边思路，与 explain_test / registry_test 一致）：
   1. **该报的必须报**：每类问题造一个正例，断言命中且证据里含正确行号
@@ -480,11 +480,12 @@ check("干净数据 → 0 issue", rep["summary"]["total"] == 0,
       f"got={_titles(rep['issues'])}")
 check("verdict 为『未发现明显数据问题』", "未发现明显数据问题" in rep["summary"]["verdict"])
 check("summary 结构完整",
-      all(k in rep["summary"] for k in ("total", "high", "mid", "low", "rows", "cols", "verdict", "checks_run", "disclaimer")))
+      all(k in rep["summary"] for k in ("total", "high", "mid", "low", "rows", "cols", "verdict", "checks_run", "checks_failed", "checks_total", "checks_complete", "disclaimer")))
 check("disclaimer 含『不代表数据造假』", "不代表数据造假" in rep["summary"]["disclaimer"])
 check("全部检测器都跑过（注册表口径，不冻结数字）",
       len(rep["summary"]["checks_run"]) == len(DC._CHECKS),
       f"got={rep['summary']['checks_run']}")
+check("全部检测器完成标志为真", rep["summary"]["checks_complete"] is True)
 check("取证检测器已注册（Benford + 末位偏好）",
       any("本福特" in c for c in rep["summary"]["checks_run"])
       and any("末位" in c for c in rep["summary"]["checks_run"]),
@@ -510,6 +511,63 @@ check("issue 按 high→mid→low 排序",
 check("每条 issue 字段齐全",
       all(all(k in i for k in ("level", "category", "title", "evidence", "explain", "suggestion", "rows", "columns"))
           for i in rep2["issues"]))
+
+# 检测器故障必须明确标示；全部失败时不许报「未发现问题」。
+section("12b. 检测器故障：不把未完成冒充正常")
+original_checks = DC._CHECKS
+try:
+    def _broken(_df):
+        raise RuntimeError("simulated checker failure")
+    DC._CHECKS = [("模拟检测A", _broken), ("模拟检测B", _broken)]
+    failed_report = DC.run_datacheck(clean)
+    summary = failed_report["summary"]
+    check("失败检测器全部列出", summary["checks_failed"] == ["模拟检测A", "模拟检测B"])
+    check("全部失败标记为不完整", summary["checks_complete"] is False
+          and summary["checks_total"] == 2 and summary["checks_run"] == [])
+    check("全部失败不返回假绿结论",
+          "不能据此判断" in summary["verdict"]
+          and "未发现明显数据问题" not in summary["verdict"])
+    check("Markdown 不声称逐项检查未发现问题",
+          "逐项检查未发现问题" not in DC.render_markdown(failed_report)
+          and "未完成检测：模拟检测A / 模拟检测B" in DC.render_markdown(failed_report))
+finally:
+    DC._CHECKS = original_checks
+
+try:
+    DC._CHECKS = []
+    empty_registry = DC.run_datacheck(clean)["summary"]
+    check("空检测器列表标记不完整", empty_registry["checks_complete"] is False)
+    check("空检测器列表不能报无明显问题",
+          "不能据此判断" in empty_registry["verdict"]
+          and "未发现明显数据问题" not in empty_registry["verdict"])
+finally:
+    DC._CHECKS = original_checks
+
+try:
+    def _found(_df):
+        return [{"level": DC.LEVEL_HIGH, "category": "test", "title": "模拟发现",
+                 "evidence": "e", "explain": "x", "suggestion": "s", "rows": [], "columns": []}]
+    DC._CHECKS = [("模拟失败", _broken), ("模拟命中", _found)]
+    partial_report = DC.run_datacheck(clean)
+    check("部分失败保留已有发现且明确不完整",
+          partial_report["summary"]["high"] == 1
+          and partial_report["summary"]["checks_complete"] is False
+          and "检测未完成" in partial_report["summary"]["verdict"])
+finally:
+    DC._CHECKS = original_checks
+
+base_report = DC.run_datacheck(clean)
+DC.record_additional_check(base_report, "行业规则", [])
+check("附加检测成功计入完整性和总数",
+      base_report["summary"]["checks_complete"] is True
+      and base_report["summary"]["checks_total"] == len(DC._CHECKS) + 1
+      and "行业规则" in base_report["summary"]["checks_run"])
+failed_extra = DC.run_datacheck(clean)
+DC.record_additional_check(failed_extra, "行业规则", None)
+check("附加检测失败标记不完整并列出名称",
+      failed_extra["summary"]["checks_complete"] is False
+      and "行业规则" in failed_extra["summary"]["checks_failed"]
+      and "不能据此判断" in failed_extra["summary"]["verdict"])
 
 # ===========================================================================
 section("13. 健壮性：绝不崩")
@@ -549,6 +607,23 @@ try:
     check("返回 issues + summary", isinstance(j.get("issues"), list) and isinstance(j.get("summary"), dict))
     check("检出总分对不上", any("总分" in i["title"] for i in j.get("issues", [])), f"got={[i['title'] for i in j.get('issues', [])]}")
     check("检出成绩越界", any("成绩" in i["title"] and i["level"] == "high" for i in j.get("issues", [])))
+
+    original_rule_check = A.rules_kb.check_rules
+    try:
+        def _broken_rules(_df):
+            raise RuntimeError("simulated industry-rule failure")
+        A.rules_kb.check_rules = _broken_rules
+        incomplete_resp = c.post("/api/datacheck", json={"file_id": up.get("file_id")})
+        incomplete = incomplete_resp.get_json()
+        check("行业规则故障仍返回基础报告",
+              incomplete_resp.status_code == 200 and incomplete.get("ok") is True)
+        check("行业规则故障明确列为未完成",
+              incomplete.get("summary", {}).get("checks_complete") is False
+              and "行业规则" in incomplete.get("summary", {}).get("checks_failed", []))
+        check("行业规则故障结论不假绿",
+              "不能据此判断" in incomplete.get("summary", {}).get("verdict", ""))
+    finally:
+        A.rules_kb.check_rules = original_rule_check
 
     bad = c.post("/api/datacheck", json={"file_id": "nope"}).get_json()
     check("无效 file_id → 友好报错", bad.get("ok") is False and "过期" in bad.get("error", ""))

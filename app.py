@@ -2913,14 +2913,16 @@ def _apply_byok(router, getter) -> int:
 def _augment_dc(df, report):
     """v2.32：体检报告追加「行业规则」检查 + 经验库标注与记录。
 
-    全 try/except——知识库/经验库坏掉只少两栏,绝不影响体检本体。
+    行业规则检测结果计入完整性元数据；失败时保留基础报告，但明确标为不完整。
+    经验库坏掉只少标注，不影响检测结果。
     """
     try:
         extra = rules_kb.check_rules(df)
-        if extra:
-            report["issues"] = list(report.get("issues", [])) + extra
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 - 可继续返回基础体检，但不能假装规则检查已完成
+        app.logger.warning("行业规则检测失败（%s）", type(exc).__name__)
+        data_doctor.record_additional_check(report, "行业规则", None)
+    else:
+        data_doctor.record_additional_check(report, "行业规则", extra)
     try:
         # v2.33：经验带上列统计上下文（类型/范围/唯一值/样本），
         # 事后单看《经验库.jsonl》一行也能明白当时发生了什么。

@@ -13,7 +13,7 @@
    绝不对正常数据乱扣帽子（这是本项目反复踩过的坑）。
 4. **只报可疑**：文案统一"请核对"，永不说"造假"。
 
-## 检测清单（第一批 9 项）
+## 检测清单
 
 | 类别 | 检测器 | 说明 |
 | --- | --- | --- |
@@ -25,7 +25,10 @@
 | 规律 | `check_low_variance` | 全列常数（没有信息量） |
 | 量表 | `check_reverse_scoring` | 反向题疑似漏反向计分（题项与总分负相关） |
 | 量表 | `check_straightlining` | 直线作答（整行题项答案完全相同） |
+| 作答质量 | `check_response_duration` | 作答时长过短或过于一致 |
 | 缺失 | `check_missing_pattern` | 高缺失列 / 大面积缺失行 |
+| 学术取证 | `check_benford` | 首位数字分布异常（带样本量、范围和列名闸门） |
+| 学术取证 | `check_terminal_digits` | 末位数字过度集中（排除编号、量表等不适用列） |
 
 ## 输出契约
 
@@ -34,7 +37,8 @@
     {
       "issues":  [ {level, category, title, evidence, explain, suggestion,
                     rows: [excel 行号...], columns: [列名...]} ],
-      "summary": {total, high, mid, low, rows, cols, verdict, checks_run}
+      "summary": {total, high, mid, low, rows, cols, verdict,
+                  checks_run, checks_failed, checks_total, checks_complete}
     }
 
 - `level`：`high`（硬矛盾/不可能取值）· `mid`（可疑规律）· `low`（提示）
@@ -72,6 +76,7 @@ from __future__ import annotations
 
 import re
 import math
+import logging
 from typing import Any
 
 import numpy as np
@@ -1328,17 +1333,29 @@ _CHECKS: list[tuple[str, Any]] = [
 def run_datacheck(df: pd.DataFrame) -> dict[str, Any]:
     """跑全部检测器，返回结构化体检报告。
 
-    每个检测器独立 try/except —— 单个检测器出错绝不影响整份报告（永不白屏）。
+    每个检测器独立 try/except —— 单个检测器出错绝不影响整份报告（永不白屏）；
+    但失败必须显式列出，不能把未完成的检查报告成「未发现问题」。
     """
     issues: list[dict[str, Any]] = []
     ran: list[str] = []
+    failed: list[str] = []
     for label, fn in _CHECKS:
         try:
-            found = fn(df) or []
+            found = fn(df)
+            if not isinstance(found, list):
+                raise TypeError("检测器应返回 list")
             issues.extend(found)
             ran.append(label)
-        except Exception:  # noqa: BLE001 - 单个检测器失败不拖垮整体
+        except Exception as exc:  # noqa: BLE001 - 单个检测器失败不拖垮整体
+            logging.getLogger(__name__).warning(
+                "数据体检检测器 %s 失败（%s）", label, type(exc).__name__)
+            failed.append(label)
             continue
+
+    checks_total = len(_CHECKS)
+    if not _CHECKS:
+        failed.append("没有可运行的检测器")
+        checks_total = 1
 
     issues.sort(key=lambda it: (_LEVEL_ORDER.get(it.get("level"), 9), it.get("category", "")))
 
@@ -1346,13 +1363,7 @@ def run_datacheck(df: pd.DataFrame) -> dict[str, Any]:
     mid = sum(1 for i in issues if i["level"] == LEVEL_MID)
     low = sum(1 for i in issues if i["level"] == LEVEL_LOW)
 
-    if high:
-        verdict = (f"发现 {high} 处高优先级问题（硬矛盾 / 不可能取值），"
-                   f"建议先核对修正，再做统计分析与论文撰写。")
-    elif mid:
-        verdict = f"未发现硬伤，但有 {mid} 处可疑规律，建议抽查确认。"
-    else:
-        verdict = "未发现明显数据问题，可以进入统计分析。"
+    verdict = _datacheck_verdict(high, mid, failed)
 
     return {
         "issues": issues,
@@ -1365,9 +1376,74 @@ def run_datacheck(df: pd.DataFrame) -> dict[str, Any]:
             "cols": int(df.shape[1]),
             "verdict": verdict,
             "checks_run": ran,
+            "checks_failed": failed,
+            "checks_total": checks_total,
+            "checks_complete": bool(_CHECKS) and not failed,
             "disclaimer": "本报告只提示「可疑点」，不代表数据造假；请以原始记录为准逐条核对。",
         },
     }
+
+
+def _datacheck_verdict(high: int, mid: int, failed: list[str]) -> str:
+    """Build a verdict that never presents an incomplete check as a clean result."""
+    if high:
+        verdict = (f"发现 {high} 处高优先级问题（硬矛盾 / 不可能取值），"
+                   f"建议先核对修正，再做统计分析与论文撰写。")
+    elif mid:
+        verdict = f"未发现硬伤，但有 {mid} 处可疑规律，建议抽查确认。"
+    elif failed:
+        return (f"有 {len(failed)} 项检测未完成，不能据此判断数据是否正常；"
+                "请重试或反馈。")
+    else:
+        return "未发现明显数据问题，可以进入统计分析。"
+
+    if failed:
+        verdict += (f" 另有 {len(failed)} 项检测未完成，报告不完整，"
+                    "请重试或反馈；不能据此判断数据没有问题。")
+    return verdict
+
+
+def record_additional_check(report: dict[str, Any], label: str,
+                            findings: list[dict[str, Any]] | None) -> None:
+    """Append an optional local detector result and keep report metadata truthful.
+
+    ``findings=None`` means that the additional check failed. An empty list is a
+    successful check with no findings.
+    """
+    if findings is not None and not isinstance(findings, list):
+        findings = None
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        raise TypeError("体检报告缺少 summary")
+    ran = summary.get("checks_run")
+    failed = summary.get("checks_failed")
+    total = summary.get("checks_total")
+    if (not isinstance(ran, list) or not isinstance(failed, list)
+            or type(total) is not int or total < 0
+            or len(ran) + len(failed) != total
+            or label in ran or label in failed):
+        raise ValueError("体检检测完整性信息无效")
+
+    if findings is None:
+        failed.append(label)
+    else:
+        ran.append(label)
+        issues = list(report.get("issues") or []) + findings
+        issues.sort(key=lambda it: (_LEVEL_ORDER.get(it.get("level"), 9), it.get("category", "")))
+        report["issues"] = issues
+        summary["total"] = len(issues)
+        for level in (LEVEL_HIGH, LEVEL_MID, LEVEL_LOW):
+            summary[level] = sum(1 for issue in issues if issue.get("level") == level)
+
+    summary["checks_total"] = total + 1
+    summary["checks_complete"] = (
+        summary.get("checks_complete") is True
+        and findings is not None
+        and not failed
+        and len(ran) == total + 1
+    )
+    summary["verdict"] = _datacheck_verdict(
+        int(summary.get("high", 0)), int(summary.get("mid", 0)), failed)
 
 
 # ---------------------------------------------------------------------------
@@ -1401,7 +1477,7 @@ def render_markdown(report: dict[str, Any], *, filename: str = "") -> str:
         f"- **结论**：{s.get('verdict', '')}",
         "",
     ]
-    if not issues:
+    if not issues and not s.get("checks_failed"):
         lines += ["逐项检查未发现问题。", ""]
 
     for level in (LEVEL_HIGH, LEVEL_MID, LEVEL_LOW):
@@ -1426,6 +1502,9 @@ def render_markdown(report: dict[str, Any], *, filename: str = "") -> str:
     ran = s.get("checks_run") or []
     if ran:
         lines.append(f"> 已跑检测：{' / '.join(str(x) for x in ran)}")
+    failed = s.get("checks_failed") or []
+    if failed:
+        lines.append(f"> 未完成检测：{' / '.join(str(x) for x in failed)}")
     return "\n".join(lines)
 
 

@@ -78,6 +78,52 @@ check(os.path.exists(os.path.join(d, _r["report_file"])), "体检报告已落盘
 check(p.gate_state().get("passed") is True, "gate_state 记录通过")
 check(p.next_phase().key == "collect", "体检通过后 next = collect")
 
+# 检测器全部异常时必须阻止门控，不把「没有结果」当成「没有问题」。
+import datacheck as _dc  # noqa: E402
+_original_checks = _dc._CHECKS
+try:
+    def _broken_checker(_df):
+        raise RuntimeError("simulated checker failure")
+    _dc._CHECKS = [("模拟失败检测", _broken_checker)]
+    _dfail = tempfile.mkdtemp()
+    _pfail = pl.Pipeline(_dfail)
+    _rfail = _pfail.run_datacheck_gate(_clean, filename="checker-failure.csv")
+    check(_rfail["passed"] is False, "检测器失败：门控不放行")
+    check(_pfail.gate_state().get("checks_complete") is False,
+          "检测器失败：gate_state 标记不完整")
+    check("不能据此判断数据正常" in _pfail.gate_state().get("note", ""),
+          "检测器失败：门控说明不能据此判断正常")
+finally:
+    _dc._CHECKS = _original_checks
+
+# 遗留 / 损坏报告没有可信完整性元数据时也必须 fail closed。
+_original_run_datacheck = _dc.run_datacheck
+try:
+    _dc.run_datacheck = lambda _df: {
+        "issues": [],
+        "summary": {"high": 0, "mid": 0, "low": 0,
+                    "rows": len(_df), "cols": len(_df.columns),
+                    "verdict": "未发现明显数据问题"},
+    }
+    _pmetadata = pl.Pipeline(tempfile.mkdtemp())
+    _rmetadata = _pmetadata.run_datacheck_gate(_clean, filename="missing-check-metadata.csv")
+    check(_rmetadata["passed"] is False, "完整性元数据缺失：门控不放行")
+    check("信息缺失/不一致" in _pmetadata.gate_state().get("note", ""),
+          "完整性元数据缺失：门控说明原因")
+
+    _dc.run_datacheck = lambda _df: {
+        "issues": [],
+        "summary": {"high": 0, "mid": 0, "low": 0,
+                    "rows": len(_df), "cols": len(_df.columns),
+                    "verdict": "未发现明显数据问题", "checks_run": ["检测A"],
+                    "checks_failed": [], "checks_total": 2, "checks_complete": True},
+    }
+    _pinconsistent = pl.Pipeline(tempfile.mkdtemp())
+    _rinconsistent = _pinconsistent.run_datacheck_gate(_clean, filename="bad-check-metadata.csv")
+    check(_rinconsistent["passed"] is False, "完整性计数不一致：门控不放行")
+finally:
+    _dc.run_datacheck = _original_run_datacheck
+
 # 第 0 关门控：脏数据 → 止步（报告照样落盘，但不放行）
 _dirty = pd.DataFrame({
     "学号": [1, 2, 3, 4, 5, 6],

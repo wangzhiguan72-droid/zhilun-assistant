@@ -45,10 +45,17 @@ def main() -> int:
     lines = blocks[0].split('\n')
 
     escape_html = _extract_fn(lines, 'function escapeHtml(')
+    render_dc_failure = _extract_fn(lines, 'function renderDataCheckFailure() {')
     render_dc = _extract_fn(lines, 'function renderDataCheck(data) {')
     render_fix = _extract_fn(lines, 'function renderDataFix(res) {')
 
-    probe = _PROBE_TEMPLATE % '\n\n'.join([escape_html, '', render_dc, '', render_fix])
+    if ('论文开头最多 2000 字' not in html
+            or '从全文提取的规则核查摘要' not in html
+            or 'renderDataCheckFailure(); return;' not in html):
+        raise SystemExit('✗ 数据/AI 发送范围披露或体检失败警告缺失')
+
+    probe = _PROBE_TEMPLATE % '\n\n'.join(
+        [escape_html, '', render_dc_failure, '', render_dc, '', render_fix])
     PROBE_DIR.mkdir(exist_ok=True)
     PROBE_PATH.write_text(probe, encoding='utf-8')
 
@@ -95,7 +102,8 @@ console.log('=== 1. 高风险度报告 ===');
 renderDataCheck({
   summary: { rows: 30, cols: 9, high: 1, mid: 2, low: 0,
              verdict: '发现 1 处高优先级问题', disclaimer: '只提示可疑',
-             checks_run: ['合计一致性', '重复行'] },
+             checks_run: ['合计一致性', '重复行'], checks_failed: [],
+             checks_total: 2, checks_complete: true },
   issues: [
     { level: 'high', category: '一致性', title: '「总分」与分项之和对不上',
       evidence: '第 7 行对不上', explain: '说明', suggestion: '建议核对' },
@@ -117,7 +125,8 @@ check('mid 条也渲染', html.includes('🟡 中'));
 console.log('=== 2. 干净数据：无 issue ===');
 renderDataCheck({
   summary: { rows: 40, cols: 5, high: 0, mid: 0, low: 0,
-             verdict: '未发现明显数据问题', disclaimer: 'D', checks_run: ['a'] },
+             verdict: '未发现明显数据问题', disclaimer: 'D', checks_run: ['a'],
+             checks_failed: [], checks_total: 1, checks_complete: true },
   issues: [],
 });
 html = els['datacheckBox'].innerHTML;
@@ -125,9 +134,29 @@ check('绿标 + 未发现明显数据问题', html.includes('🟢') && html.incl
 check('空列表给兜底文案', html.includes('逐项检查未发现问题'));
 check('默认折叠（不含 open 类）', !els['dcWrap']._cls.has('open'));
 
+console.log('=== 2b. 检测器失败：禁止假绿 ===');
+renderDataCheck({
+  summary: { rows: 40, cols: 5, high: 0, mid: 0, low: 0,
+             verdict: '有 2 项检测未完成，不能据此判断数据是否正常', disclaimer: 'D',
+             checks_run: [], checks_failed: ['合计一致性', '取值越界'],
+             checks_total: 2, checks_complete: false },
+  issues: [],
+});
+html = els['datacheckBox'].innerHTML;
+check('未完成时显示警示色与暂不能判断', html.includes('🟡') && html.includes('检测未完成，暂不能判断'));
+check('未完成时不显示逐项检查未发现问题', !html.includes('逐项检查未发现问题'));
+check('列出失败的检测器', html.includes('未完成检测：合计一致性 / 取值越界'));
+check('未完成报告自动展开', _dcOpen && html.includes('class="dc-wrap open"'));
+
+renderDataCheckFailure();
+html = els['datacheckBox'].innerHTML;
+check('API 故障显示展开的明确警告', html.includes('class="dc-wrap open"')
+      && html.includes('不能据此判断数据正常'));
+
 console.log('=== 3. XSS 转义 ===');
 renderDataCheck({
-  summary: { rows: 1, cols: 1, high: 1, mid: 0, low: 0, verdict: 'v', disclaimer: 'd', checks_run: [] },
+  summary: { rows: 1, cols: 1, high: 1, mid: 0, low: 0, verdict: 'v', disclaimer: 'd',
+             checks_run: ['a'], checks_failed: [], checks_total: 1, checks_complete: true },
   issues: [{ level: 'high', title: '<img src=x onerror=alert(1)>',
              evidence: 'a<b>c', explain: 'e', suggestion: 's' }],
 });
@@ -139,6 +168,8 @@ console.log('=== 4. 字段缺失容错 ===');
 let threw = false;
 try { renderDataCheck({}); } catch (e) { threw = true; console.log('    err=' + e.message); }
 check('summary 为空对象时不抛异常', !threw);
+check('完整性元数据缺失时自动展开警告', _dcOpen
+      && els['datacheckBox'].innerHTML.includes('检测未完成，暂不能判断'));
 
 console.log('=== 5. 清洗副本：自动 + 人工 ===');
 renderDataFix({

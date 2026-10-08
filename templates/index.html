@@ -1575,11 +1575,21 @@
         body: JSON.stringify({ file_id: state.fileId }),
       });
       const j = await r.json();
-      if (!j || !j.ok) { box.innerHTML = ''; return; }
+      if (!r.ok || !j || !j.ok) { renderDataCheckFailure(); return; }
       renderDataCheck(j);
     } catch (e) {
-      box.innerHTML = '';
+      renderDataCheckFailure();
     }
+  }
+
+  function renderDataCheckFailure() {
+    const box = $('datacheckBox');
+    if (!box) return;
+    _dcOpen = true;
+    box.innerHTML = '<div class="dc-wrap open">'
+      + '<div class="dc-hd lv-mid"><span class="dc-t">🟡 数据体检：检测未完成</span></div>'
+      + '<div class="dc-verdict">没有收到完整体检报告，不能据此判断数据正常。请重试；若反复出现，请反馈。</div>'
+      + '</div>';
   }
 
   function renderDataCheck(data) {
@@ -1587,16 +1597,24 @@
     if (!box) return;
     const s = data.summary || {};
     const issues = data.issues || [];
-    _dcOpen = issues.length > 0;
     // v2.16：供「协作审阅」分享用。markdown 由后端 datacheck.render_markdown 产出，
     // 前端**不自己拼报告**（避免和 CLI / 流水线 / 导出口径不一致）。
     window._lastDatacheckMarkdown = data.markdown || '';
     window._lastDatacheckIssues = issues;
 
-    const lv = s.high > 0 ? 'lv-high' : (s.mid > 0 ? 'lv-mid' : 'lv-ok');
-    const icon = s.high > 0 ? '🔴' : (s.mid > 0 ? '🟡' : '🟢');
+    const checksRun = Array.isArray(s.checks_run) ? s.checks_run : [];
+    const checksFailed = Array.isArray(s.checks_failed) ? s.checks_failed : [];
+    const checksIncomplete = s.checks_complete !== true
+      || !Array.isArray(s.checks_run) || !Array.isArray(s.checks_failed)
+      || !Number.isInteger(s.checks_total) || s.checks_total <= 0
+      || checksRun.length + checksFailed.length !== s.checks_total
+      || checksFailed.length > 0;
+    _dcOpen = issues.length > 0 || checksIncomplete;
+    const lv = s.high > 0 ? 'lv-high' : (s.mid > 0 || checksIncomplete ? 'lv-mid' : 'lv-ok');
+    const icon = s.high > 0 ? '🔴' : (s.mid > 0 || checksIncomplete ? '🟡' : '🟢');
     const title = s.high > 0 ? '发现 ' + s.high + ' 处高优先级问题'
-      : (s.mid > 0 ? s.mid + ' 处可疑规律待确认' : '未发现明显数据问题');
+      : (s.mid > 0 ? s.mid + ' 处可疑规律待确认'
+        : (checksIncomplete ? '检测未完成，暂不能判断' : '未发现明显数据问题'));
 
     const cards = issues.map(function (it) {
       const sev = it.level === 'high' ? '🔴 高' : (it.level === 'mid' ? '🟡 中' : '🔵 提示');
@@ -1621,9 +1639,12 @@
       + '<span class="dc-v"><span class="dc-caret">▶</span> ' + (issues.length ? issues.length + ' 条' : '展开') + '</span>'
       + '</div>'
       + '<div class="dc-verdict">' + escapeHtml(s.verdict || '') + '</div>'
-      + '<div class="dc-issues">' + (cards || '<div class="dc-row">逐项检查未发现问题。</div>') + '</div>'
+      + '<div class="dc-issues">' + (cards || (checksIncomplete
+        ? '<div class="dc-row">部分检测未完成，因此不能据此判断数据是否无问题。</div>'
+        : '<div class="dc-row">逐项检查未发现问题。</div>')) + '</div>'
       + '<div class="dc-note">' + escapeHtml(s.disclaimer || '')
-      + ' · 已跑检测：' + escapeHtml((s.checks_run || []).join(' / ')) + '</div>'
+      + ' · 已跑检测：' + escapeHtml(checksRun.join(' / '))
+      + (checksFailed.length ? ' · 未完成检测：' + escapeHtml(checksFailed.join(' / ')) : '') + '</div>'
       + (issues.length
           ? '<div class="dc-fixbar"><button class="dc-btn" id="dcFixBtn">🩹 生成清洗副本</button>'
             + '<span class="dc-stat">自动修掉能确定的（重复行 / 反向计分），其余逐条给建议 —— 原文件绝不动。</span></div>'
@@ -4533,8 +4554,8 @@
         <p>三件事：① 数据体检——找出数据里的录入错误和可疑规律；② 统计分析——帮你选对方法、算准数字、看懂结果；③ 论文核查——把你论文里写的数字逐个跟真实计算对一遍。所有统计计算都在你电脑本地完成，结果精确可信。</p>
       </details>
       <details>
-        <summary>我的数据会被上传到网上吗？</summary>
-        <p>不会。统计计算 100% 在你电脑本地完成，原始数据不出机器。只有当你主动勾选「AI 深度解读 / AI 深度审计」时，才会把<b>算好的统计结果数字</b>（如均值、p 值）发给大模型让它写解读——发的是结果，不是你的原始数据。</p>
+        <summary>哪些内容会发送给 AI 服务？</summary>
+        <p>常规数据体检、统计计算和规则核查在本机完成。主动运行「AI 深度解读」时，会发送已计算的统计摘要；主动运行「AI 深度审计」时，会向当前配置的模型服务发送论文开头最多 2000 字、从全文提取的规则核查摘要（最多 1500 字，可能包含论文原句中的统计量）以及本次核查指令；主动运行「AI 图表核查」时，会发送所选图片和你填写的结论句（如有）。完整论文正文不会作为整篇发送，但规则摘要可能包含从全文抽取的片段。不开启相应 AI 功能时，该功能不会发送论文文本或图片。</p>
       </details>
       <details>
         <summary>「✨ AI 深度解读」开关是干嘛的？</summary>

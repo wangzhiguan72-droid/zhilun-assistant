@@ -7,21 +7,41 @@
 
 
 
+  function renderDataCheckFailure() {
+    const box = $('datacheckBox');
+    if (!box) return;
+    _dcOpen = true;
+    box.innerHTML = '<div class="dc-wrap open">'
+      + '<div class="dc-hd lv-mid"><span class="dc-t">🟡 数据体检：检测未完成</span></div>'
+      + '<div class="dc-verdict">没有收到完整体检报告，不能据此判断数据正常。请重试；若反复出现，请反馈。</div>'
+      + '</div>';
+  }
+
+
+
   function renderDataCheck(data) {
     const box = $('datacheckBox');
     if (!box) return;
     const s = data.summary || {};
     const issues = data.issues || [];
-    _dcOpen = issues.length > 0;
     // v2.16：供「协作审阅」分享用。markdown 由后端 datacheck.render_markdown 产出，
     // 前端**不自己拼报告**（避免和 CLI / 流水线 / 导出口径不一致）。
     window._lastDatacheckMarkdown = data.markdown || '';
     window._lastDatacheckIssues = issues;
 
-    const lv = s.high > 0 ? 'lv-high' : (s.mid > 0 ? 'lv-mid' : 'lv-ok');
-    const icon = s.high > 0 ? '🔴' : (s.mid > 0 ? '🟡' : '🟢');
+    const checksRun = Array.isArray(s.checks_run) ? s.checks_run : [];
+    const checksFailed = Array.isArray(s.checks_failed) ? s.checks_failed : [];
+    const checksIncomplete = s.checks_complete !== true
+      || !Array.isArray(s.checks_run) || !Array.isArray(s.checks_failed)
+      || !Number.isInteger(s.checks_total) || s.checks_total <= 0
+      || checksRun.length + checksFailed.length !== s.checks_total
+      || checksFailed.length > 0;
+    _dcOpen = issues.length > 0 || checksIncomplete;
+    const lv = s.high > 0 ? 'lv-high' : (s.mid > 0 || checksIncomplete ? 'lv-mid' : 'lv-ok');
+    const icon = s.high > 0 ? '🔴' : (s.mid > 0 || checksIncomplete ? '🟡' : '🟢');
     const title = s.high > 0 ? '发现 ' + s.high + ' 处高优先级问题'
-      : (s.mid > 0 ? s.mid + ' 处可疑规律待确认' : '未发现明显数据问题');
+      : (s.mid > 0 ? s.mid + ' 处可疑规律待确认'
+        : (checksIncomplete ? '检测未完成，暂不能判断' : '未发现明显数据问题'));
 
     const cards = issues.map(function (it) {
       const sev = it.level === 'high' ? '🔴 高' : (it.level === 'mid' ? '🟡 中' : '🔵 提示');
@@ -46,9 +66,12 @@
       + '<span class="dc-v"><span class="dc-caret">▶</span> ' + (issues.length ? issues.length + ' 条' : '展开') + '</span>'
       + '</div>'
       + '<div class="dc-verdict">' + escapeHtml(s.verdict || '') + '</div>'
-      + '<div class="dc-issues">' + (cards || '<div class="dc-row">逐项检查未发现问题。</div>') + '</div>'
+      + '<div class="dc-issues">' + (cards || (checksIncomplete
+        ? '<div class="dc-row">部分检测未完成，因此不能据此判断数据是否无问题。</div>'
+        : '<div class="dc-row">逐项检查未发现问题。</div>')) + '</div>'
       + '<div class="dc-note">' + escapeHtml(s.disclaimer || '')
-      + ' · 已跑检测：' + escapeHtml((s.checks_run || []).join(' / ')) + '</div>'
+      + ' · 已跑检测：' + escapeHtml(checksRun.join(' / '))
+      + (checksFailed.length ? ' · 未完成检测：' + escapeHtml(checksFailed.join(' / ')) : '') + '</div>'
       + (issues.length
           ? '<div class="dc-fixbar"><button class="dc-btn" id="dcFixBtn">🩹 生成清洗副本</button>'
             + '<span class="dc-stat">自动修掉能确定的（重复行 / 反向计分），其余逐条给建议 —— 原文件绝不动。</span></div>'
@@ -156,7 +179,8 @@ console.log('=== 1. 高风险度报告 ===');
 renderDataCheck({
   summary: { rows: 30, cols: 9, high: 1, mid: 2, low: 0,
              verdict: '发现 1 处高优先级问题', disclaimer: '只提示可疑',
-             checks_run: ['合计一致性', '重复行'] },
+             checks_run: ['合计一致性', '重复行'], checks_failed: [],
+             checks_total: 2, checks_complete: true },
   issues: [
     { level: 'high', category: '一致性', title: '「总分」与分项之和对不上',
       evidence: '第 7 行对不上', explain: '说明', suggestion: '建议核对' },
@@ -178,7 +202,8 @@ check('mid 条也渲染', html.includes('🟡 中'));
 console.log('=== 2. 干净数据：无 issue ===');
 renderDataCheck({
   summary: { rows: 40, cols: 5, high: 0, mid: 0, low: 0,
-             verdict: '未发现明显数据问题', disclaimer: 'D', checks_run: ['a'] },
+             verdict: '未发现明显数据问题', disclaimer: 'D', checks_run: ['a'],
+             checks_failed: [], checks_total: 1, checks_complete: true },
   issues: [],
 });
 html = els['datacheckBox'].innerHTML;
@@ -186,9 +211,29 @@ check('绿标 + 未发现明显数据问题', html.includes('🟢') && html.incl
 check('空列表给兜底文案', html.includes('逐项检查未发现问题'));
 check('默认折叠（不含 open 类）', !els['dcWrap']._cls.has('open'));
 
+console.log('=== 2b. 检测器失败：禁止假绿 ===');
+renderDataCheck({
+  summary: { rows: 40, cols: 5, high: 0, mid: 0, low: 0,
+             verdict: '有 2 项检测未完成，不能据此判断数据是否正常', disclaimer: 'D',
+             checks_run: [], checks_failed: ['合计一致性', '取值越界'],
+             checks_total: 2, checks_complete: false },
+  issues: [],
+});
+html = els['datacheckBox'].innerHTML;
+check('未完成时显示警示色与暂不能判断', html.includes('🟡') && html.includes('检测未完成，暂不能判断'));
+check('未完成时不显示逐项检查未发现问题', !html.includes('逐项检查未发现问题'));
+check('列出失败的检测器', html.includes('未完成检测：合计一致性 / 取值越界'));
+check('未完成报告自动展开', _dcOpen && html.includes('class="dc-wrap open"'));
+
+renderDataCheckFailure();
+html = els['datacheckBox'].innerHTML;
+check('API 故障显示展开的明确警告', html.includes('class="dc-wrap open"')
+      && html.includes('不能据此判断数据正常'));
+
 console.log('=== 3. XSS 转义 ===');
 renderDataCheck({
-  summary: { rows: 1, cols: 1, high: 1, mid: 0, low: 0, verdict: 'v', disclaimer: 'd', checks_run: [] },
+  summary: { rows: 1, cols: 1, high: 1, mid: 0, low: 0, verdict: 'v', disclaimer: 'd',
+             checks_run: ['a'], checks_failed: [], checks_total: 1, checks_complete: true },
   issues: [{ level: 'high', title: '<img src=x onerror=alert(1)>',
              evidence: 'a<b>c', explain: 'e', suggestion: 's' }],
 });
@@ -200,6 +245,8 @@ console.log('=== 4. 字段缺失容错 ===');
 let threw = false;
 try { renderDataCheck({}); } catch (e) { threw = true; console.log('    err=' + e.message); }
 check('summary 为空对象时不抛异常', !threw);
+check('完整性元数据缺失时自动展开警告', _dcOpen
+      && els['datacheckBox'].innerHTML.includes('检测未完成，暂不能判断'));
 
 console.log('=== 5. 清洗副本：自动 + 人工 ===');
 renderDataFix({

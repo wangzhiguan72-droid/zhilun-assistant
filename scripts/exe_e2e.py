@@ -104,6 +104,21 @@ def main():
         print("[SKIP] 未找到 exe：" + str(EXE))
         return 2
 
+    # v2.50：启动前先看端口。PyInstaller onefile 的 bootstrapper 被 terminate
+    # 后可能留下孤儿服务进程占着 5000——新 exe 连不上、或 /health 打到旧实例
+    # 上撞旧限流计数，症状是无中生有的 429（2026-10-20 回归连踩两次，一次把
+    # 整轮结果埋掉）。宁可明确失败，也不给假结果。
+    import socket
+    _s = socket.socket()
+    try:
+        _s.bind(("127.0.0.1", 5000))
+    except OSError:
+        print("  [FAIL] 127.0.0.1:5000 已被占用——先清理残留的智论助手服务进程：")
+        print("         netstat -ano | findstr :5000  →  taskkill /PID <pid> /F")
+        return 2
+    finally:
+        _s.close()
+
     csv = (ROOT / "examples" / "rm_anova_data.csv").read_bytes()
     print("启动 exe ...")
     proc = subprocess.Popen([str(EXE)], cwd=str(ROOT),

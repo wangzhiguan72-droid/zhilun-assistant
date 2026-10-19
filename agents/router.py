@@ -107,6 +107,8 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
         ("deepseek", "deepseek-flash", 0.3),
         ("sf",       "deepseek-v4-pro", 0.3),
         ("zhipu",    "glm-4.7-flash",  0.3),   # ★★☆ 免费兜底：审计质量够用的最低成本档
+        ("sf",       "glm-z1-9b",      0.3),   # ★☆☆ v2.50 免费备胎：智谱空内容/限时轮转
+        ("dashscope", "qwen3.7-flash", 0.3),   # ★★☆ v2.50 免费尾位：百炼免费额度
         ("maas",     "glm-5",          0.3),   # ★★★ v0.5.4 私有端点：GLM 旗舰审计兜底
         ("kimi",     "kimi-k2.6",      0.3),   # ★★★ v1.8 长上下文备胎：整篇论文放得下（BYOK）
         ("mimo",     "mimo-v2.5-pro", 0.3),   # ★★☆ v1.8 质量档备胎（BYOK）

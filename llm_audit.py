@@ -46,8 +46,11 @@ _PONYTAIL_DECISION = (
     "若你在输出中跳过了某些常规核查，可用「ponytail: 原因」标注（可选）。\n\n"
 )
 
-# V4-Pro 是推理模型：reasoning token 计入 completion，预算留足
-_MAX_TOKENS = 2048
+# V4-Pro 是推理模型：reasoning token 计入 completion，预算留足。
+# v2.50：2048 → 4096。glm-4.7-flash 是混合思考模型，思考偶尔吃光 2048 预算
+# 导致正文为空（「LLM 返回空内容」，W58 曾连空 3 次）——CLAUDE.md 平台注意：
+# 思考型模型小 max_tokens 会被思考吃光，默认 4096 起。
+_MAX_TOKENS = 4096
 
 # 规则发现摘要的长度上限（变量区，别让数据侧内容淹没论文审计）
 _DIGEST_LIMIT = 1500
@@ -198,20 +201,44 @@ def audit_paper_with_llm(paper_text: str, audit: dict[str, Any],
     try:
         from agents import AgentError, get_router
         router = get_router()
-        result = router._get_agent("paper_check").client.chat.completions.create(
-            model=router._get_agent("paper_check").model_name,
-            messages=[{"role": "system", "content": PAPER_CHECK_SYSTEM},
-                     {"role": "user", "content": user_prompt}],
-            max_tokens=_MAX_TOKENS,
-        )
-        text = result.choices[0].message.content or ""
-        usage = result.usage
-        # 硅基流动透传 usage.prompt_cache_hit_tokens / prompt_cache_miss_tokens
-        input_paid = getattr(usage, "prompt_cache_miss_tokens",
-                            getattr(usage, "prompt_tokens", 0))
-        output_tokens = getattr(usage, "completion_tokens", 0)
-        # V4-Pro 计价：缓存命中 ¥1/M，未命中 ¥12/M（2026-09-09 官方价）
-        cost = (input_paid * 12 + output_tokens * 24) / 1_000_000
+
+        def _call_once() -> str:
+            # v2.50：改走 router.complete——429/运行时失败自动冷却并轮转容灾链
+            # 下一个候选，不再钉死链首 agent；usage 经 router._last_usage 取。
+            return router.complete("paper_check", user_prompt,
+                                   system=PAPER_CHECK_SYSTEM,
+                                   max_tokens=_MAX_TOKENS) or ""
+
+        # v2.50：空内容多为瞬时（思考预算抖动），静默重试一次，两次皆空才降级。
+        text = _call_once()
+        if not text.strip():
+            text = _call_once()
+        text = text.strip()
+        if not text:
+            return None, "LLM 返回空内容", {"cached": False, "model": model_name,
+                                             "input_tokens": 0, "output_tokens": 0,
+                                             "cost_estimate": 0.0}
+        usage = router._last_usage or {}
+        # cached_tokens = 前缀缓存命中部分；实际计费输入 = prompt - cached
+        input_paid = int(usage.get("prompt_tokens", 0) or 0) - int(usage.get("cached_tokens", 0) or 0)
+        output_tokens = int(usage.get("completion_tokens", 0) or 0)
+        served_key = router._resolved.get("paper_check") or ("", "")
+        served_model = served_key[1] if len(served_key) > 1 else ""
+        from agents.router import FREE_MODELS
+        if served_key in FREE_MODELS:
+            # v2.50：免费白名单模型真实零成本。旧逻辑一律按 V4-Pro 牌价硬算，
+            # 免费调用也报几分钱，与实际计费脱钩（D1c 实测的口径偏差）。
+            cost = 0.0
+        else:
+            # 付费档估算：按 deepseek-v4-Pro 牌价（未命中 ¥12/M、输出 ¥24/M，
+            # 2026-09-09 官方价）——非该模型实价，仅作额度参考。
+            cost = (input_paid * 12 + output_tokens * 24) / 1_000_000
+        llm_cache.put(cache_key, text)
+        meta = {"cached": False,
+                "model": served_model or model_name,
+                "input_tokens": max(input_paid, 0), "output_tokens": output_tokens,
+                "cost_estimate": round(cost, 6)}  # 6 位小数，避免浮点误差
+        return _wrap(text, paper_text), None, meta
     except AgentError as e:
         # 兜底：真调失败时回看缓存（LLM 挂了，旧结果仍可用；peek 不污染统计）
         entry = llm_cache.peek(cache_key) if not force else None
@@ -227,21 +254,11 @@ def audit_paper_with_llm(paper_text: str, audit: dict[str, Any],
                                                   "input_tokens": 0, "output_tokens": 0,
                                                   "cost_estimate": 0.0}
 
-    text = text.strip()
-    if not text:
-        return None, "LLM 返回空内容", {"cached": False, "model": model_name,
-                                         "input_tokens": 0, "output_tokens": 0,
-                                         "cost_estimate": 0.0}
-
-    llm_cache.put(cache_key, text)
-    meta = {"cached": False, "model": model_name,
-             "input_tokens": input_paid, "output_tokens": output_tokens,
-             "cost_estimate": round(cost, 6)}  # 6 位小数，避免浮点误差
-    return _wrap(text, paper_text), None, meta
-
 
 def _wrap(text: str, paper_text: str = "") -> str:
-    return ("### 🔬 AI 深度审计（V4-Pro，实验功能，请自行核对）\n\n"
+    # v2.50：标题不再写死 V4-Pro——容灾链实际可能服务 glm-4.7-flash 等免费档，
+    # 免费调用标成 V4-Pro 属误导；实际模型见响应 meta.llm_model。
+    return ("### 🔬 AI 深度审计（实验功能，请自行核对）\n\n"
             + _scope_note(paper_text) + text)
 
 

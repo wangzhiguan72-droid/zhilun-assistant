@@ -1,3 +1,21 @@
+## v2.50
+
+### AI 深度审计：空内容根因修复 + 容灾化 + 计费口径对齐（D1c 实测驱动）
+
+- **空内容根因**：`_MAX_TOKENS` 2048 → 4096。glm-4.7-flash 是混合思考模型，
+  思考偶尔吃光 2048 预算导致正文为空（D1c 对照里 W58 连空 3 次、W05 首空二成）；
+  CLAUDE.md 平台注意早有此条（「思考型模型小 max_tokens 会被思考吃光」）。
+- **容灾化**：`audit_paper_with_llm` 改走 `router.complete("paper_check")`——
+  429/运行时失败自动冷却并轮转链上下一个候选，不再钉死链首 agent；
+  空内容静默重试一次，两次皆空才降级纯规则报告。
+- **免费链扩容**：paper_check 链在智谱 glm-4.7-flash 之后补 sf glm-z1-9b 与
+  百炼 qwen3.7-flash 两个免费候选（均在 FREE_MODELS 白名单），免费档从单点
+  变三选；付费优先与「MaaS 免费尾位在 BYOK 之前」的链契约不变（compat_agent_test 锁定）。
+- **计费口径**：实际服务免费白名单模型时 `cost_estimate` 报 0（旧逻辑一律按
+  deepseek-v4-Pro 牌价硬算，免费调用也报几分钱，与真实计费脱钩——D1c 实测偏差）；
+  付费模型维持 V4-Pro 牌价估算并注明仅供额度参考。AI 段标题去掉写死的
+  「V4-Pro」字样，实际服务模型以响应 `llm_model` 为准。
+
 ## v2.49
 
 ### 修复 extract_quantities 无前导零小数 500 崩溃（W34/W69 真实论文复现）

@@ -459,12 +459,19 @@ def extract_quantities(text: str) -> list[dict[str, Any]]:
                                 "context": _slice_context(text, m)})
                     positions.append(m.start())
                 elif kind == "r":
-                    val = float(re.search(r"-?0?\.\d+", raw).group())
+                    # v2.49：None 守卫（与 mean/sd/n 支路同款；当前不可达，防同类地雷）
+                    rv = re.search(r"-?0?\.\d+", raw)
+                    if rv is None:
+                        continue
+                    val = float(rv.group())
                     out.append({"kind": "r", "value": val, "raw": raw,
                                 "context": _slice_context(text, m)})
                     positions.append(m.start())
                 elif kind == "d":
-                    val = float(re.search(r"-?\d+\.?\d*", raw).group())
+                    dv = re.search(r"-?\d+\.?\d*", raw)
+                    if dv is None:
+                        continue
+                    val = float(dv.group())
                     out.append({"kind": "d", "value": val, "raw": raw,
                                 "context": _slice_context(text, m)})
                     positions.append(m.start())
@@ -492,7 +499,15 @@ def extract_quantities(text: str) -> list[dict[str, Any]]:
                     positions.append(m.start())
                 elif kind in ("r2", "beta", "or"):
                     # v1.0 回归统计量：β / R² / OR
-                    val = float(re.search(r"=\s*(-?\d+\.?\d*)", raw).group(1))
+                    # v2.49：分类正则收得了无前导零小数（"R2= .95"），抽取正则
+                    # `(-?\d+\.?\d*)` 却要求等号后以数字开头 → re.search 返回
+                    # None 时未加守卫直接 .group(1) → 整篇 500（W34/W69 两篇
+                    # 真实论文复现）。抽取口径对齐分类口径，并加守卫；Unicode
+                    # 负号 −（U+2212）顺带归一。
+                    mv = re.search(r"=\s*([-−]?\d*\.?\d+)", raw)
+                    if mv is None:
+                        continue
+                    val = float(mv.group(1).replace("−", "-"))
                     out.append({"kind": kind, "value": val, "raw": raw,
                                 "context": _slice_context(text, m)})
                     positions.append(m.start())

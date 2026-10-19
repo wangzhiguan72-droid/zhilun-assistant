@@ -52,8 +52,10 @@ import matplotlib.pyplot as plt
 from extract_paper import (
     read_paper_text, extract_methods, extract_quantities, extract_variables,
     read_paper_tables,  # v2.11 P3 表格交叉核查（docx 结构化表格）
+    extract_abstract_quantities, find_abstract_span,  # v2.48 只传论文的入口（摘要↔正文）
 )
-from audit import build_audit_report, _red_line_scan as red_line_scan
+from audit import (build_audit_report, compare_abstract_vs_body,
+                   _red_line_scan as red_line_scan)
 from llm_enhance import enhance_analysis
 from llm_audit import audit_paper_with_llm
 from audit_chat import explain_comparison  # v1.6 ②审计对话（LLM 只解释，不计算）
@@ -3816,6 +3818,111 @@ def _copilot_resolve_workdir(raw: str | None) -> str:
     if not cand.startswith(root):
         return _COPILOT_WORKSPACE
     return cand
+
+
+@app.route("/api/check_paper_only", methods=["POST"])
+def api_check_paper_only():
+    """只传论文、不传数据 → 跑「零数据可跑」的三把刀。
+
+    为什么单开一个端点：`/api/check_paper` 的 data 是必填（400），于是**任何
+    手里没有原始 CSV 的用户**都够不到这三项能力——而投稿论文、别人的论文、
+    答辩前自查，场景恰恰就是「论文在手、数据不在手」。三把刀本来就不依赖数据，
+    缺的只是一个入口。
+
+    表单字段：
+        paper:    .docx / .txt / .md / .pdf
+        directive: 可选，自然语言过滤（只作用于 AI 痕迹那段的展示文案）
+    返回 JSON：
+        paper_claims:  {methods, quantities, variables, raw_text_excerpt, raw_text_length}
+        abstract_check: 摘要↔正文核对（v2.37；定位不到时 note 说明原因）
+        table_forensics: 表格取证（v2.35/v2.38；PDF 无结构化表格 → 诚实弃权）
+        ai_traces:     AI 风格自查（v2.36/v2.37）
+        components:    本轮实际跑到的项 / 没跑到的项（**不静默**，见 v2.46 纪律）
+    """
+    paper = request.files.get("paper")
+    if paper is None or not paper.filename:
+        return jsonify({"ok": False, "error": "请上传论文文件。"}), 400
+
+    try:
+        paper.seek(0)
+        paper_text = read_paper_text(paper)
+        paper.seek(0)
+        paper_tables = read_paper_tables(paper)   # 非 docx → []，按无表格处理
+    except ValueError as e:
+        return jsonify({"ok": False, "error": f"论文解析失败：{e}"}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"论文读取异常：{e}"}), 400
+
+    if not (paper_text or "").strip():
+        return jsonify({"ok": False, "error": "论文文本为空（扫描版 PDF 需先 OCR）。"}), 400
+
+    methods = extract_methods(paper_text)
+    quantities = extract_quantities(paper_text)
+    variables = extract_variables(paper_text)
+    if not methods and not quantities:
+        variables = [v for v in variables if set(v.get("sources", [])) - {"after_keyword"}]
+    paper_claims = {
+        "methods": methods,
+        "quantities": quantities,
+        "variables": variables,
+        "raw_text_excerpt": paper_text[:1500],
+        "raw_text_length": len(paper_text),
+    }
+
+    # ① 摘要↔正文自洽（v2.37）。note 非空 = 没定位到摘要，如实转述，不当成「通过」。
+    #
+    # 【必须按区间切，不能用全文】早期这里直接把 extract_quantities(全文) 当正文，
+    # 而全文含摘要——摘要里的 p 值在「正文」里当然找得到，于是**不一致被恒抑制**：
+    # 摘要 p=0.001 vs 正文 p=0.62 这种最典型的错，报出来是「无不一致」。
+    # 症状又是「查过了但没查成」，与 v2.48 修的那个 bug 同一副面孔。
+    # 口径与 audit.build_audit_report §3.9 保持一致，别各写一套。
+    try:
+        abs_qs, abs_note = extract_abstract_quantities(paper_text)
+        abs_start, abs_end = find_abstract_span(paper_text)
+        if abs_start:
+            body_qs = extract_quantities(paper_text[:abs_start] + " " + paper_text[abs_end:])
+        else:
+            body_qs = list(quantities)   # 定位不到摘要 → 全文当正文，摘要侧本就为空
+        abstract_check = compare_abstract_vs_body(abs_qs, body_qs)
+        abstract_check["note"] = abs_note
+        abstract_check["abstract_quantities"] = len(abs_qs)
+    except Exception as e:  # noqa: BLE001
+        abstract_check = {"error": f"摘要核对未执行：{e}"}
+
+    # ② 表格取证（v2.35 / v2.38）。弃权（abstained）不是通过——照原样透出。
+    try:
+        import paper_table_forensics
+        table_forensics = paper_table_forensics.audit_paper_tables(paper_tables)
+    except Exception as e:  # noqa: BLE001
+        table_forensics = {"error": f"表格取证未执行：{e}"}
+
+    # ③ AI 风格自查（v2.36 / v2.37）。只评风格风险，不判作者身份。
+    try:
+        from ai_audit import audit_ai_traces
+        ai_traces = audit_ai_traces(paper_text)
+    except Exception as e:  # noqa: BLE001
+        ai_traces = {"error": f"AI 痕迹自查未执行：{e}"}
+
+    ran = [k for k, v in (("abstract_check", abstract_check),
+                          ("table_forensics", table_forensics),
+                          ("ai_traces", ai_traces)) if "error" not in v]
+    skipped = [k for k in ("abstract_check", "table_forensics", "ai_traces")
+               if k not in ran]
+
+    return jsonify({
+        "ok": True,
+        "paper_claims": paper_claims,
+        "abstract_check": abstract_check,
+        "table_forensics": table_forensics,
+        "ai_traces": ai_traces,
+        "tables_parsed": len(paper_tables),
+        "components": {"ran": ran, "skipped": skipped},
+        "filename_paper": paper.filename,
+        # 免责与 /api/ai_audit 同源：只评风格，不判造假、不判作者身份
+        "disclaimer": "本报告只评估文本呈现出的「AI 风格风险」，不判定是否由 AI 生成，"
+                      "不替代学校/赛事的正式检测；表格取证与摘要核对只报「可疑，请核对」，"
+                      "永不判定造假。",
+    })
 
 
 @app.route("/api/copilot/phases", methods=["GET", "POST"])

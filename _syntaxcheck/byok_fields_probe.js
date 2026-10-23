@@ -64,3 +64,26 @@ for (const [endpoint, re] of attachPoints) {
   }
 }
 console.log(`[PASS] byok_fields_probe：${attachPoints.length} 个 LLM 入口全部透传 collectByok()`);
+
+// ── v2.52 补记：浏览器存储写入失败时不得谎报「已保存」──
+//   真实故障：localStorage 被禁 / 配额满 → setItem 抛异常，旧代码 catch 里空着，
+//   随后照样 toast「模型设置已保存」。用户以为下次打开还在，实际刷新即丢。
+//   正确行为：Key 仍在输入框里（collectByok 直接读 DOM，本次会话可用），
+//   但必须如实告知「刷新后需重填」。
+const skStart = html.indexOf("window.saveKeys = function");
+if (skStart < 0) { console.error("[探针] 找不到 window.saveKeys"); process.exit(1); }
+const skEnd = html.indexOf("  };", skStart);
+const saveKeysBody = html.slice(skStart, skEnd);
+if (!/storeOk\s*=\s*false/.test(saveKeysBody)) {
+  console.error("[探针] saveKeys 未记录 localStorage 写入失败（storeOk 标记缺失）");
+  process.exit(1);
+}
+if (!/if \(!storeOk\)/.test(saveKeysBody) || !/刷新后需重填/.test(saveKeysBody)) {
+  console.error("[探针] saveKeys 存储失败时未给出如实提示（仍可能谎报已保存）");
+  process.exit(1);
+}
+if (/setItem\(LS[^)]*\);\s*\}\s*catch \(e\) \{\s*\}/.test(saveKeysBody)) {
+  console.error("[探针] saveKeys 仍有静默 catch —— 写入失败会被吞掉");
+  process.exit(1);
+}
+console.log("[PASS] byok_fields_probe：存储失败不再谎报「已保存」");

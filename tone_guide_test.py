@@ -194,10 +194,10 @@ check("规约给了具体禁用语实例", "具有重要意义" in tg.TONE_RULES
 check("规约禁止三连排比", "三连" in tg.TONE_RULES)
 check("规约要求结论带统计量", "统计量" in tg.TONE_RULES)
 # PROMPT_VERSION 已按契约 bump
-check("llm_enhance PROMPT_VERSION 已 bump 到 v3",
-      llm_enhance.PROMPT_VERSION == "v3", llm_enhance.PROMPT_VERSION)
-check("llm_audit PROMPT_VERSION 已 bump 到 v3",
-      llm_audit.PROMPT_VERSION == "v3", llm_audit.PROMPT_VERSION)
+check("llm_enhance PROMPT_VERSION 已 bump 到 v4",
+      llm_enhance.PROMPT_VERSION == "v4", llm_enhance.PROMPT_VERSION)
+check("llm_audit PROMPT_VERSION 已 bump 到 v4",
+      llm_audit.PROMPT_VERSION == "v4", llm_audit.PROMPT_VERSION)
 
 
 print()

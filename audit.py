@@ -794,6 +794,66 @@ def _compare_quantity(paper_q: dict, real: dict) -> dict[str, Any]:
 #      摘要是压缩的，同一个量在正文里可能出现多次（分组各报一次），
 #      只要有一个对得上就算一致 —— 这是"宁可漏报，不可误报"的落点。
 #   3. 摘要里写、正文里没有的，不算错，只记一句 note。
+def _soft_match_n(aq: dict, peers: list[dict]) -> dict[str, Any] | None:
+    """v2.51 · P2 摘要↔正文 n 值软匹配（只对正整数样本量 kind='n' 生效）。
+
+    复核台账 2026-10-21 的两条可解释提示：
+      J08 摘要 n=307，正文分组 84/78/71/74 —— 分组之和恰为总数；
+      J28 摘要"招募80名"，正文完成数 66/71 —— 招募 ≥ 完成，流失正常。
+    两者都不是论文自相矛盾，是检测器缺这两种匹配能力。命中即记入
+    soft_matches（透明留痕），不再报 mismatch；非 n 值一律不软匹配。"""
+    if aq.get("kind") != "n":
+        return None
+    # v2.52 · P2b：题项/条目/指标类量词的数字是量表结构不是样本量（C46 实证；
+    #   量词可能落在 raw 或紧邻 context 里，两处都查）。命中按"不可比对"留痕，
+    #   不参与任何匹配也不报 mismatch。
+    if re.search(r"(题项|条目|指标|维度)", (aq.get("raw") or "") + (aq.get("context") or "")):
+        return {"kind": "n", "style": "item_quantifier",
+                "abstract_raw": aq.get("raw"), "matched": "", "value": aq.get("value")}
+    x = aq.get("value")
+    if not isinstance(x, (int, float)) or x != int(x) or x <= 0:
+        return None
+    x = int(x)
+    vals: list[tuple[int, str]] = []
+    for p in peers:
+        v = p.get("value")
+        if isinstance(v, (int, float)) and v == int(v) and 0 < v <= 100000:
+            vals.append((int(v), p.get("raw") or str(v)))
+    # ① 分组求和：≥2 个正文 n 之和恰等于摘要总数（J08 型）
+    if 2 <= len(vals) <= 6:
+        from itertools import combinations
+        for size in range(2, len(vals) + 1):
+            for combo in combinations(vals, size):
+                if sum(v for v, _ in combo) == x:
+                    return {"kind": "n", "style": "group_sum",
+                            "abstract_raw": aq.get("raw"),
+                            "matched": " + ".join(r for _, r in combo),
+                            "value": x}
+    # ② 招募→保留链：摘要语境含"招募/选取"，正文存在 0.5X < v < X（J28 型；
+    #   下限取严格大于——流失恰为一半已属可疑，不豁免）
+    ctx = (aq.get("context") or "") + (aq.get("raw") or "")
+    if re.search("招募|选取|征集", ctx):
+        for v, raw in vals:
+            if 0.5 * x < v < x:
+                return {"kind": "n", "style": "recruit_chain",
+                        "abstract_raw": aq.get("raw"),
+                        "matched": raw, "value": x}
+    # ③ v2.52 · 多研究实体（C59 实证：摘要 600 名是尿钠子研究，正文 18363 例
+    #   是问卷调查主研究，两者并存且各自自洽）：摘要语境与正文最大值差 3 倍以上、
+    #   且摘要语境含独立研究方法词时，跨实体不可比——不报 mismatch，留痕备查。
+    big = max((v for v, _ in vals), default=0)
+    # 收紧：除倍数差外，还要求正文那条大样本的 raw 带"纳入/调研/收集"式独立
+    # 叙述词（C59："共纳入 18363 例研究对象"），排除"单组 n"被误豁免
+    big_raw = next((raw for v, raw in vals if v == big), "")
+    if big and (big >= 3 * x or x >= 3 * big) and re.search(
+            "纳入|调研|收集|共.*例|共.*名", big_raw) and re.search(
+            "研究|调查|实验|分析", (aq.get("context") or "")):
+        return {"kind": "n", "style": "multi_study",
+                "abstract_raw": aq.get("raw"),
+                "matched": big_raw, "value": x}
+    return None
+
+
 def compare_abstract_vs_body(abs_qs: list[dict], body_qs: list[dict]) -> dict[str, Any]:
     """摘取出的摘要统计量 vs 正文统计量，逐条找"一个都对不上"的。
 
@@ -807,6 +867,7 @@ def compare_abstract_vs_body(abs_qs: list[dict], body_qs: list[dict]) -> dict[st
     checked = 0
     mismatches: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
+    soft_matches: list[dict[str, Any]] = []  # v2.51 · P2 软匹配留痕
 
     for aq in abs_qs:
         kind = aq.get("kind", "")
@@ -828,6 +889,11 @@ def compare_abstract_vs_body(abs_qs: list[dict], body_qs: list[dict]) -> dict[st
         best = _best_status(traced)
         if best["status"] == "ok":
             continue
+        # v2.51 · P2：分组求和 / 招募→保留链 软匹配（命中即不报 mismatch）
+        soft = _soft_match_n(aq, peers)
+        if soft:
+            soft_matches.append(soft)
+            continue
         mismatches.append({
             "kind": kind,
             "kind_cn": _KIND_CN.get(kind, kind),
@@ -838,7 +904,8 @@ def compare_abstract_vs_body(abs_qs: list[dict], body_qs: list[dict]) -> dict[st
             "best_real": best.get("real"),
             "reason": "摘要中的该统计量在正文同类值中找不到对得上的（容差同「用数据重跑」口径）。",
         })
-    return {"checked": checked, "mismatches": mismatches, "missing_in_body": missing}
+    return {"checked": checked, "mismatches": mismatches, "missing_in_body": missing,
+            "soft_matches": soft_matches}
 
 
 def _best_status(statuses: list[dict]) -> dict[str, Any]:

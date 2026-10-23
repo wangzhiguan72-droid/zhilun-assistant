@@ -351,6 +351,13 @@ def _rewrite_sentence(sent: str) -> tuple[str, list[str]]:
 
 
 
+#: v2.51 · P1b 方法类段落标记（与"仅被动句单项"联合才触发降权，见 _passage_scan）
+_METHOD_MARK_RE = re.compile(
+    "被试|实验程序|实验流程|实验设计|数据处理|数据收集|问卷|测量|测度|SPSS|Stata"
+    "|描述性统计|回归分析|方差分析|信度|效度|均值|反应时|注视|随机分配|随机抽取"
+    "|样本选取|平衡性检验")
+
+
 def _passage_scan(text: str, *, limit: int = 8) -> list[dict]:
     """切段 → 定位「AI 风格较集中」的段落 → 每段给一条可套用的改写范例。
 
@@ -366,6 +373,14 @@ def _passage_scan(text: str, *, limit: int = 8) -> list[dict]:
             continue                      # 单句/短段不定位,信息量不够
         score, hit = _passage_score(par)
         if score < _PASSAGE_MIN:
+            continue
+        # v2.51 · P1b：方法/程序段"被动句偏多"单项降权（复核台账 2026-10-21
+        # 的 16 条存疑偏假几乎全是被动句单项命中方法/结果/程序段——中文方法学
+        # 写作天然高频被动。仅当被动句是唯一命中维度且段落带方法类标记时跳过；
+        # 多维共同命中（如过渡套话+拔高词）不受影响，该定位的仍定位。）
+        others = (hit.get("residue", 0) + hit.get("conn", 0) + hit.get("hype", 0)
+                  + hit.get("generic", 0) + hit.get("tone", 0) + hit.get("redlist", 0))
+        if others == 0 and hit.get("passive") and _METHOD_MARK_RE.search(par):
             continue
         # 信号密度:命中句少于两成,多半只是一两个词撞上,不定位
         flagged = sum(1 for s in sents
@@ -399,12 +414,32 @@ def _passage_reasons(hit: dict) -> list[str]:
     return [name for key, name in labels if hit.get(key)]
 
 
+#: v2.51 · P1a 引文与参考文献豁免（复核台账 2026-10-21：访谈受访者原话被标
+#  "AI 残留+套话"、参考文献条目 Dal Bó… 混入正文被标——两者都不是作者文风）
+_QUOTED_SPAN_RE = re.compile(r"“[^”]{8,}”|「[^」]{8,}」|『[^』]{8,}』")
+_REFS_HEADING_RE = re.compile(r"^\s*(参考文献|References|REFERENCES)\s*$", re.M)
+
+
+def _style_view(text: str) -> str:
+    """v2.51 · P1a 风格分析视角：豁免直接引语与参考文献区。
+
+    只影响风格计分视角，不改 read_paper_text 的原始提取（其他组件仍用全文）。"""
+    t = text or ""
+    cuts = list(_REFS_HEADING_RE.finditer(t))
+    if cuts:
+        # 参考文献通常是末节：从最后一处独立标题行起整段剔除（含其后附录代码
+        # 等非作者叙述文本）。仅风格视角，页面结构不受影响。
+        t = t[:cuts[-1].start()]
+    t = _QUOTED_SPAN_RE.sub("（引文略）", t)
+    return t
+
+
 def audit_ai_traces(text: str) -> dict:
     """对论文全文做 AI 风格自查，返回可 JSON 的报告。
 
     报告口径：只谈「风格风险」，给等级与修改建议；**绝不判定作者身份**。
     """
-    text = text or ""
+    text = _style_view(text or "")
     sents = _sentences(text)
 
     conn = _connection_stats(sents)

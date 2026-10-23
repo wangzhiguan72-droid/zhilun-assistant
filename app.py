@@ -3623,6 +3623,56 @@ def api_ai_audit():
     return jsonify(report)
 
 
+# 规范体检的文本上限：30 万字的博士论文约 35 万字符，留足余量；再大多半是误传
+PAPER_LINT_MAX_CHARS = 1_500_000
+_PAPER_LINT_SOURCES = {"docx", "pdf", "txt", "md"}
+
+
+@app.route("/api/paper_lint", methods=["POST"])
+def api_paper_lint():
+    """📋 论文提交前规范体检（v2.34 · Claude 线，纯规则零 LLM，无需上传数据）。
+
+    入参（二选一）：
+        multipart: paper = 论文文件（.docx / .txt / .md / .pdf；来源按扩展名判断）
+        JSON:      {"text": "论文文本", "source": "docx|pdf|txt|md"}（source 缺省 docx）
+    出参：paper_lint.lint_paper 的报告——findings（P0 必改 / P1 建议改 / P2 可选）、
+          sections 概况、stats（statcheck 式 p 值复算）、markdown（可直接走 /api/export）。
+    口径：只列「请核对」清单，不判定学术不端，不改写正文；全程内存，不落盘。
+    """
+    if request.files.get("paper"):
+        paper = request.files["paper"]
+        source = Path(paper.filename or "").suffix.lower().lstrip(".") or "docx"
+        try:
+            paper.seek(0)
+            text = read_paper_text(paper)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": f"论文解析失败：{e}"}), 400
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"论文读取异常：{e}"}), 400
+    else:
+        payload = request.get_json(silent=True)
+        payload = payload if isinstance(payload, dict) else {}
+        text = str(payload.get("text") or "")
+        source = str(payload.get("source") or "docx").lower().lstrip(".")
+    if source not in _PAPER_LINT_SOURCES:
+        source = "docx"
+
+    if not text.strip():
+        return jsonify({"ok": False, "error": "请上传论文文件或粘贴论文文本。"}), 400
+    if len(text) > PAPER_LINT_MAX_CHARS:
+        return jsonify({"ok": False, "error": f"论文文本过长（{len(text)} 字符，上限 {PAPER_LINT_MAX_CHARS}），"
+                                              "请确认上传的是论文正文。"}), 400
+
+    from paper_lint import lint_paper
+    try:
+        report = lint_paper(text, source=source)
+    except Exception as e:  # noqa: BLE001 - 规则引擎异常给可读错误，不吐堆栈
+        app.logger.exception("paper_lint 失败")
+        return jsonify({"ok": False, "error": f"规范体检出错：{type(e).__name__}"}), 500
+    report["text_length"] = len(text)
+    return jsonify(report)
+
+
 @app.route("/api/lessons/feedback", methods=["POST"])
 def api_lessons_feedback():
     """v2.33：经验库质量把关——用户标记某条体检卡片为误报。

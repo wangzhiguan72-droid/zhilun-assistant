@@ -47,7 +47,7 @@ jobs:
         run: python scripts/secrets_scan.py
 
       - name: Static check (syntax)
-        run: python -m compileall -q app.py cli.py agents methods_registry.py audit.py datacheck.py extract_paper.py
+        run: python -m compileall -q app.py cli.py agents methods_registry.py audit.py datacheck.py extract_paper.py paper_lint.py stat_recheck.py
 
       - uses: actions/setup-node@v4
         with:
@@ -79,7 +79,7 @@ jobs:
           # 丢一半也不响。新增探针后请同步维护下面的 EXPECTED 清单。
           fail=0
           ran=0
-          EXPECTED_PROBES="ai_audit byok_fields datacheck defense_export image_audit method_label review_share wizard_integrity"
+          EXPECTED_PROBES="ai_audit byok_fields datacheck defense_export image_audit method_label paper_lint review_share wizard_integrity"
           for name in $EXPECTED_PROBES; do
             if [ ! -f "_syntaxcheck/${name}_probe.js" ]; then
               echo "::error::基准探针丢失：_syntaxcheck/${name}_probe.js 不存在（该文件历史上丢过两次）"

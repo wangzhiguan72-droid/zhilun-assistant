@@ -132,6 +132,22 @@
 - **表单字段**：`paper`（论文）、`data`（数据）
 - 返回：`comparisons`（status / 论文值 / 实算值）、`suggestions`、`explanations`
 
+### `POST /api/paper_lint`（v2.34）
+
+提交前规范体检：参考文献 GB/T 7714、正文引用 ↔ 文献表、图表编号、中文排版、结构，
+并入 statcheck 式 p 值复算。纯规则零 LLM，不需要数据，不落盘。
+
+- **表单字段**：`paper`（.docx / .pdf / .txt / .md，来源按扩展名判断）
+- 或 **JSON**：`{"text": "论文全文", "source": "docx|pdf|txt|md"}`（source 缺省 docx；非法值回落 docx）
+- 文本上限 1,500,000 字符，超出返回 400
+- 返回：
+  - `counts`：`{P0, P1, P2, total}`（P0 必改 / P1 建议改 / P2 可选）、`by_category`
+  - `findings[]`：`{priority, category, issue, action, context}`，按优先级排序；`context` 是原文摘录，可在 Word 里 Ctrl+F
+  - `sections`：文献条数与解析方式、引用体例与处数、图题 / 表题数、摘要 / 关键词 / 章数
+  - `stats`：p 值复算 `summary` / `items` / `method_note` / `disclaimer`
+  - `headline`、`notes`（如 PDF 降级说明）、`disclaimer`、`markdown`（可直接 POST 给 `/api/export`）、`text_length`
+- 口径：只列「请核对」清单，不判定学术不端，不改写正文
+
 ### `POST /api/red_line_scan`
 
 学术红线自检（前端在提交指令 / 导出前实时校验）。

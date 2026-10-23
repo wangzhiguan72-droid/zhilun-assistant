@@ -33,7 +33,7 @@ from agents.prompts import PAPER_CHECK_SYSTEM, build_paper_check_prefix
 from llm_cache import llm_cache
 
 # 改 PAPER_CHECK_SYSTEM / schema / 变量区措辞时必须 bump（旧缓存自动失效）
-PROMPT_VERSION = "v3"  # v1.7：PAPER_CHECK_SYSTEM 注入 tone_guide 语气规约
+PROMPT_VERSION = "v4"  # v2.52：PAPER_CHECK_SYSTEM 注入台账领域校准（冻结前缀变更，旧缓存自动失效）
 
 # v0.5.1：Ponytail 决策层优化（参考 best-practice）
 _PONYTAIL_DECISION = (

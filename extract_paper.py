@@ -44,6 +44,44 @@ def _normalize_newlines(text: str) -> str:
     return text.replace('\r\n', '\n').replace('\r', '\n')
 
 
+# ---------------------------------------------------------------------------
+# v2.51 · P0 封面/版权页剥离（复核校准：复核台账-2026-10-21 的 8 条假误报里
+# 6 条是封面页被整页标记，得分 700–1200 畸高——密级/学号/字距拉开模板被当
+# 正文全维度扫描。在提取层剥离，下游所有组件（风格/摘要/连贯）一并受益。）
+#: 前置页特征标记（去空格后匹配——pypdf 对封面常抽成无空格或字距拉开文本，
+#: "单 位 代 码"与"ThesisSubmittedto"都必须能在去空格文本里命中）
+_FRONT_MATTER_MARKERS = (
+    "密级", "单位代码", "学校代码", "学号", "分类号", "中图分类号", "UDC",
+    "论文题目", "论文提交日期", "论文答辩日期", "申请学位类别", "指导教师",
+    "硕士学位论文", "博士学位论文", "研究生学位论文",
+    "独创性声明", "学位论文使用授权", "本人完全了解",
+    "ThesisSubmitted", "DissertationSubmitted", "SubmittedinPartial",
+    "Thesisfor", "ThesisPresentedto",
+    "Supervisor:", "Masterof", "Degreeof",
+)
+#: 前置页文本长度上限（去空格后计；封面信息稀疏，正文页很少低于这个量还带模板标记）
+_FRONT_MATTER_MAX_CHARS = 800
+#: 高置信标记数放宽档：命中 ≥3 个标记的页面放行到 2000 字
+#  （部分封面把表格线/英文摘要一起抽出，文本量偏大但仍明显是封面）
+_FRONT_MATTER_MAX_CHARS_STRICT = 2000
+
+
+def is_front_matter_page(page_text: str) -> bool:
+    """判断单页 PDF 文本是否为封面/版权页（v2.51 · 复核校准 P0）。
+
+    两级保守判据（宁可漏剥不可误剥正文），标记按去空格文本匹配：
+      ① 去空格页文本 < 800 字且命中 ≥ 2 个前置页标记；
+      ② 去空格页文本 < 2000 字且命中 ≥ 3 个前置页标记（表格线撑大字数的封面）。"""
+    t = (page_text or "").strip()
+    if not t:
+        return False
+    t_nospace = re.sub(r"\s+", "", t)
+    hits = sum(1 for m in _FRONT_MATTER_MARKERS if m in t_nospace)
+    if hits >= 2 and len(t_nospace) < _FRONT_MATTER_MAX_CHARS:
+        return True
+    return hits >= 3 and len(t_nospace) < _FRONT_MATTER_MAX_CHARS_STRICT
+
+
 def read_paper_text(file_storage) -> str:
     """接收 Flask 的 FileStorage，返回纯文本字符串。"""
     name = file_storage.filename or ""
@@ -88,13 +126,23 @@ def read_paper_text(file_storage) -> str:
                     "若是需要密码的 PDF，请先解除密码保护后重新上传。"
                 ) from e
         parts = []
+        skipped_front = 0
         for page in reader.pages:
             t = (page.extract_text() or "").strip()
-            if t:
-                parts.append(t)
+            if not t:
+                continue
+            # v2.51 · P0：封面/版权页整页剥离（复核台账 2026-10-21 的系统性误报源）
+            if is_front_matter_page(t):
+                skipped_front += 1
+                continue
+            parts.append(t)
         if not parts:
             raise ValueError("PDF 中未提取到任何文本（可能是扫描件/图片型 PDF，暂不支持 OCR）。")
-        return _normalize_newlines("\n".join(parts))
+        text = _normalize_newlines("\n".join(parts))
+        if skipped_front:
+            # 剥离留痕：独立成段，不与下一页首段粘连（否则污染段落定位）
+            text = f"[v2.51 已按封面/版权页剥离 {skipped_front} 页]\n\n" + text
+        return text
 
     # .txt / .md
     for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030"):

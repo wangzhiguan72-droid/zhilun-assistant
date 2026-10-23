@@ -37,7 +37,7 @@ from tone_guide import TONE_RULES as _TONE_RULES
 # ⚠️ 修改任何措辞 = 改变 prompt → 必须 bump PROMPT_VERSION（缓存失效）
 # v1.7：注入 tone_guide.TONE_RULES（把"避免 AI 腔"讲成可判定的具体禁令）
 # ---------------------------------------------------------------------------
-PROMPT_VERSION = "v3"  # v1.7：注入明确语气规约（旧缓存失效）
+PROMPT_VERSION = "v4"  # v2.52：与 llm_audit 同步（台账领域校准进 system）
 
 FROZEN_SYSTEM = (
     "你是「智论助手」的学术解读引擎。你的任务：基于给定的统计检验结果（JSON），"

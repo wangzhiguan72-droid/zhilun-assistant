@@ -723,11 +723,16 @@
   .chat-wait { font-size: 12.5px; color: var(--c-muted); padding: 8px 0; }
 
   /* ---------- Toast ---------- */
+  /* v2.52 补记：多条提示纵向排列，不再全部叠在同一点互相遮盖 */
+  .toast-box {
+    position: fixed; top: 24px; right: 24px; z-index: 1000;
+    display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+    pointer-events: none;
+  }
   .toast {
-    position: fixed; top: 24px; right: 24px;
     background: var(--c-danger); color: #fff;
     padding: 12px 18px; border-radius: 6px;
-    box-shadow: var(--shadow-md); z-index: 1000;
+    box-shadow: var(--shadow-md);
     max-width: 360px;
     animation: slideIn 0.25s ease-out;
   }
@@ -1489,9 +1494,17 @@
   function show(el) { el.style.display = ''; }
   function hide(el) { el.style.display = 'none'; }
   function toast(msg) {
+    let box = document.getElementById('toastBox');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'toastBox'; box.className = 'toast-box';
+      document.body.appendChild(box);
+    }
     const t = document.createElement('div');
     t.className = 'toast'; t.textContent = msg;
-    document.body.appendChild(t);
+    box.appendChild(t);
+    // 最多同时显示 3 条：连续报错时最早的一条自动退场，避免堆积成屏
+    while (box.children.length > 3) box.removeChild(box.firstChild);
     setTimeout(() => t.remove(), 3500);
   }
   function escapeHtml(s) {
@@ -4751,9 +4764,16 @@
     var cpList = byok.custom_providers || [];
     delete byok.custom_providers;
     for (var field in byok) saved[field] = byok[field];
-    try { localStorage.setItem(LS, JSON.stringify(saved)); } catch (e) {}
-    try { localStorage.setItem(LS_CP, JSON.stringify(cpList)); } catch (e) {}
+    var storeOk = true;
+    try { localStorage.setItem(LS, JSON.stringify(saved)); } catch (e) { storeOk = false; }
+    try { localStorage.setItem(LS_CP, JSON.stringify(cpList)); } catch (e) { storeOk = false; }
     closeModal('zlSettings');
+    if (!storeOk) {
+      // Key 仍在输入框里，本次会话能用（collectByok 直接读 DOM）；
+      // 但刷新后读不回来，必须如实说，不能报「已保存」
+      toast('设置已在本次会话生效，但浏览器存储不可用（刷新后需重填）');
+      return;
+    }
     toast('模型设置已保存' + ((Object.keys(saved).length + cpList.length)
       ? '（预置 ' + Object.keys(saved).length + ' 家，自定义 ' + cpList.length + ' 家）'
       : '（未填 Key，走默认免费额度）'));

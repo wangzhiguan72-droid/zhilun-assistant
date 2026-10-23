@@ -6,6 +6,8 @@
   - analyze : 运行统计方法，输出 JSON / Markdown
   - audit   : 论文排查，输出 Markdown 报告
   - simulate: 生成模拟数据，输出 CSV
+  - check-data: 数据体检
+  - lint    : 论文提交前规范体检（参考文献 / 引用 / 图表编号 / 排版 / p 值复算）
   - methods : 列出支持的方法
 
 用法：
@@ -13,6 +15,7 @@
   python cli.py analyze data.csv --method independent_t --group gender --value score -f json
   python cli.py audit paper.pdf data.csv [--directive "只看T检验"] [--llm]
   python cli.py simulate independent_t --seed 42 --n 30
+  python cli.py lint paper.docx [-f json] [-o 体检.md] [--exit-zero]
   python cli.py methods
 
 设计原则（护栏）：
@@ -300,6 +303,45 @@ def cmd_check_data(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_lint(args: argparse.Namespace) -> None:
+    """论文提交前规范体检（v2.34）—— 与网页端 `/api/paper_lint` 共用 `paper_lint` 模块。
+
+    只看论文文本：参考文献 GB/T 7714、正文引用 ↔ 文献表、图表编号、中文排版、
+    结构，以及 statcheck 式 p 值复算。**零 LLM、不落盘、不改写正文**。
+
+    退出码：0 = 无「必改」项；1 = 有「必改」(P0) 项（便于脚本门控，--exit-zero 可关）；
+    2 = 论文读取失败。
+    """
+    from paper_lint import lint_paper
+
+    paper_path = Path(args.paper)
+    if not paper_path.exists():
+        print(f"错误：论文文件不存在 {args.paper}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        text = _read_paper_text(paper_path)
+    except Exception as e:  # noqa: BLE001 - 读取失败给出可读错误，不吐堆栈
+        print(f"错误：论文读取失败 {e}", file=sys.stderr)
+        sys.exit(2)
+
+    report = lint_paper(text, source=paper_path.suffix)
+    if args.format == "json":
+        out = json.dumps({k: v for k, v in report.items() if k != "markdown"}, ensure_ascii=False, indent=2)
+    else:
+        out = report["markdown"]
+
+    if args.output:
+        Path(args.output).write_text(out, encoding="utf-8")
+        print(f"已写入：{args.output}")
+    else:
+        print(out)
+
+    p0 = report["counts"]["P0"]
+    if p0 and not args.exit_zero:
+        print(f"\n⚠️ 有 {p0} 条「必改」项，请处理后再提交", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_methods(args: argparse.Namespace) -> None:
     """列出支持的方法。"""
     from methods_registry import method_keys, method_labels
@@ -363,6 +405,16 @@ def main() -> None:
     p_dc.add_argument("--exit-zero", dest="exit_zero", action="store_true",
                       help="即使发现高优先级问题也返回 0（默认返回 1，便于脚本门控）")
     p_dc.set_defaults(func=cmd_check_data)
+
+    # lint（v2.34 论文提交前规范体检）
+    p_lint = sub.add_parser("lint", help="论文规范体检：参考文献 / 引用 / 图表编号 / 排版 / p 值复算")
+    p_lint.add_argument("paper", help="论文文件路径（DOCX / PDF / TXT / MD）")
+    p_lint.add_argument("--format", "-f", choices=["json", "markdown"], default="markdown",
+                        help="输出格式（json 不含 markdown 字段）")
+    p_lint.add_argument("--output", "-o", help="输出文件路径（可选）")
+    p_lint.add_argument("--exit-zero", dest="exit_zero", action="store_true",
+                        help="即使有「必改」项也返回 0（默认返回 1，便于脚本门控）")
+    p_lint.set_defaults(func=cmd_lint)
 
     # methods
     p_methods = sub.add_parser("methods", help="列出支持的方法")

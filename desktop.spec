@@ -76,6 +76,8 @@ datas = [
     ('paper_table_forensics.py', '.'),  # v2.32 论文表格取证
     ('rules_kb.py', '.'),           # v2.32 行业规则知识库
     ('lessons.py', '.'),            # v2.32 经验库
+    ('paper_lint.py', '.'),         # v2.34 提交前规范体检（/api/paper_lint 函数内 import，静态分析看不见）
+    ('stat_recheck.py', '.'),       # v2.34 statcheck 式 p 值复算（被 paper_lint 引用）
     ('review_share.py', '.'),       # v2.16 协作审阅（app.py 顶层 import，漏了必闪退）
     ('version.py', '.'),            # v2.23 版本号（desktop_launcher 引用，漏了必闪退）
 
@@ -474,6 +476,8 @@ hiddenimports = [
     'paper_table_forensics',
     'rules_kb',
     'lessons',
+    'paper_lint',       # v2.34：app.py / cli.py 都是函数内 import
+    'stat_recheck',
 
     # —— 项目自有模块：PyInstaller 的静态分析看不透跨模块 import 时兜一手 ——
     #     （datas 里已带源码；这里再列一次，双保险，代价只有几十 KB）

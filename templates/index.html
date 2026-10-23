@@ -1212,6 +1212,23 @@
         然后用真实数据重跑一遍，比对你的论文结论是否站得住，并给出改进建议。
       </div>
 
+      <!-- v2.34 提交前规范体检：只传论文、无需数据，纯本地规则（paper_lint + stat_recheck） -->
+      <div style="margin: 14px auto 4px; max-width: 760px; border:1px dashed var(--c-border); border-radius:12px; padding:14px 18px; background:var(--c-bg, #faf9fc); text-align:left;">
+        <div style="font-size:14px; font-weight:600;">📋 提交前规范体检<span style="font-weight:400; color:var(--c-muted); font-size:12.5px;">（只传论文即可，纯本地规则、不上传任何数据）</span></div>
+        <div style="font-size:12.5px; color:var(--c-muted); margin:4px 0 10px;">
+          按 GB/T 7714 查参考文献著录，核对正文引用与文献表是否一一对应、图表编号是否重号跳号，
+          检查中文标点排版，并按 statcheck 方法用论文里的 t / F / χ² / r 与自由度<b>重算 p 值</b>，
+          找出抄错、写错显著性的地方。只列「请核对」清单，不改写正文。
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <button class="ghost" id="paperLintBtn" style="padding:7px 16px;">选择论文并体检</button>
+          <button class="ghost" id="paperLintExportBtn" style="padding:7px 16px; display:none;">📄 导出体检清单</button>
+          <span style="font-size:12px; color:var(--c-muted);" id="paperLintStatus">支持 .docx / .txt / .md / .pdf（docx 最准）</span>
+          <input type="file" id="paperLintInput" accept=".docx,.txt,.md,.pdf" style="display:none" />
+        </div>
+        <div id="paperLintResult" style="margin-top:10px;"></div>
+      </div>
+
       <!-- v2.15 AI 痕迹自查：只传论文、无需数据，纯本地规则 -->
       <div style="margin: 14px auto 4px; max-width: 760px; border:1px dashed var(--c-border); border-radius:12px; padding:14px 18px; background:var(--c-bg, #faf9fc); text-align:left;">
         <div style="font-size:14px; font-weight:600;">🧼 写作模板化自查<span style="font-weight:400; color:var(--c-muted); font-size:12.5px;">（只传论文即可，纯本地规则、不上传任何数据）</span></div>
@@ -2943,6 +2960,99 @@
         </div>`;
     } catch (e) {
       $('aiAuditStatus').textContent = '出错：' + e.message;
+    }
+  }
+
+  // ===== v2.34 提交前规范体检（只传论文，纯本地规则；含 statcheck 式 p 值复算）=====
+  const paperLintInput = $('paperLintInput');
+  $('paperLintBtn').addEventListener('click', () => paperLintInput.click());
+  paperLintInput.addEventListener('change', runPaperLint);
+  $('paperLintExportBtn').addEventListener('click', () => exportPaperLint());
+
+  async function runPaperLint() {
+    const f = paperLintInput.files && paperLintInput.files[0];
+    if (!f) return;
+    $('paperLintStatus').textContent = '⏳ 正在按本地规则体检（不上传数据）…';
+    $('paperLintResult').innerHTML = '';
+    $('paperLintExportBtn').style.display = 'none';
+    window._lastPaperLintMarkdown = '';
+    try {
+      const fd = new FormData();
+      fd.append('paper', f);
+      const r = await fetch('/api/paper_lint', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!d.ok) {
+        $('paperLintStatus').textContent = d.error || '体检失败';
+        return;
+      }
+      const c = d.counts || {};
+      const s = d.sections || {};
+      const st = (d.stats && d.stats.summary) || {};
+      const PCOL = { P0: '#dc2626', P1: '#d97706', P2: '#52525b' };
+      const PLAB = { P0: '必改', P1: '建议改', P2: '可选' };
+      const chip = (p) => `<span style="font-size:12px; padding:2px 9px; border-radius:999px; background:#f4f4f5; color:${PCOL[p]}; margin:2px;">${PLAB[p]} ${Number(c[p]) || 0}</span>`;
+      // 所有后端字段一律 escapeHtml：体检的就是用户论文原文，摘录里什么字符都可能有
+      const items = (d.findings || []).map(x =>
+        `<div style="margin:6px 0; font-size:13px; line-height:1.7;">
+           <b style="color:${PCOL[x.priority] || '#52525b'};">[${escapeHtml(PLAB[x.priority] || x.priority)}]</b>
+           <span style="color:var(--c-muted);">${escapeHtml(x.category)}</span> · ${escapeHtml(x.issue)}<br>
+           <span style="color:var(--c-muted);">→ ${escapeHtml(x.action)}</span>
+           ${x.context ? `<br><span style="font-size:12px; color:var(--c-muted);">位置：${escapeHtml(x.context)}</span>` : ''}
+         </div>`).join('') || '<div style="font-size:13px; color:#16a34a;">没有发现规则可识别的问题 ✅</div>';
+      const overview = `参考文献 ${Number(s.references) || 0} 条（${escapeHtml(s.ref_mode_label || '')}）· `
+        + `正文引用 ${Number(s.citations) || 0} 处（${escapeHtml(s.cite_style_label || '')}）· `
+        + `图 ${Number(s.figures) || 0} / 表 ${Number(s.tables) || 0} · 复算 p 值 ${Number(st.checked) || 0} 处`;
+      const notes = (d.notes || []).map(n =>
+        `<div style="font-size:12px; color:#b45309; margin-top:4px;">ℹ️ ${escapeHtml(n)}</div>`).join('');
+      const headColor = c.P0 ? '#dc2626' : (c.total ? '#d97706' : '#16a34a');
+      $('paperLintStatus').textContent = `已完成：全文 ${Number(d.text_length) || 0} 字`;
+      $('paperLintResult').innerHTML = `
+        <div style="border:1px solid var(--c-border); border-radius:10px; padding:12px 14px; background:var(--c-card,#fff);">
+          <div style="font-size:13.5px; font-weight:600; color:${headColor};">${escapeHtml(d.headline || '')}</div>
+          <div style="margin:6px 0; font-size:12.5px; color:var(--c-muted);">${overview}</div>
+          <div style="margin:6px 0;">${chip('P0')}${chip('P1')}${chip('P2')}</div>
+          <div>${items}</div>
+          ${notes}
+          <div style="margin-top:8px; font-size:11.5px; color:var(--c-muted);">${escapeHtml(d.disclaimer || '')} ${escapeHtml((d.stats && d.stats.disclaimer) || '')}</div>
+        </div>`;
+      window._lastPaperLintMarkdown = d.markdown || '';
+      if (window._lastPaperLintMarkdown) $('paperLintExportBtn').style.display = '';
+    } catch (e) {
+      $('paperLintStatus').textContent = '出错：' + e.message;
+    } finally {
+      paperLintInput.value = '';   // 改完论文后再选同一个文件也能触发 change，重新体检
+    }
+  }
+
+  async function exportPaperLint() {
+    if (!window._lastPaperLintMarkdown) { toast('请先运行一次体检'); return; }
+    const btn = $('paperLintExportBtn');
+    const original = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+    try {
+      const r = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markdown: window._lastPaperLintMarkdown, title: '论文规范体检' }),
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        toast('导出失败：' + (txt || r.statusText));
+        return;
+      }
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = cdFilename(r.headers.get('Content-Disposition'), '智论助手_论文规范体检.docx');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+      toast('体检清单已下载');
+    } catch (e) {
+      toast('导出出错：' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = original || '📄 导出体检清单'; }
     }
   }
 

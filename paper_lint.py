@@ -672,6 +672,9 @@ def _check_structure(body: str, has_refs: bool, pdf: bool = False) -> tuple[list
 # ---------------------------------------------------------------------------
 DISCLAIMER = ("规范体检只看论文文本本身，按 GB/T 7714—2015、GB/T 15834—2011 与常见学位论文要求做规则核对，"
               "结果是「请核对」清单而非判定；学校 / 期刊另有格式要求时以其为准。本工具不改写正文。")
+# 首屏声明检查范围：先把「不做什么」说清楚，避免被当成数据核对或统计教学入口。
+SCOPE = ("本次只核对论文规范（参考文献 / 引用 / 图表编号 / 论文结构 / 报告规范 / p 值复算），"
+         "不核对数据内容，也不提供统计方法指导。")
 CATEGORY_ORDER = ["统计复算", "结论表述", "引用核对", "参考文献", "图表编号", "论文结构", "报告规范", "中文排版"]
 
 
@@ -683,7 +686,9 @@ def _md_escape(s: str) -> str:
 def _markdown(res: dict) -> str:
     c = res["counts"]
     sec = res["sections"]
-    lines = ["# 论文提交前规范体检", "", f"**结论**：{res['headline']}", "",
+    lines = ["# 论文提交前规范体检", "",
+             f"**检查范围**：{res.get('scope', SCOPE)}", "",
+             f"**结论**：{res['headline']}", "",
              f"- 参考文献：{sec['references']} 条（{sec['ref_mode_label']}），正文引用 {sec['citations']} 处（{sec['cite_style_label']}）",
              f"- 图题 {sec['figures']} 个，表题 {sec['tables']} 个；统计复算 {res['stats']['summary']['checked']} 处",
              f"- 问题：必改 {c['P0']} 条 · 建议改 {c['P1']} 条 · 可选 {c['P2']} 条", ""]
@@ -753,7 +758,7 @@ def lint_paper(text: str, source: str = "docx", current_year: int | None = None)
                      "ref_types": i_ref["types"], "citations": i_cite["numeric"] + i_cite["author_year"],
                      "cite_style": i_cite["style"], "cite_style_label": _STYLE_LABEL[i_cite["style"]],
                      "figures": i_fig["figures"], "tables": i_fig["tables"], **i_str},
-        "findings": findings, "headline": headline, "notes": notes,
+        "findings": findings, "headline": headline, "notes": notes, "scope": SCOPE,
         "stats": {k: stats[k] for k in ("alpha", "one_tailed_declared", "summary", "summary_text", "items",
                                         "method_note", "disclaimer")},
         "disclaimer": DISCLAIMER,

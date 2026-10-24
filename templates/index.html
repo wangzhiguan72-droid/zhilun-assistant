@@ -83,6 +83,20 @@
     content: "✓ "; color: var(--c-success); font-weight: bold;
   }
 
+  /* ---------- v2.54 入口分流：先问「你现在最想解决什么」再引路 ---------- */
+  .triage { max-width: 760px; margin: 20px auto 0; }
+  .triage-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .triage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .triage-card {
+    border: 1px solid var(--c-border); border-radius: 12px; background: var(--c-card);
+    padding: 12px 14px; text-align: left; cursor: pointer;
+    font-size: 13.5px; font-weight: 600; font-family: inherit; color: inherit;
+    transition: box-shadow 0.15s, border-color 0.15s;
+  }
+  .triage-card:hover { border-color: var(--c-accent, #b45309); box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+  .triage-card small { display: block; margin-top: 4px; font-weight: 400; font-size: 12px; color: var(--c-muted); line-height: 1.45; }
+  .triage-flash { outline: 3px solid var(--c-accent, #d97706); outline-offset: 3px; }
+
   /* ---------- 拖拽上传 ---------- */
   .drop {
     background: var(--c-card);
@@ -997,6 +1011,17 @@
       智论助手 —— 你的学术副驾驶。上传 Excel，自动选择统计方法，生成符合规范的分析初稿。
     </div>
 
+    <!-- v2.54 入口分流：AI 模拟体验（S01–S13，2026-10-24）发现「想学统计」的用户会误入规范体检，
+         首屏范围声明只能校准预期，真正的解法是先问一句再引路 -->
+    <div class="triage" id="triageBox">
+      <div class="triage-title">你现在最想解决什么？</div>
+      <div class="triage-grid">
+        <button type="button" class="triage-card" data-triage="lint">📋 怕格式被打回<small>查参考文献著录、图表编号、引用对应、p 值抄错——只传论文，纯本地规则</small></button>
+        <button type="button" class="triage-card" data-triage="data">🔍 担心数据有问题<small>录错、反向题漏计分、前后矛盾——上传 Excel，先跑 12 类数据体检</small></button>
+        <button type="button" class="triage-card" data-triage="analyze">📊 不知道怎么跑统计<small>帮你选方法、本地实算、生成可引用的结论初稿</small></button>
+      </div>
+    </div>
+
     <div class="drop" id="drop" data-page-node-id="AGyZRoB8qwr4WYIBDiqWVZ">
       <div class="icon" data-page-node-id="e7201WFf7rvxxosmUPASpp">📊</div>
       <div data-page-node-id="U5h6jEIt0HyjNdK8HUmHJj"><strong data-page-node-id="ZE7epVuB0DUfQnHXHefcPU">点击</strong> 或 <strong data-page-node-id="BMHBWh0TaBy169sPhfGKqj">拖拽</strong> 上传数据文件</div>
@@ -1218,7 +1243,7 @@
       </div>
 
       <!-- v2.34 提交前规范体检：只传论文、无需数据，纯本地规则（paper_lint + stat_recheck） -->
-      <div style="margin: 14px auto 4px; max-width: 760px; border:1px dashed var(--c-border); border-radius:12px; padding:14px 18px; background:var(--c-bg, #faf9fc); text-align:left;">
+      <div id="paperLintCard" style="margin: 14px auto 4px; max-width: 760px; border:1px dashed var(--c-border); border-radius:12px; padding:14px 18px; background:var(--c-bg, #faf9fc); text-align:left;">
         <div style="font-size:14px; font-weight:600;">📋 提交前规范体检<span style="font-weight:400; color:var(--c-muted); font-size:12.5px;">（只传论文即可，纯本地规则、不上传任何数据）</span></div>
         <div style="font-size:12.5px; color:var(--c-muted); margin:4px 0 10px;">
           按 GB/T 7714 查参考文献著录，核对正文引用与文献表是否一一对应、图表编号是否重号跳号，
@@ -3022,6 +3047,7 @@
       $('paperLintResult').innerHTML = `
         <div style="border:1px solid var(--c-border); border-radius:10px; padding:12px 14px; background:var(--c-card,#fff);">
           <div style="font-size:13.5px; font-weight:600; color:${headColor};">${escapeHtml(d.headline || '')}</div>
+          <div style="margin-top:4px; font-size:12px; color:var(--c-muted);">${escapeHtml(d.scope || '')}要查数据请用上方「数据体检」，要跑统计请用「统计方法」。</div>
           <div style="margin:6px 0; font-size:12.5px; color:var(--c-muted);">${overview}</div>
           <div style="margin:6px 0;">${chip('P0')}${chip('P1')}${chip('P2')}</div>
           <div>${items}</div>
@@ -3331,6 +3357,38 @@
       ReadingNav.close();
       if (target === 'copilot') cplRefresh();
     });
+  });
+
+  // ============================================================
+  // v2.54 入口分流：模拟体验（S01–S13）发现「想学统计」的用户会误入规范体检。
+  // 首屏范围声明只校准预期，这里把「你现在最想解决什么」变成一步引路：
+  //   lint → 论文排查 Tab 的规范体检卡；data / analyze → 数据分析 Tab 的上传区
+  // ============================================================
+  const EntryTriage = {
+    go(target) {
+      if (target === 'lint') {
+        this._clickTab('check');
+        this._flash('paperLintCard', '只传论文即可：查参考文献、图表编号、引用对应与 p 值复算；不核对数据内容');
+      } else if (target === 'data' || target === 'analyze') {
+        this._clickTab('analyze');
+        this._flash('drop', '上传数据后将自动运行 12 类数据体检，随后按「1 → 2 → 3」选择方法开始分析');
+      }
+    },
+    _clickTab(name) {
+      const t = document.querySelector('#tabbar .tab[data-tab="' + name + '"]');
+      if (t) t.click();
+    },
+    _flash(id, hint) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('triage-flash');
+      setTimeout(() => el.classList.remove('triage-flash'), 2400);
+      if (hint) toast(hint);
+    },
+  };
+  document.querySelectorAll('.triage-card').forEach(b => {
+    b.addEventListener('click', () => EntryTriage.go(b.dataset.triage));
   });
 
   // ============================================================

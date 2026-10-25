@@ -444,8 +444,10 @@ _MISSING_DF = re.compile(_PRE + r"(?P<k>[tTF])\s*=\s*" + _NUM + r"\s*[,;]?\s*(?=
 # ---------------------------------------------------------------------------
 # 6) 组装结论（措辞统一为「请核对」，不下定性结论）
 # ---------------------------------------------------------------------------
-def _finding(priority: str, category: str, issue: str, action: str, context: str = "") -> dict:
-    return {"priority": priority, "category": category, "issue": issue, "action": action, "context": context}
+def _finding(priority: str, category: str, issue: str, action: str, context: str = "",
+             example: str = "") -> dict:
+    return {"priority": priority, "category": category, "issue": issue, "action": action,
+            "context": context, "example": example}
 
 
 def _capped(rows: list, make, category: str) -> list[dict]:
@@ -472,23 +474,30 @@ def _build_findings(items: list[dict], conflicts: list[dict], zero_ps: list[dict
     fs += _capped(dec, lambda it: _finding(
         "P1" if it["corrected"] else "P0", "统计复算",
         _stat_issue(it, f"在 α = {it['alpha']:g} 下的显著性结论相反"),
-        _ACTION_RECHECK + (f"；{it['note']}" if it["note"] else ""), it["context"]), "统计复算")
+        _ACTION_RECHECK + (f"；{it['note']}" if it["note"] else ""), it["context"],
+        "若软件输出是 t(58) = 2.02, p = .048，论文里就写 t(58) = 2.02, p = .048，三个数一起抄，不改动、不配对错位"), "统计复算")
     fs += _capped(inv, lambda it: _finding(
         "P1", "统计复算", f"{it['label']}「{it['text']}」：{it['note']}",
-        "请核对该处数值或自由度是否录入有误", it["context"]), "统计复算")
+        "请核对该处数值或自由度是否录入有误", it["context"],
+        "「t(258) = 25.3」这种量级一般对应 F 检验或抄写错位，回到原始输出逐项核对"), "统计复算")
     fs += _capped(inc, lambda it: _finding(
         "P1", "统计复算", _stat_issue(it, it.get("gap_note", "不一致")),
-        _ACTION_RECHECK + (f"；{it['note']}" if it["note"] else ""), it["context"]), "统计复算")
+        _ACTION_RECHECK + (f"；{it['note']}" if it["note"] else ""), it["context"],
+        "论文写 p = .032 但按 t 与自由度重算是 p = .052：以软件输出为准改正文，别只改 p 不改 t"), "统计复算")
     fs += _capped(conflicts, lambda c: _finding(
         "P1", "结论表述", f"文字表述为「{c['claim']}」，但同一分句报告的 {c['reported']} 在 α = {c['alpha']:g} 下给出相反结论",
-        "请核对结论措辞与 p 值是否对应；若采用了其他显著性水平，请在方法部分写明", c["context"]), "结论表述")
+        "请核对结论措辞与 p 值是否对应；若采用了其他显著性水平，请在方法部分写明", c["context"],
+        "p = .08 时写「差异不显著（p = .08）」；确要用「边缘显著」须写明判断标准"), "结论表述")
     if zero_ps:
         fs.append(_finding("P2", "报告规范", f"有 {len(zero_ps)} 处 p 值写作「p = 0.000」",
                            "p 值不可能恰为 0，这是软件显示位数所限，建议改写为「p < 0.001」",
-                           f"首处：p = {zero_ps[0]['num']}"))
+                           f"首处：p = {zero_ps[0]['num']}",
+                           "「p = 0.000」→「p < 0.001」"))
     if missing:
         fs.append(_finding("P2", "报告规范", f"有 {missing} 处 t / F 检验只给了统计量和 p 值，没有自由度，无法复算",
-                           "如目标期刊采用 APA 格式，建议写成 t(df) = …、F(df1, df2) = …；国内医学期刊不强制，可按期刊要求取舍"))
+                           "如目标期刊采用 APA 格式，建议写成 t(df) = …、F(df1, df2) = …；国内医学期刊不强制，可按期刊要求取舍",
+                           "",
+                           "「t = 2.35, p = .022」→「t(58) = 2.35, p = .022」"))
     return fs
 
 

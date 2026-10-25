@@ -350,12 +350,16 @@ def run_main(*, our_app: bool, port_free, app_mod=None, run_raises=None,
         "webbrowser": dl.webbrowser,
         "threading": dl.threading,
         "_try_tray": dl._try_tray,
+        "check_update_notice": dl.check_update_notice,
     }
     dl.is_our_app = lambda *a, **k: our_app
     dl.port_is_free = port_free
     dl.open_browser_delayed = lambda url, delay=2.0: FakeBrowser.opened.append(url)
     dl.webbrowser = FakeBrowser()
     dl.threading = types.SimpleNamespace(Thread=_SyncThread)
+    # v2.55：main() 启动时会后台跑更新检查；测试里 _SyncThread 把它变成同步调用，
+    # 不打桩就会真去连 GitHub（CI 慢 / 被墙直接拖黄测试）。
+    dl.check_update_notice = lambda: None
     # v2.23：必须打桩。`_try_tray` 一旦成功就会用 pystray 的 icon.run() 占住
     # **主线程**（Windows 托盘的要求），测试里真调它会永久阻塞 —— 实测把整轮
     # 全量回归挂死 12 分钟。默认让它接管失败，走控制台分支；
@@ -420,6 +424,110 @@ app_f, browser_f, out = run_main(our_app=False, port_free=lambda p: True,
                                  run_raises=OSError("address already in use"))
 check("端口被抢：捕获 OSError 不甩 traceback", True)
 check("端口被抢：给出可读提示", "无法绑定" in out, out[-300:])
+
+# ---------------------------------------------------------------------------
+# 6. v2.55 更新检查（check_update_notice / 双源 / 后台线程）
+# ---------------------------------------------------------------------------
+section("6. v2.55 更新检查")
+
+check("_parse_version: 'v2.55' → (2, 55)", dl._parse_version("v2.55") == (2, 55))
+check("_parse_version: '2.55.1' → (2, 55, 1)", dl._parse_version("2.55.1") == (2, 55, 1))
+check("_parse_version: 空串/垃圾 → ()（不比，不误报）",
+      dl._parse_version("") == () and dl._parse_version("beta") == (), "")
+
+check("更新源仓库主人写对（wangzhiguan72-droid，防首版 mike84465 回归）",
+      all("wangzhiguan72-droid/zhilun-assistant" in u for u in dl._UPDATE_SOURCES)
+      and "mike84465" not in "".join(dl._UPDATE_SOURCES), str(dl._UPDATE_SOURCES))
+check("双源：jsdelivr 优先（国内可达）+ raw 兜底",
+      "cdn.jsdelivr.net" in dl._UPDATE_SOURCES[0]
+      and "raw.githubusercontent.com" in dl._UPDATE_SOURCES[1], str(dl._UPDATE_SOURCES))
+check("提示文案带 Releases 直链", dl._UPDATE_RELEASES_URL.rstrip("/").endswith("/releases"),
+      dl._UPDATE_RELEASES_URL)
+
+
+def _upd_server(ver_text: bytes, status: int = 200):
+    srv, port = make_server(ver_text, status=status)
+    return srv, [f"http://127.0.0.1:{port}/version.py"]
+
+
+srv_n, src_new = _upd_server(b'APP_VERSION = "v9.99"\n')
+saved_upd = dl._UPDATE_SOURCES
+dl._UPDATE_SOURCES = tuple(src_new)
+try:
+    note = dl.check_update_notice()
+    check("远端更新（v9.99 > v2.55）→ 给出提示", bool(note) and "v9.99" in (note or ""), str(note))
+    check("提示里带 Releases 直链", note and dl._UPDATE_RELEASES_URL in note, str(note))
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+srv_n.shutdown()
+
+srv_s, src_same = _upd_server(b'APP_VERSION = "v2.55"\n')
+dl._UPDATE_SOURCES = tuple(src_same)
+try:
+    check("远端同版 → None", dl.check_update_notice() is None)
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+srv_s.shutdown()
+
+srv_o, src_old = _upd_server(b'APP_VERSION = "v2.53"\n')
+dl._UPDATE_SOURCES = tuple(src_old)
+try:
+    check("远端更旧 → None", dl.check_update_notice() is None)
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+srv_o.shutdown()
+
+srv_g, src_garbage = _upd_server(b"404 page not found-ish garbage", status=404)
+dl._UPDATE_SOURCES = tuple(src_garbage)
+try:
+    check("源 404 / 解析不出版本 → None（静默）", dl.check_update_notice() is None)
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+srv_g.shutdown()
+
+# 双源回退：第一家 500，第二家给新版 → 仍能拿到提示
+srv_bad, src_bad = _upd_server(b"boom", status=500)
+srv_good, src_good = _upd_server(b'APP_VERSION = "v9.99"\n')
+dl._UPDATE_SOURCES = (src_bad[0], src_good[0])
+try:
+    note = dl.check_update_notice()
+    check("第一家挂、第二家活 → 回退成功仍提示", bool(note) and "v9.99" in (note or ""), str(note))
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+    srv_bad.shutdown()
+    srv_good.shutdown()
+
+# 环境变量关闭：源不可达也必须秒回 None（说明根本没发请求）
+saved_zl = os.environ.get("ZL_NO_UPDATE_CHECK")
+os.environ["ZL_NO_UPDATE_CHECK"] = "1"
+try:
+    t0 = time.time()
+    dl._UPDATE_SOURCES = ("http://127.0.0.1:9/never",)
+    val = dl.check_update_notice()
+    dt = time.time() - t0
+    check("ZL_NO_UPDATE_CHECK=1 → None 且不发请求（<0.2s）",
+          val is None and dt < 0.2, f"val={val} dt={dt:.3f}s")
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+    if saved_zl is None:
+        os.environ.pop("ZL_NO_UPDATE_CHECK", None)
+    else:
+        os.environ["ZL_NO_UPDATE_CHECK"] = saved_zl
+
+# 后台线程路径：新版提示最终要打到控制台（join 后断言，不赌时序）
+srv_a, src_async = _upd_server(b'APP_VERSION = "v9.99"\n')
+dl._UPDATE_SOURCES = tuple(src_async)
+buf_a = io.StringIO()
+try:
+    with contextlib.redirect_stdout(buf_a):
+        _print_t = dl._print_update_notice_async()
+        _print_t.join(timeout=10)
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+    srv_a.shutdown()
+check("_print_update_notice_async：提示打到了控制台", "v9.99" in buf_a.getvalue(),
+      buf_a.getvalue()[:200])
+check("更新线程是 daemon（主程序退出不被拖着）", _print_t.daemon is True)
 
 # ---------------------------------------------------------------------------
 out_txt = "\n".join(_LINES)

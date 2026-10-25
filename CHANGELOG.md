@@ -30,6 +30,15 @@ S14–S16 三画像 0 错配；有用性 / 复用意愿 2.67→3.67），但暴�
   启动横幅前比对 GitHub main 的 `version.py`，发现新版打印一行提示
   （不自动下载、不强制）。断网 / 超时 / 私有部署一律静默；
   `ZL_NO_UPDATE_CHECK=1` 可关。
+- **更新检查修正（v2.55 内）**：首版 URL 误写为不存在的主人
+  `mike84465/zhilun-assistant`（永远 404 静默失效），已改为
+  `wangzhiguan72-droid/zhilun-assistant`；取 `version.py` 改**双源**——
+  jsdelivr 优先（国内直连可达；分支引用约 12 小时缓存延迟，对「发现新版」
+  的提醒可接受）、raw.githubusercontent 兜底；检查挪到**后台 daemon 线程**，
+  断网 / 慢网最坏不拖启动横幅；提示文案带 Releases 直链。
+  `desktop_launcher_test.py` 补 15 项断言（版本解析 / 双源回退 / 同版不提示 /
+  环境变量禁用不发请求 / URL 主人防回归 / 后台线程打印），63/63 绿；
+  实连验证 jsdelivr 可达（远端 v2.53 < 本地 v2.55 → 正确不提示）。
 
 v2.53 初赛定版冻结不变；本版改动只进复赛 / 总决赛线。
 

@@ -63,12 +63,19 @@ def _http_get(url: str, timeout: float) -> str:
 
 # ---------------------------------------------------------------------------
 # v2.55 更新检查：仓库 main 分支的 version.py 与本机版本比对，发现新版时
-# 在启动横幅里提示（不自动下载、不强制、失败完全静默）。
-#   - 只读 version.py 一个文件，走 GitHub raw，不触碰用户数据
-#   - 默认 1.5s 超时，断网 / 代理拦截 / 私有部署一律不打扰
+# 在启动横幅后提示（不自动下载、不强制、失败完全静默）。
+#   - **双源**：jsdelivr 优先（国内直连可达；分支引用约有 12 小时缓存延迟，
+#     对"发现新版"的提醒场景可接受），raw.githubusercontent 兜底（海外/代理环境）
+#   - 检查跑在**后台 daemon 线程**，断网 / 慢网最坏情况也不拖住启动横幅
+#   - 只读 version.py 一个文件，不触碰用户数据；默认单源 2s 超时
 #   - 不想被提示：ZL_NO_UPDATE_CHECK=1 关掉
+# 修正记录：首版 URL 误写成不存在的主人 mike84465（永远 404 静默），已改正。
 # ---------------------------------------------------------------------------
-_UPDATE_URL = "https://raw.githubusercontent.com/mike84465/zhilun-assistant/main/version.py"
+_UPDATE_SOURCES = (
+    "https://cdn.jsdelivr.net/gh/wangzhiguan72-droid/zhilun-assistant@main/version.py",
+    "https://raw.githubusercontent.com/wangzhiguan72-droid/zhilun-assistant/main/version.py",
+)
+_UPDATE_RELEASES_URL = "https://github.com/wangzhiguan72-droid/zhilun-assistant/releases"
 
 
 def _parse_version(s: str) -> tuple[int, ...]:
@@ -77,25 +84,57 @@ def _parse_version(s: str) -> tuple[int, ...]:
     return tuple(int(x) for x in m.group(1).split(".")) if m else ()
 
 
+def _local_version() -> str:
+    return APP_TITLE.split()[-1]
+
+
+def _fetch_remote_version(sources=None, timeout: float = 2.0) -> str | None:
+    """依次试各个源，返回远端 APP_VERSION；全失败 / 解析不出 → None。"""
+    for url in (sources if sources is not None else _UPDATE_SOURCES):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "zhilun-launcher"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8", errors="ignore")
+            m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+            if m:
+                return m.group(1)
+        except Exception:  # noqa: BLE001 —— 单源失败换下一家，绝不抛
+            continue
+    return None
+
+
 def check_update_notice() -> str | None:
     """返回一句更新提示；没有新版 / 失败 / 被禁用 → None。绝不抛异常。"""
     if (os.environ.get("ZL_NO_UPDATE_CHECK") or "").strip().lower() in ("1", "true", "yes"):
         return None
-    try:
-        req = urllib.request.Request(_UPDATE_URL, headers={"User-Agent": "zhilun-launcher"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            text = resp.read().decode("utf-8", errors="ignore")
-        m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
-        if not m:
-            return None
-        remote, local = m.group(1), APP_TITLE.split()[-1]
-        rv, lv = _parse_version(remote), _parse_version(local)
-        if rv and lv and rv > lv:
-            return (f"[更新] 发现新版本 {remote}（当前 {local}）。"
-                    "到 GitHub Releases 下载新 exe 即可，旧数据与设置不受影响。")
-    except Exception:  # noqa: BLE001 —— 断网 / 超时 / 代理都不打扰
+    remote = _fetch_remote_version()
+    if not remote:
         return None
+    local = _local_version()
+    rv, lv = _parse_version(remote), _parse_version(local)
+    if rv and lv and rv > lv:
+        return (f"[更新] 发现新版本 {remote}（当前 {local}）。"
+                f"到 {_UPDATE_RELEASES_URL} 下载新 exe 即可，旧数据与设置不受影响。")
     return None
+
+
+def _print_update_notice_async():
+    """后台跑更新检查并打印结果，返回线程对象（便于测试 join）。
+
+    放后台的原因：断网 / 慢网时双源各等 2s 会把启动横幅拖住最多 4s，
+    而"发现新版"晚两三秒出现毫无影响。
+    """
+    def _worker():
+        try:
+            msg = check_update_notice()
+        except Exception:  # noqa: BLE001 —— 双保险，worker 崩了不能带走主程序
+            return
+        if msg:
+            print(msg, flush=True)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return t
 
 
 
@@ -235,9 +274,7 @@ def main() -> None:
     print("=" * 44)
     print(f"{APP_TITLE} - 桌面端")
     print("=" * 44)
-    _upd = check_update_notice()
-    if _upd:
-        print(_upd)
+    _print_update_notice_async()  # v2.55：后台检查新版本，不拖启动
 
     # v2.22：拖拽数据文件到图标 → 经环境变量交给后端（一次性，不走 HTTP 参数）
     open_path = dropped_file()

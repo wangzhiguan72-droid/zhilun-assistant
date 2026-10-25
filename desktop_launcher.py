@@ -21,6 +21,7 @@ v2.22 新增（总纲 §四「桌面端下一步」）：
 """
 import json
 import os
+import re
 import sys
 import time
 import socket
@@ -58,6 +59,44 @@ def _http_get(url: str, timeout: float) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "zhilun-launcher"})
     with _NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="ignore")
+
+
+# ---------------------------------------------------------------------------
+# v2.55 更新检查：仓库 main 分支的 version.py 与本机版本比对，发现新版时
+# 在启动横幅里提示（不自动下载、不强制、失败完全静默）。
+#   - 只读 version.py 一个文件，走 GitHub raw，不触碰用户数据
+#   - 默认 1.5s 超时，断网 / 代理拦截 / 私有部署一律不打扰
+#   - 不想被提示：ZL_NO_UPDATE_CHECK=1 关掉
+# ---------------------------------------------------------------------------
+_UPDATE_URL = "https://raw.githubusercontent.com/mike84465/zhilun-assistant/main/version.py"
+
+
+def _parse_version(s: str) -> tuple[int, ...]:
+    """'v2.55' → (2, 55)；解析不了就返回 () 表示不比。"""
+    m = re.match(r"^v?(\d+(?:\.\d+)*)$", (s or "").strip())
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def check_update_notice() -> str | None:
+    """返回一句更新提示；没有新版 / 失败 / 被禁用 → None。绝不抛异常。"""
+    if (os.environ.get("ZL_NO_UPDATE_CHECK") or "").strip().lower() in ("1", "true", "yes"):
+        return None
+    try:
+        req = urllib.request.Request(_UPDATE_URL, headers={"User-Agent": "zhilun-launcher"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+        m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+        if not m:
+            return None
+        remote, local = m.group(1), APP_TITLE.split()[-1]
+        rv, lv = _parse_version(remote), _parse_version(local)
+        if rv and lv and rv > lv:
+            return (f"[更新] 发现新版本 {remote}（当前 {local}）。"
+                    "到 GitHub Releases 下载新 exe 即可，旧数据与设置不受影响。")
+    except Exception:  # noqa: BLE001 —— 断网 / 超时 / 代理都不打扰
+        return None
+    return None
+
 
 
 def is_our_app(port: int, timeout: float = 1.0) -> bool:
@@ -196,6 +235,9 @@ def main() -> None:
     print("=" * 44)
     print(f"{APP_TITLE} - 桌面端")
     print("=" * 44)
+    _upd = check_update_notice()
+    if _upd:
+        print(_upd)
 
     # v2.22：拖拽数据文件到图标 → 经环境变量交给后端（一次性，不走 HTTP 参数）
     open_path = dropped_file()

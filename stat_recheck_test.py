@@ -166,7 +166,7 @@ check("明细截断到 200", len(rb["items"]) == 200, str(len(rb["items"])))
 check("逐条列出封顶 + 汇总行", sum(1 for f in rb["findings"] if f["priority"] == "P0") == 12
       and any("另有" in f["issue"] for f in rb["findings"]), str(len(rb["findings"])))
 check("免责声明不含「造假」", "造假" not in r1["disclaimer"] and "不构成" in r1["disclaimer"])
-check("全部 finding 字段齐全", all(set(f) == {"priority", "category", "issue", "action", "context"}
+check("全部 finding 字段齐全", all(set(f) == {"priority", "category", "issue", "action", "context", "example"}
                                for f in rb["findings"] + r9["findings"] + r2["findings"]))
 
 print()

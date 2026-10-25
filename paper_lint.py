@@ -214,8 +214,12 @@ def check_entry(text: str, current_year: int) -> tuple[str | None, list[str]]:
     return code, probs
 
 
-def _finding(priority: str, category: str, issue: str, action: str, context: str = "") -> dict:
-    return {"priority": priority, "category": category, "issue": issue, "action": action, "context": context}
+def _finding(priority: str, category: str, issue: str, action: str, context: str = "",
+             example: str = "") -> dict:
+    # example：「改好后长什么样」的示例文本（v2.55，源自 AI 模拟体验 S14–S16：
+    # 公管画像反馈「修改指引不够详细，期待每条附改后示例」）
+    return {"priority": priority, "category": category, "issue": issue, "action": action,
+            "context": context, "example": example}
 
 
 def _nums_str(nums: list[int], limit: int = 20) -> str:
@@ -224,16 +228,25 @@ def _nums_str(nums: list[int], limit: int = 20) -> str:
 
 
 _PROB_RULE = {
-    "缺出版年": ("P1", "补上出版年（标准 [S]、专利 [P] 可不写）"),
-    "出版年晚于今年": ("P1", "出版年晚于今年，请核对是否录错（网络首发文献可能标注次年卷期）"),
-    "专著缺「出版地: 出版者, 年」": ("P1", "专著须写出版项，如「北京: 高等教育出版社, 2019」"),
-    "学位论文缺「保存地: 保存单位, 年」": ("P1", "学位论文须写保存地与学位授予单位，如「武汉: 武汉大学, 2020」"),
-    "网络资源缺网址 / DOI": ("P1", "[EB/OL] 须给出获取和访问路径（URL 或 DOI）"),
-    "网络首发文献缺网址 / DOI": ("P2", "GB/T 7714 要求 /OL 文献写获取路径；知网网络首发可补 DOI 或知网链接"),
-    "电子文献缺引用日期 [YYYY-MM-DD]": ("P2", "电子资源须写引用日期，如「[2026-09-30]」"),
-    "作者超过 3 人未写「等 / et al.」": ("P2", "GB/T 7714—2015：作者超过 3 人时只列前 3 人，其后加「等」或「et al.」"),
+    "缺出版年": ("P1", "补上出版年（标准 [S]、专利 [P] 可不写）",
+                 "张三. 数学学习习惯研究[J]. 数学教育学报, 2020, 29(2): 15-20."),
+    "出版年晚于今年": ("P1", "出版年晚于今年，请核对是否录错（网络首发文献可能标注次年卷期）",
+                       "…[J]. 心理学报, 2026, 58(1): 1-10."),
+    "专著缺「出版地: 出版者, 年」": ("P1", "专著须写出版项，如「北京: 高等教育出版社, 2019」",
+                                     "张三. 统计学原理[M]. 北京: 高等教育出版社, 2019."),
+    "学位论文缺「保存地: 保存单位, 年」": ("P1", "学位论文须写保存地与学位授予单位，如「武汉: 武汉大学, 2020」",
+                                           "李四. 大学生学习投入研究[D]. 武汉: 武汉大学, 2020."),
+    "网络资源缺网址 / DOI": ("P1", "[EB/OL] 须给出获取和访问路径（URL 或 DOI）",
+                             "王五. 在线学习报告[EB/OL]. [2026-09-30]. https://example.com/report."),
+    "网络首发文献缺网址 / DOI": ("P2", "GB/T 7714 要求 /OL 文献写获取路径；知网网络首发可补 DOI 或知网链接",
+                                 "赵六. 中介效应检验[J/OL]. 心理学报, 2026. https://doi.org/10.xxxx/1234."),
+    "电子文献缺引用日期 [YYYY-MM-DD]": ("P2", "电子资源须写引用日期，如「[2026-09-30]」",
+                                         "王五. 在线学习报告[EB/OL]. [2026-09-30]. https://example.com/report."),
+    "作者超过 3 人未写「等 / et al.」": ("P2", "GB/T 7714—2015：作者超过 3 人时只列前 3 人，其后加「等」或「et al.」",
+                                          "张三, 李四, 王五, 等. 数学学习习惯研究[J]. 数学教育学报, 2020, 29(2): 15-20."),
 }
-_JOURNAL_RULE = ("P1", "期刊须写「年, 卷(期): 起止页码」，如「2020, 36(4): 12-18」；只有期号的写「2020(4): 12-18」")
+_JOURNAL_RULE = ("P1", "期刊须写「年, 卷(期): 起止页码」，如「2020, 36(4): 12-18」；只有期号的写「2020(4): 12-18」",
+                 "张三. 数学学习习惯研究[J]. 数学教育学报, 2020, 36(4): 12-18.")
 
 
 def _show(e: dict) -> str:
@@ -261,14 +274,18 @@ def _check_references(parsed: dict, current_year: int) -> tuple[list[dict], dict
     if no_code and info["with_code"] == 0:
         fs.append(_finding("P1", "参考文献", f"全部 {len(entries)} 条文献都没有文献类型标识（如 [J] [M] [D]）",
                            "国内学位论文与多数中文期刊采用 GB/T 7714—2015：期刊 [J]、专著 [M]、学位论文 [D]、"
-                           "会议 [C]、电子资源 [EB/OL]；若目标期刊要求 APA 等格式可忽略本条", _show(no_code[0])))
+                           "会议 [C]、电子资源 [EB/OL]；若目标期刊要求 APA 等格式可忽略本条", _show(no_code[0]),
+                           "张三. 数学学习习惯研究[J]. 数学教育学报, 2020, 29(2): 15-20."))
     elif no_code:
         fs.append(_finding("P1", "参考文献", f"{_nums_str([e['num'] for e in no_code])} 缺文献类型标识",
                            "其余条目已使用 GB/T 7714 类型标识，请补齐（期刊 [J]、专著 [M]、学位论文 [D]、电子资源 [EB/OL] 等）",
-                           _show(no_code[0])))
+                           _show(no_code[0]),
+                           "张三. 数学学习习惯研究[J]. 数学教育学报, 2020, 29(2): 15-20."))
     for pb, es in by_prob.items():
-        pri, act = _JOURNAL_RULE if pb.startswith("期刊缺") else _PROB_RULE.get(pb, ("P2", "请按 GB/T 7714—2015 核对"))
-        fs.append(_finding(pri, "参考文献", f"{_nums_str([e['num'] for e in es])} {pb}", act, _show(es[0])))
+        rule = _JOURNAL_RULE if pb.startswith("期刊缺") else _PROB_RULE.get(pb, ("P2", "请按 GB/T 7714—2015 核对", ""))
+        pri, act = rule[0], rule[1]
+        ex = rule[2] if len(rule) > 2 else ""
+        fs.append(_finding(pri, "参考文献", f"{_nums_str([e['num'] for e in es])} {pb}", act, _show(es[0]), ex))
     seen: dict[str, int] = {}
     dups = []
     for e in entries:
@@ -281,7 +298,9 @@ def _check_references(parsed: dict, current_year: int) -> tuple[list[dict], dict
     if dups:
         fs.append(_finding("P1", "参考文献", "疑似重复条目：" + "；".join(f"[{a}] 与 [{b}]" for a, b in dups[:8]),
                            "请核对是否同一文献。顺序编码制下同一文献只列一次，再次引用沿用首次编号；"
-                           "引用页码不同时在正文角标外注页码，如 [7]⁹⁶"))
+                           "引用页码不同时在正文角标外注页码，如 [7]⁹⁶",
+                           "",
+                           "文献表只保留 [7]，正文第二次引用处写：……观点 [7]⁹⁶。"))
     if parsed["mode"] == "explicit":
         nums = [e["num"] for e in entries]
         gaps = sorted(set(range(1, max(nums) + 1)) - set(nums))
@@ -289,7 +308,9 @@ def _check_references(parsed: dict, current_year: int) -> tuple[list[dict], dict
         if gaps or reps:
             desc = "；".join(x for x in ((f"缺 {_nums_str(gaps)}" if gaps else ""),
                                           (f"重复 {_nums_str(reps)}" if reps else "")) if x)
-            fs.append(_finding("P1", "参考文献", f"文献表编号不连续：{desc}", "请按正文首次引用顺序重新连续编号"))
+            fs.append(_finding("P1", "参考文献", f"文献表编号不连续：{desc}", "请按正文首次引用顺序重新连续编号",
+                               "",
+                               "正文首次提到张三的观点处标 [1]，下一处新文献标 [2]……文献表随之一一对应。"))
     return fs, info
 
 
@@ -375,15 +396,21 @@ def _check_citations(body: str, raw_body: str, parsed: dict, ref_heading: bool) 
     if style == "none":
         if entries:
             fs.append(_finding("P2", "引用核对", f"文献表有 {len(entries)} 条，但正文里没识别到 [1] 或（作者，年）式引用",
-                               "若用的是上标引用，抽取文本时上标会丢失，可忽略本条；否则请在正文相应位置标注引用"))
+                               "若用的是上标引用，抽取文本时上标会丢失，可忽略本条；否则请在正文相应位置标注引用",
+                               "",
+                               "……这一观点已有研究支持 [1]。   或   ……已有研究支持（张三，2020）。"))
         return fs, info
     if not entries:
         if mode == "unparsed":
             fs.append(_finding("P2", "引用核对", "识别到「参考文献」标题，但条目格式无法解析，已跳过引用核对",
-                               "请确认每条文献独占一段，并以 [1] 或 1. 开头"))
+                               "请确认每条文献独占一段，并以 [1] 或 1. 开头",
+                               "",
+                               "[1] 张三. 数学学习习惯研究[J]. 数学教育学报, 2020, 29(2): 15-20."))
         elif not ref_heading and (len(nums_c) >= 3 or len(ay_c) >= 3):
             fs.append(_finding("P1", "引用核对", f"正文有 {len(nums_c) + len(ay_c)} 处引用，但没找到「参考文献」一节",
-                               "请在文末添加「参考文献」标题及文献表；若标题写法特殊（如「文献」），可改为标准写法后再体检"))
+                               "请在文末添加「参考文献」标题及文献表；若标题写法特殊（如「文献」），可改为标准写法后再体检",
+                               "",
+                               "文末另起一节「参考文献」，其下每行一条：[1] 张三. 数学学习习惯研究[J]. ……"))
         return fs, info
     if style == "numeric":
         have = {e["num"] for e in entries}
@@ -401,11 +428,14 @@ def _check_citations(body: str, raw_body: str, parsed: dict, ref_heading: bool) 
             fs.append(_finding("P1" if implicit else "P0", "引用核对",
                                f"正文引用了 {_nums_str(over)}，文献表里没有对应编号"
                                + (f"（按文献表段落顺序计 {len(entries)} 条）" if implicit else ""),
-                               "请补全文献表或修正正文引用编号", _excerpt(raw_body, cited[over[0]], cited[over[0]] + 6)))
+                               "请补全文献表或修正正文引用编号", _excerpt(raw_body, cited[over[0]], cited[over[0]] + 6),
+                               "正文写的是 [9]，文献表就应有 [9] 这一条；若只到 [8]，要么补文献，要么把 [9] 改成正确编号。"))
         unused = sorted(have - set(cited))
         if unused and len(cited) >= 3:
             fs.append(_finding("P1", "引用核对", f"文献表中 {_nums_str(unused)} 在正文里没有被引用",
-                               "顺序编码制要求文献表条目均在正文中引用：请补引用或删去该条目"))
+                               "顺序编码制要求文献表条目均在正文中引用：请补引用或删去该条目",
+                               "",
+                               "在用到该文献观点的句子末尾补 [5]；确实没用到的条目从文献表删去，后续编号顺移。"))
         order = sorted(cited, key=lambda n: cited[n])
         bad, top = [], 0
         for n in order:
@@ -416,13 +446,15 @@ def _check_citations(body: str, raw_body: str, parsed: dict, ref_heading: bool) 
             n, t = bad[0]
             fs.append(_finding("P2", "引用核对", f"有 {len(bad)} 处编号未按首次引用顺序排列（如 [{n}] 在 [{t}] 之后才首次出现）",
                                "顺序编码制要求按正文首次引用的先后连续编号；若目标期刊不要求，可忽略",
-                               _excerpt(raw_body, cited[n], cited[n] + 6)))
+                               _excerpt(raw_body, cited[n], cited[n] + 6),
+                               "第一次出现的引用应是 [1]，第二次是 [2]……编号跟着「首次出现顺序」走，不是跟着文献表原顺序走。"))
     else:
         miss = [(a, b, nm, y) for a, b, nm, y in ay_c if not _ay_found(nm, y, entries)]
         if miss:
             eg = "；".join(f"（{nm}，{y}）" for _, _, nm, y in miss[:6])
             fs.append(_finding("P1", "引用核对", f"有 {len(miss)} 处著者-出版年引用在文献表里找不到对应条目，如 {eg}",
-                               "请核对作者姓名与年份是否与文献表一致，或补充缺失条目", _excerpt(raw_body, miss[0][0], miss[0][1])))
+                               "请核对作者姓名与年份是否与文献表一致，或补充缺失条目", _excerpt(raw_body, miss[0][0], miss[0][1]),
+                               "正文（张三，2020）↔ 文献表应有：张三. ……[J]. ……, 2020, ……  姓名与年份须完全对上。"))
     return fs, info
 
 
@@ -589,6 +621,16 @@ _TYPO_RULES = [
     ("全角数字", re.compile(r"[０-９]+"), "GB/T 15835：数字一般用半角阿拉伯数字"),
     ("中文之间有多余空格", re.compile(f"[{_CJK}][ \\u3000]+[{_CJK}]"), "删去中文字符之间的空格（排版对齐请用段落缩进 / 表格）"),
 ]
+# 排版问题的「改好后长什么样」示例（v2.55，S14–S16 画像反馈驱动）
+_TYPO_EXAMPLE = {
+    "中文之间用了半角标点": "「结果显示,差异显著;」→「结果显示，差异显著；」",
+    "半角括号括中文": "「(见表 1)」→「（见表 1）」",
+    "重复标点": "「差异显著，，」→「差异显著，」",
+    "省略号写法不规范": "「还有很多...」→「还有很多……」",
+    "全角数字": "「共 １２０ 人」→「共 120 人」",
+    "中文之间有多余空格": "「研究 表明」→「研究表明」",
+    "括号 / 引号不成对": "「（见表 1」→「（见表 1）」；「《统计学」→「《统计学》」",
+}
 _PAIRS = [("（", "）"), ("“", "”"), ("‘", "’"), ("《", "》"), ("【", "】")]
 _SKIP_LINE = re.compile(r"^\s*(?:关键词|关键字|Key\s*words?|摘\s*要|目\s*录|第.{1,3}章)", re.I)
 
@@ -614,7 +656,8 @@ def _check_typography(raw_body: str) -> list[dict]:
     for name, egs in hits.items():
         if name == "中文之间有多余空格" and len(egs) < 3:
             continue                                   # 零星一两处多是排版对齐，不打扰
-        fs.append(_finding("P2", "中文排版", f"{name}：{len(egs)} 处", rule_action[name], "例：" + egs[0]))
+        fs.append(_finding("P2", "中文排版", f"{name}：{len(egs)} 处", rule_action[name], "例：" + egs[0],
+                           _TYPO_EXAMPLE.get(name, "")))
     return fs
 
 
@@ -663,7 +706,9 @@ def _check_structure(body: str, has_refs: bool, pdf: bool = False) -> tuple[list
     missing = [c for c in range(1, chaps[-1] + 1) if c not in chaps] if len(chaps) >= 2 else []
     if missing:
         fs.append(_finding("P1", "论文结构", "章编号不连续，缺 " + "、".join(f"第{c}章" for c in missing),
-                           "请核对章标题编号是否跳号"))
+                           "请核对章标题编号是否跳号",
+                           "",
+                           "第一章 绪论 → 第二章 文献综述 → 第三章 …… 编号须连续，不缺不跳。"))
     return fs, info
 
 
@@ -702,6 +747,8 @@ def _markdown(res: dict) -> str:
             lines.append(f"  - 建议：{_md_escape(f['action'])}")
             if f.get("context"):
                 lines.append(f"  - 位置：{_md_escape(f['context'])}")
+            if f.get("example"):
+                lines.append(f"  - 改后示例：{_md_escape(f['example'])}")
         lines.append("")
     if res["notes"]:
         lines += ["## 说明", ""] + [f"- {_md_escape(n)}" for n in res["notes"]] + [""]

@@ -3036,6 +3036,7 @@
            <span style="color:var(--c-muted);">${escapeHtml(x.category)}</span> · ${escapeHtml(x.issue)}<br>
            <span style="color:var(--c-muted);">→ ${escapeHtml(x.action)}</span>
            ${x.context ? `<br><span style="font-size:12px; color:var(--c-muted);">位置：${escapeHtml(x.context)}</span>` : ''}
+           ${x.example ? `<br><span style="font-size:12px; color:#15803d;">改后示例：${escapeHtml(x.example)}</span>` : ''}
          </div>`).join('') || '<div style="font-size:13px; color:#16a34a;">没有发现规则可识别的问题 ✅</div>';
       const overview = `参考文献 ${Number(s.references) || 0} 条（${escapeHtml(s.ref_mode_label || '')}）· `
         + `正文引用 ${Number(s.citations) || 0} 处（${escapeHtml(s.cite_style_label || '')}）· `
@@ -3390,6 +3391,8 @@
   document.querySelectorAll('.triage-card').forEach(b => {
     b.addEventListener('click', () => EntryTriage.go(b.dataset.triage));
   });
+  // 首次引导弹窗里的直达按钮也要用（onclick 走全局）
+  window.EntryTriage = EntryTriage;
 
   // ============================================================
   // 论文排查 Tab
@@ -4696,6 +4699,9 @@
     <button class="zl-close" onclick="closeModal('zlOnboard')" title="关闭">×</button>
     <h3>👋 第一次用？30 秒看懂这个工具</h3>
     <div class="zl-sub">一句话：把数据丢进来，它帮你算对、看懂、写好论文的数据部分。</div>
+    <div class="zl-sub" style="margin-top:6px; padding:8px 10px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; color:#15803d; font-size:13px;">
+      ✅ <b>不用注册、不用登录</b>，打开就能用；<b>不用填 API Key</b>，自带免费额度。数据只在你电脑本地算，不上传服务器。
+    </div>
     <div class="zl-steps">
       <div class="zl-step">
         <div class="zl-num">1</div>
@@ -4719,6 +4725,12 @@
     <div class="zl-actions">
       <button class="zl-btn ghost" onclick="closeModal('zlOnboard');openHelp()">看更详细的说明</button>
       <button class="zl-btn primary" onclick="closeModal('zlOnboard')">明白了，开始用</button>
+    </div>
+    <div class="zl-sub" style="margin-top:10px; font-size:12.5px;">或者现在就直接去：</div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+      <button class="zl-btn ghost" style="font-size:12.5px;" onclick="closeModal('zlOnboard');if(window.EntryTriage)EntryTriage.go('lint')">📋 怕格式被打回 →</button>
+      <button class="zl-btn ghost" style="font-size:12.5px;" onclick="closeModal('zlOnboard');if(window.EntryTriage)EntryTriage.go('data')">🔍 担心数据有问题 →</button>
+      <button class="zl-btn ghost" style="font-size:12.5px;" onclick="closeModal('zlOnboard');if(window.EntryTriage)EntryTriage.go('analyze')">📊 不会跑统计 →</button>
     </div>
   </div>
 </div>

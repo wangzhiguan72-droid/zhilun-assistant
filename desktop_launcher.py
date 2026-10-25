@@ -62,20 +62,27 @@ def _http_get(url: str, timeout: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# v2.55 更新检查：仓库 main 分支的 version.py 与本机版本比对，发现新版时
-# 在启动横幅后提示（不自动下载、不强制、失败完全静默）。
-#   - **双源**：jsdelivr 优先（国内直连可达；分支引用约有 12 小时缓存延迟，
-#     对"发现新版"的提醒场景可接受），raw.githubusercontent 兜底（海外/代理环境）
+# v2.55 更新检查：远端版本与本机比对，发现新版时在启动横幅后提示
+# （不自动下载、不强制、失败完全静默）。
+#   - **三源**（2026-10-26 加强：双源在国内存在同时失效窗口，实测当夜
+#     api.github.com 通而 jsdelivr/raw 均被重置）：
+#       1) GitHub Releases latest API —— 实时无缓存、国内常年可达（60 次/时/IP，
+#          每次启动一查远用不到）；tag_name 即版本
+#       2) jsdelivr —— 国内 CDN 通常可达；分支引用约有 12 小时缓存延迟
+#       3) raw.githubusercontent —— 海外/代理环境
 #   - 检查跑在**后台 daemon 线程**，断网 / 慢网最坏情况也不拖住启动横幅
-#   - 只读 version.py 一个文件，不触碰用户数据；默认单源 2s 超时
+#   - 只读版本号，不触碰用户数据；单源 2s 超时
 #   - 不想被提示：ZL_NO_UPDATE_CHECK=1 关掉
 # 修正记录：首版 URL 误写成不存在的主人 mike84465（永远 404 静默），已改正。
 # ---------------------------------------------------------------------------
+_REPO_SLUG = "wangzhiguan72-droid/zhilun-assistant"
+# (URL, 解析方式)：release_api 解析 JSON 的 tag_name；version_py 解析文本里的 APP_VERSION
 _UPDATE_SOURCES = (
-    "https://cdn.jsdelivr.net/gh/wangzhiguan72-droid/zhilun-assistant@main/version.py",
-    "https://raw.githubusercontent.com/wangzhiguan72-droid/zhilun-assistant/main/version.py",
+    (f"https://api.github.com/repos/{_REPO_SLUG}/releases/latest", "release_api"),
+    (f"https://cdn.jsdelivr.net/gh/{_REPO_SLUG}@main/version.py", "version_py"),
+    (f"https://raw.githubusercontent.com/{_REPO_SLUG}/main/version.py", "version_py"),
 )
-_UPDATE_RELEASES_URL = "https://github.com/wangzhiguan72-droid/zhilun-assistant/releases"
+_UPDATE_RELEASES_URL = f"https://github.com/{_REPO_SLUG}/releases"
 
 
 def _parse_version(s: str) -> tuple[int, ...]:
@@ -89,15 +96,24 @@ def _local_version() -> str:
 
 
 def _fetch_remote_version(sources=None, timeout: float = 2.0) -> str | None:
-    """依次试各个源，返回远端 APP_VERSION；全失败 / 解析不出 → None。"""
-    for url in (sources if sources is not None else _UPDATE_SOURCES):
+    """依次试各源，返回远端版本号；全失败 / 解析不出 → None。绝不抛异常。"""
+    for url, kind in (sources if sources is not None else _UPDATE_SOURCES):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "zhilun-launcher"})
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "zhilun-launcher",
+                "Accept": "application/vnd.github+json",
+            })
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                text = resp.read().decode("utf-8", errors="ignore")
-            m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
-            if m:
-                return m.group(1)
+                text = resp.read(65536).decode("utf-8", errors="ignore")
+            if kind == "release_api":
+                data = json.loads(text)
+                tag = (data.get("tag_name", "") if isinstance(data, dict) else "") or ""
+                if re.match(r"^v?\d+(?:\.\d+)*$", tag.strip()):
+                    return tag.strip()
+            else:
+                m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+                if m:
+                    return m.group(1)
         except Exception:  # noqa: BLE001 —— 单源失败换下一家，绝不抛
             continue
     return None

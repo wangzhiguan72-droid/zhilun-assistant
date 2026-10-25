@@ -436,18 +436,19 @@ check("_parse_version: 空串/垃圾 → ()（不比，不误报）",
       dl._parse_version("") == () and dl._parse_version("beta") == (), "")
 
 check("更新源仓库主人写对（wangzhiguan72-droid，防首版 mike84465 回归）",
-      all("wangzhiguan72-droid/zhilun-assistant" in u for u in dl._UPDATE_SOURCES)
-      and "mike84465" not in "".join(dl._UPDATE_SOURCES), str(dl._UPDATE_SOURCES))
-check("双源：jsdelivr 优先（国内可达）+ raw 兜底",
-      "cdn.jsdelivr.net" in dl._UPDATE_SOURCES[0]
-      and "raw.githubusercontent.com" in dl._UPDATE_SOURCES[1], str(dl._UPDATE_SOURCES))
+      all("wangzhiguan72-droid/zhilun-assistant" in u for u, _k in dl._UPDATE_SOURCES)
+      and "mike84465" not in "".join(u for u, _k in dl._UPDATE_SOURCES), str(dl._UPDATE_SOURCES))
+check("三源：Releases API 优先（实时+国内稳）→ jsdelivr → raw 兜底",
+      dl._UPDATE_SOURCES[0][1] == "release_api" and "api.github.com" in dl._UPDATE_SOURCES[0][0]
+      and "cdn.jsdelivr.net" in dl._UPDATE_SOURCES[1][0]
+      and "raw.githubusercontent.com" in dl._UPDATE_SOURCES[2][0], str(dl._UPDATE_SOURCES))
 check("提示文案带 Releases 直链", dl._UPDATE_RELEASES_URL.rstrip("/").endswith("/releases"),
       dl._UPDATE_RELEASES_URL)
 
 
-def _upd_server(ver_text: bytes, status: int = 200):
+def _upd_server(ver_text: bytes, status: int = 200, kind: str = "version_py"):
     srv, port = make_server(ver_text, status=status)
-    return srv, [f"http://127.0.0.1:{port}/version.py"]
+    return srv, [(f"http://127.0.0.1:{port}/version.py", kind)]
 
 
 srv_n, src_new = _upd_server(b'APP_VERSION = "v9.99"\n')
@@ -496,6 +497,40 @@ finally:
     dl._UPDATE_SOURCES = saved_upd
     srv_bad.shutdown()
     srv_good.shutdown()
+
+# release_api 源：JSON tag_name 解析（三源之首的真实形态）
+srv_api, src_api = _upd_server(b'{"tag_name": "v9.99", "name": "whatever"}', kind="release_api")
+dl._UPDATE_SOURCES = tuple(src_api)
+try:
+    note = dl.check_update_notice()
+    check("release_api 源：解析 tag_name 出提示", bool(note) and "v9.99" in (note or ""), str(note))
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+srv_api.shutdown()
+
+# 三源链回退：api 500 → version_py 活
+srv_api2, src_api2 = _upd_server(b"rate limit", status=500, kind="release_api")
+srv_py2, src_py2 = _upd_server(b'APP_VERSION = "v9.99"\n')
+dl._UPDATE_SOURCES = (src_api2[0], src_py2[0])
+try:
+    note = dl.check_update_notice()
+    check("api 挂 → version_py 接管", bool(note) and "v9.99" in (note or ""), str(note))
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+    srv_api2.shutdown()
+    srv_py2.shutdown()
+
+# release_api 垃圾 JSON（非对象/无 tag_name）→ 跳下一源不崩
+srv_gj, src_gj = _upd_server(b'"just a string"', kind="release_api")
+srv_py3, src_py3 = _upd_server(b'APP_VERSION = "v9.99"\n')
+dl._UPDATE_SOURCES = (src_gj[0], src_py3[0])
+try:
+    note = dl.check_update_notice()
+    check("api 返回非对象 → 跳过不崩并落到 version_py", bool(note) and "v9.99" in (note or ""), str(note))
+finally:
+    dl._UPDATE_SOURCES = saved_upd
+    srv_gj.shutdown()
+    srv_py3.shutdown()
 
 # 环境变量关闭：源不可达也必须秒回 None（说明根本没发请求）
 saved_zl = os.environ.get("ZL_NO_UPDATE_CHECK")

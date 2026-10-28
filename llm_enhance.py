@@ -85,14 +85,17 @@ def enhance_analysis(method: str, summary: dict[str, Any], label: str,
     # v1.1.1：用 cache_model_name()——它优先返回该状态**上次真正成功**的模型，
     # 避免容灾切换导致"查缓存时的候选"与"写缓存时的候选"不一致而假性 miss。
     model_name = ""
+    explicit_policy = False
     try:
         from agents import get_router
-        model_name = _router_model_name(get_router(), "write_text")
+        router = get_router()
+        explicit_policy = router.task_policy is not None
+        model_name = _router_model_name(router, "write_text")
     except Exception:  # noqa: BLE001
         pass  # 拿不到模型名也能继续（Key 缺失在下面报）
 
     cache_key = llm_cache.make_key(model_name, PROMPT_VERSION, method, clean)
-    if not force:
+    if not force and not explicit_policy:
         entry = llm_cache.get(cache_key)
         if entry is not None:
             section = "### 六、AI 深度解读（实验功能，请自行核对数字）\n\n" + entry["text"]
@@ -115,7 +118,7 @@ def enhance_analysis(method: str, summary: dict[str, Any], label: str,
         )
     except AgentError as e:
         # 兜底：真调失败时再试一次缓存（LLM 挂了，旧结果仍可用；peek 不污染统计）
-        entry = llm_cache.peek(cache_key) if not force else None
+        entry = llm_cache.peek(cache_key) if not force and not explicit_policy else None
         if entry is not None:
             section = "### 六、AI 深度解读（实验功能，请自行核对数字）\n\n" + entry["text"]
             return section, None, {"cached": True, "model": model_name}
@@ -135,10 +138,15 @@ def enhance_analysis(method: str, summary: dict[str, Any], label: str,
         actual = _router_model_name(get_router(), "write_text")
     except Exception:  # noqa: BLE001
         actual = model_name
-    if actual and actual != model_name:
-        llm_cache.put(llm_cache.make_key(actual, PROMPT_VERSION, method, clean), text)
-        model_name = actual
-    llm_cache.put(cache_key, text)
+    if explicit_policy:
+        invocation = get_router().last_invocation() or {}
+        actual = invocation.get("actual_model") or actual
+        model_name = actual or model_name
+    else:
+        if actual and actual != model_name:
+            llm_cache.put(llm_cache.make_key(actual, PROMPT_VERSION, method, clean), text)
+            model_name = actual
+        llm_cache.put(cache_key, text)
     section = "### 六、AI 深度解读（实验功能，请自行核对数字）\n\n" + text
     return section, None, {"cached": False, "model": model_name}
 

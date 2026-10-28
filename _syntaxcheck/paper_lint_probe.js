@@ -62,9 +62,9 @@ function mockDom() {
 function makeRunner(fakeResponse) {
   mockDom();
   const escapeHtml = new Function(`return (${escapeHtmlSrc});`)();
-  return new Function("$", "fetch", "toast", "escapeHtml", "paperLintInput",
+  return new Function("$", "fetch", "toast", "escapeHtml", "paperLintInput", "selectedLintPaper", "paperBasisConfirmed",
                       `"use strict";${lintSrc}\nreturn runPaperLint;`)(
-    (id) => document.getElementById(id), async () => fakeResponse, () => {}, escapeHtml, els.input);
+    (id) => document.getElementById(id), async () => fakeResponse, () => {}, escapeHtml, els.input, els.input.files[0], true);
 }
 
 (async () => {

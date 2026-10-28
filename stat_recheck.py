@@ -189,6 +189,21 @@ _SENT_LEVEL = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:的)?\s*(?:显著性)?\s*水
 # 只认「单侧检验 / 单侧 p」这类明确说法——医学论文里的「单侧肢体」不算
 _ONE_TAILED = re.compile(r"单[侧尾]\s*(?:检验|[pP]|假设|t\s*检验)|one[\s-]*(?:tailed|sided)|directional\s+(?:test|hypothes)",
                          re.IGNORECASE)
+_TWO_TAILED = re.compile(r"双[侧尾]\s*(?:(?:Student(?:['’]s)?|Welch)\s*)?"
+                         r"(?:检验|[pP]|假设|t\s*检验)|two[\s-]*(?:tailed|sided)",
+                         re.IGNORECASE)
+_TAIL_NEG_BEFORE = re.compile(
+    r"(?:不|未|没有|并未|从未|不再)(?:使用|采用|采取|进行|执行|应用|选择|设定|设置|考虑)?"
+    r"(?:任何|预设的|事先的|额外的)*\s*$"
+    r"|\b(?:no|not|without|never)\b[^,;.!?\n。；，！？]{0,45}$", re.IGNORECASE)
+_TAIL_NEG_LIST_BEFORE = re.compile(
+    r"(?:不|未|没有|并未|从未|不再)(?:使用|采用|采取|进行|执行|应用|选择|设定|设置|考虑)\s*"
+    r"(?P<items>(?:[^，,;；。！？!?\n、或及和]{1,24}(?:、|或|以及|和|及)\s*){1,5})$")
+_TAIL_SCOPE_RESET = re.compile(r"但|然而|而是|改用|转用|改为|转为|采用|使用|进行|执行|应用|选择")
+_TAIL_NEG_AFTER = re.compile(
+    r"\s*(?:未|不|没有)(?:使用|采用|进行|应用)"
+    r"|(?:\s+(?:tests?|hypotheses|hypothesis|p[\s-]*values?))?\s+"
+    r"(?:(?:was|were|is|are|will be|have been|has been)\s+)?(?:not|never)\b", re.IGNORECASE)
 _CORRECTED = re.compile(r"校正|矫正|Bonferroni|Holm|FDR|Tukey|LSD|Scheff|S-N-K|事后|多重比较|Greenhouse|Huynh|Welch|"
                         r"Satterthwaite|稳健标准误|聚类标准误|robust", re.IGNORECASE)
 _QUESTION = re.compile(r"是否|能否|有无|是不是|若|如果|假如")
@@ -226,6 +241,35 @@ def _sentence_alpha(sent: str, default: float) -> float:
         if v in _ALLOWED_ALPHA:
             vals.append(v)
     return max(vals) if vals else default
+
+
+def _tail_declarations(text: str) -> tuple[bool, bool, bool]:
+    """Recognize affirmative tails and explicit denials, without inferring intent.
+
+    Mixed declarations disable the document-wide one-sided default. Individual
+    result sentences can still explicitly declare one-sided testing.
+    """
+    one, two, denied_one = False, False, False
+    for pattern, is_one in ((_ONE_TAILED, True), (_TWO_TAILED, False)):
+        for match in pattern.finditer(text):
+            before = text[max(0, match.start() - 160):match.start()]
+            listing = _TAIL_NEG_LIST_BEFORE.search(before)
+            # A denial may govern a short enumeration, but never cross a clause
+            # boundary or a new affirmative verb such as "但采用".
+            negated = bool(_TAIL_NEG_BEFORE.search(before)
+                           or (listing and not _TAIL_SCOPE_RESET.search(listing["items"]))
+                           or _TAIL_NEG_AFTER.match(text[match.end():match.end() + 70]))
+            if is_one:
+                one |= not negated
+                denied_one |= negated
+            else:
+                two |= not negated
+    return one, two, denied_one
+
+
+def _one_tailed_in_scope(text: str, default: bool = False) -> bool:
+    one, two, denied = _tail_declarations(text)
+    return one and not (two or denied) if one or two or denied else default
 
 
 def _polarity(sent: str) -> str | None:
@@ -384,7 +428,7 @@ def _evaluate(norm: str, kind: str, m: re.Match[str], p: dict,
     if _consistent(op, rep, tol, lo, hi):
         return item
     one_ok = kind in ("t", "z", "r") and _consistent(op, rep, tol, lo / 2, hi / 2)
-    if one_ok and (one_tailed_doc or _ONE_TAILED.search(sent)):
+    if one_ok and _one_tailed_in_scope(sent, one_tailed_doc):
         item.update(status="one_tailed", note="按单侧检验解读时一致（文中声明了单侧检验）")
         return item
     rs, cs = _reported_sig(op, rep, alpha), _calc_sig(lo, hi, alpha)
@@ -511,7 +555,7 @@ def recheck_stats(text: str) -> dict:
     """从论文全文里抽取 APA / 国标写法的检验结果，重算 p 值并与报告值比对。纯函数、零 LLM、不落盘。"""
     norm = normalize(text)
     alpha = detect_alpha(norm)
-    one_tailed = bool(_ONE_TAILED.search(norm))
+    one_tailed = _one_tailed_in_scope(norm)
     ps = _find_ps(norm)
     stats_ = _find_stats(norm)
     items = [it for it in (_evaluate(norm, k, m, p, alpha, one_tailed) for k, m, p in _pair(norm, stats_, ps)) if it]

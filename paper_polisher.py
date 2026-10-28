@@ -188,9 +188,11 @@ def polish_paper(text: str, claims: list[Claim], template: str = "latex",
     orig_issues = lint_draft(text, claims)
     meta["lint_before"] = len(orig_issues)
 
+    explicit_policy = False
     # 模型名（进缓存 key；拿不到也能继续，只命中率略降）
     try:
         from agents import get_router
+        explicit_policy = get_router().task_policy is not None
         model_name = _router_model_name(get_router(), "write_text")
     except Exception:  # noqa: BLE001
         model_name = ""
@@ -198,7 +200,7 @@ def polish_paper(text: str, claims: list[Claim], template: str = "latex",
     cache_key = llm_cache.make_key(model_name, POLISH_PROMPT_VERSION, template, {"t": text})
 
     # ---- 查缓存（force 时绕过）----
-    if not force:
+    if not force and not explicit_policy:
         entry = llm_cache.get(cache_key)
         if entry is not None:
             polished = _strip_fence(entry["text"])
@@ -226,7 +228,10 @@ def polish_paper(text: str, claims: list[Claim], template: str = "latex",
         return text, meta
 
     # 通过闸门 → 写缓存 + 返回润色稿
-    llm_cache.put(cache_key, polished)
+    if not explicit_policy:
+        llm_cache.put(cache_key, polished)
+    else:
+        model_name = (get_router().last_invocation() or {}).get('actual_model') or model_name
     meta.update(llm_used=True, cached=False, model=model_name,
                 lint_after=len(lint_draft(polished, claims)))
     return polished, meta

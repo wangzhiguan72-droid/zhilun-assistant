@@ -1,0 +1,25 @@
+/* Exercise the real guide reducer; browser interactions cover mounting and focus. */
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const guide = require('../static/task_guide.js');
+assert.equal(guide.nextIndex('paper',0,{}),0);
+assert.equal(guide.nextIndex('paper',0,{paper_ready:true}),1);
+assert.equal(guide.nextIndex('paper',0,{paper_ready:true,paper_basis:true}),2);
+assert.equal(guide.nextIndex('paper',2,{paper_ready:true,paper_basis:true}),2,'run click without result must not advance');
+assert.equal(guide.nextIndex('paper',2,{paper_result:true}),3);
+assert.equal(guide.nextIndex('data',0,{data_ready:true,data_read:true}),2);
+assert.equal(guide.nextIndex('data',2,{analysis_ready:true}),3);
+assert.equal(guide.nextIndex('data',2,{analysis_ready:true,analysis_read:true,data_exported:true}),5);
+assert.equal(guide.nextIndex('data',0,{paper_ready:true,paper_result:true}),0,'paths must not cross-complete');
+const source=fs.readFileSync(path.join(__dirname,'../static/task_guide.js'),'utf8');
+assert(!/\bfetch\s*\(/.test(source),'tutorial must never initiate requests');
+assert(!source.includes('localStorage'),'per-tab positions must not overwrite independent tabs');
+for(const text of ['Escape','控件缺失或不可见','用户跳过说明','aria-live'])assert(source.includes(text));
+const html=fs.readFileSync(path.join(__dirname,'../templates/index.html'),'utf8');
+assert(html.includes('论文自查：先看依据，再核对结果'),'paper entry must describe default local path');
+assert(/\.workspace\s*>\s*\*\s*\{[^}]*min-width:\s*0/s.test(html),'grid children must shrink on narrow screens');
+assert(!/paperLintInput\.addEventListener\('change', runPaperLint\)/.test(html),'selection must not run checks');
+assert(html.includes("paperLintRunBtn').addEventListener('click', runPaperLint)"));
+for(const file of ['task_guide.js','school_rules_ui.js','model_settings_ui.js','task_help.js'])assert(html.includes('/static/'+file));
+console.log('[PASS] task_guide: actual state progression / isolation / explicit run / no network side effects');

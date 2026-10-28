@@ -105,9 +105,12 @@ def audit_image(image_bytes: bytes, mime: str, claim: str,
 
     # ---- 查缓存（key = 图哈希 + 结论句；换结论句 = 换问题，各自成键）----
     model_name = ""
+    explicit_policy = False
     try:
         from agents import get_router
-        model_name = _router_model_name(get_router(), "audit_image")
+        router = get_router()
+        explicit_policy = router.task_policy is not None
+        model_name = _router_model_name(router, "audit_image")
     except Exception:  # noqa: BLE001
         pass
 
@@ -115,7 +118,7 @@ def audit_image(image_bytes: bytes, mime: str, claim: str,
         model_name, PROMPT_VERSION, "audit_image",
         {"img": img_hash, "claim": claim},
     )
-    if not force:
+    if not force and not explicit_policy:
         entry = llm_cache.get(cache_key)
         if entry is not None:
             parsed = _parse_result(entry["text"])
@@ -143,7 +146,7 @@ def audit_image(image_bytes: bytes, mime: str, claim: str,
         text = _call_router(messages)
     except Exception as e:  # noqa: BLE001
         # 兜底：真调失败时回看缓存（LLM 挂了，旧结果仍可用；peek 不污染统计）
-        entry = llm_cache.peek(cache_key) if not force else None
+        entry = llm_cache.peek(cache_key) if not force and not explicit_policy else None
         if entry is not None:
             parsed = _parse_result(entry["text"])
             if parsed is not None:
@@ -174,8 +177,12 @@ def audit_image(image_bytes: bytes, mime: str, claim: str,
         actual = _router_model_name(get_router(), "audit_image")
     except Exception:  # noqa: BLE001
         actual = model_name
-    llm_cache.put(cache_key, text)
-    if actual and actual != model_name:
+    if explicit_policy:
+        actual = (get_router().last_invocation() or {}).get('actual_model') or actual
+        model_name = actual
+    else:
+        llm_cache.put(cache_key, text)
+    if not explicit_policy and actual and actual != model_name:
         llm_cache.put(llm_cache.make_key(
             actual, PROMPT_VERSION, "audit_image",
             {"img": img_hash, "claim": claim}), text)
@@ -192,6 +199,38 @@ def _call_router(messages: list[dict[str, Any]]) -> str:
     """
     from agents import AgentError, get_router
     router = get_router()
+    if router.task_policy is not None:
+        from agents.task_policy import selected_for
+        chosen = selected_for(router.task_policy, 'audit_image')
+        invocation = {'task':'audit_image', 'selected_model':
+                      f"{chosen['provider']}/{chosen['model']}" if chosen else '',
+                      'actual_model':'', 'status':'pending', 'attempts':[]}
+        router._last_invocation_var.set(invocation)
+        if chosen is None:
+            invocation['status'] = 'disabled'
+            raise AgentError('图表任务 AI 已关闭。')
+        for provider, model, temp in router._ordered_chain('audit_image'):
+            # Custom vision capability has not been verified, even for familiar IDs.
+            if provider.startswith('custom') or not router._vision_ok('audit_image', model):
+                continue
+            if not router._allowed(provider, model) or router._paid_blocked(provider, model):
+                continue
+            invocation['attempts'].append(f'{provider}/{model}')
+            try:
+                selected_agent = router._make_agent(provider, model, temp)
+                router._charge_paid(provider, model)
+                response = selected_agent.client.chat.completions.create(
+                    model=selected_agent.model_name, messages=messages, max_tokens=800, temperature=temp)
+                content = response.choices[0].message.content or ''
+                if not content.strip():
+                    raise AgentError('图表模型返回空内容。')
+                invocation.update(status='success', actual_model=f'{provider}/{model}')
+                return content
+            except Exception:
+                # No provider error body, private URL or key is returned.
+                continue
+        invocation['status'] = 'failed'
+        raise AgentError('所选图表模型调用未成功，或未验证所需视觉能力；未使用未授权候选。')
     agent = router._get_agent("audit_image")
     try:
         resp = agent.client.chat.completions.create(

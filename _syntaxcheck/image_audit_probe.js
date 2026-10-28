@@ -53,7 +53,7 @@ if (submitMatch) {
   ok("claim 非空才上传（空结论不占字段）",
      /if \(claim\) fd\.append\('claim', claim\)/.test(body), "");
   ok("BYOK 请求级透传：collectByok() 每次携带（v2.25）",
-     /const byokIa = collectByok\(\);\s*\n\s*for \(const \[k, v\] of Object\.entries\(byokIa\)\) fd\.append\(k, v\);/
+     /const byokIa = collectByok\(\);\s*\n\s*for \(const \[k, v\] of Object\.entries\(byokIa\)\) fd\.append\(k, typeof v === 'object' \? JSON\.stringify\(v\) : v\);/
        .test(body), "漏带 = 用户自带 Key 静默失效");
   ok("请求期间按钮禁用（防重复提交）",
      /btn\.disabled = true; btn\.textContent = '读图中…';/.test(body)

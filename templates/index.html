@@ -2,6 +2,7 @@
 <html lang="zh-CN" data-page-node-id="CAA7dm166XVQ39vUSddvXm">
 <head data-page-node-id="KdVv2DCldZ5dQzjhqNIzpb">
 <meta charset="UTF-8" data-page-node-id="2fSIBWgtRt9NTGqg9HexAW" />
+<link rel="stylesheet" href="/static/task_ui.css" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="sf3Rib9Jl81Kf4qwx5Irbf" />
 <title>智论助手 · 你的学术副驾驶</title>
 <!-- PWA：可"安装"为桌面应用（v2.6）。manifest + service worker 见 static/ -->
@@ -12,7 +13,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="apple-mobile-web-app-title" content="智论助手" />
-<meta name="description" content="本地运行的论文数据体检、统计核查与写作副驾。统计全部本地计算，不上传数据。" />
+<meta name="description" content="核心计算本地完成的论文数据体检、统计核查与写作副驾；可选 AI 功能会发送所需摘要或所选内容。" />
 <!-- Markdown 渲染：PRD 指定 markdown-it（v2.29 起本地化随包分发，断网/离线也能渲染） -->
 <script src="/static/vendor/markdown-it.min.js"></script>
 <style>
@@ -132,6 +133,7 @@
     gap: 24px;
     margin-top: 16px;
   }
+  .workspace > * { min-width: 0; }
   @media (max-width: 880px) {
     .workspace { grid-template-columns: 1fr; }
   }
@@ -1014,6 +1016,8 @@
     <!-- v2.54 入口分流：AI 模拟体验（S01–S13，2026-10-24）发现「想学统计」的用户会误入规范体检，
          首屏范围声明只能校准预期，真正的解法是先问一句再引路 -->
     <div class="triage" id="triageBox">
+      <div class="task-rules"><b>专业核查 + 自选 AI 增强</b><p>从论文原文、本地复算和已确认学校要求出发，用自选模型辅助理解上下文、复核疑点和解释结果。AI 意见与本地依据并列，是否修改由你决定；也可只用本地检查。</p><div class="task-tools"><button type="button" onclick="ModelSettings.chooseAI()">启用自选模型增强</button><button type="button" onclick="ModelSettings.localOnly()">仅本地检查</button><span id="modelChoiceStatus" role="status">AI 尚未启用；本地核心功能可用。</span></div></div>
+      <div class="task-tools"><button type="button" onclick="ZhilunGuide.start('paper')">开始体验：检查论文</button><button type="button" onclick="ZhilunGuide.start('data')">开始体验：检查数据</button><button type="button" onclick="EntryTriage._clickTab('check');EntryTriage._flash('drop-paper')">论文与数据一起核对</button><button type="button" onclick="EntryTriage.go('data');if(document.getElementById('simPanel').style.display==='none')Simulate.toggle()">用演示数据体验</button></div>
       <div class="triage-title">你现在最想解决什么？</div>
       <div class="triage-grid">
         <button type="button" class="triage-card" data-triage="lint">📋 怕格式被打回<small>查参考文献著录、图表编号、引用对应、p 值抄错——只传论文，纯本地规则</small></button>
@@ -1067,9 +1071,9 @@
     </div>
 
     <div class="trust" data-page-node-id="i7yTxdOMvNNVUhYfFZ5FDy">
-      <span data-page-node-id="4lOlkHwf6WWSO22UwEpeOb">本地运行，数据不出电脑</span>
+      <span data-page-node-id="4lOlkHwf6WWSO22UwEpeOb">核心计算本地完成</span>
       <span data-page-node-id="mbmuCkogNIMdXxVrVA7lGC">基于 Python 科学计算栈</span>
-      <span data-page-node-id="DHuXar8pgJXVR4xY484cMJ">结果可导出，查重友好</span>
+      <span data-page-node-id="DHuXar8pgJXVR4xY484cMJ">结果可导出 Word</span>
     </div>
   </section>
 
@@ -1236,10 +1240,10 @@
   <div id="tab-check" style="display:none;">
 
     <section class="hero">
-      <h1>把写好的论文丢过来，AI 帮你核查</h1>
+      <h1>论文自查：先看依据，再核对结果</h1>
       <div class="sub">
-        上传「论文初稿」和「数据文件」，系统会自动识别论文里写的统计方法、统计量与变量名，
-        然后用真实数据重跑一遍，比对你的论文结论是否站得住，并给出改进建议。
+        只传论文可检查引用、图表编号与统计报告；确认学校要求后，还可核对 DOCX 格式。
+        同时上传配套数据可本地复算并比对。AI 深度审计需要主动开启，检查结果都请对照原文核实。
       </div>
 
       <!-- v2.34 提交前规范体检：只传论文、无需数据，纯本地规则（paper_lint + stat_recheck） -->
@@ -1251,10 +1255,18 @@
           找出抄错、写错显著性的地方。只列「请核对」清单，不改写正文。
         </div>
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          <button class="ghost" id="paperLintBtn" style="padding:7px 16px;">选择论文并体检</button>
+          <button class="ghost" id="paperLintBtn" style="padding:7px 16px;">选择论文</button>
+          <button class="primary" id="paperLintRunBtn" disabled>开始本地检查</button>
+          <button class="ghost" type="button" onclick="ZhilunGuide.start('paper')">操作引导</button>
+          <button class="ghost" type="button" onclick="TaskHelp.open('paper')">为什么与怎么办</button>
           <button class="ghost" id="paperLintExportBtn" style="padding:7px 16px; display:none;">📄 导出体检清单</button>
-          <span style="font-size:12px; color:var(--c-muted);" id="paperLintStatus">支持 .docx / .txt / .md / .pdf（docx 最准）</span>
+          <span style="font-size:12px; color:var(--c-muted);" id="paperLintStatus">支持 .docx / .txt / .md / .pdf；学校格式细查优先 DOCX，PDF 的字体、字号与行距不作完整判定</span>
           <input type="file" id="paperLintInput" accept=".docx,.txt,.md,.pdf" style="display:none" />
+        </div>
+        <div id="paperBasis" class="task-rules">
+          <b>本次检查依据</b><p>通用文字规则始终可用；字体、字号等只比较你确认的要求。未判定不等于符合学校要求。</p>
+          <div id="schoolRulesHost"></div>
+          <button type="button" id="paperBasisConfirm">确认使用通用参考</button><span id="paperBasisStatus" role="status"></span>
         </div>
         <div id="paperLintResult" style="margin-top:10px;"></div>
       </div>
@@ -1321,12 +1333,19 @@
         <!-- v0.4.2：AI 深度审计开关（V4-Pro 付费，默认关） -->
         <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer; font-size:14px;">
           <input type="checkbox" id="useLLMCheck" style="accent-color:var(--c-primary, #4f46e5);">
-          <span>🔬 <strong>AI 深度审计</strong>（DeepSeek V4-Pro，消耗少量额度，约 30-60 秒）</span>
+          <span>🔬 <strong>AI 深度审计</strong>（使用本次选择的模型，费用与耗时由服务决定）</span>
         </label>
         <div style="font-size:12px; color:var(--c-muted); margin-top:4px; padding-left:24px;">
-          勾选后会把<b>论文文本开头约 2000 字</b>与核查出的统计量摘要发送给大模型厂商做深度审计；
-          不上传原始数据表。论文含未公开内容或敏感信息时请不要勾选。
+          勾选后按下方选择，把<b>论文开头、跨章节摘录或全文</b>及规则核查摘要（最多1500字符）与本次指令发送给所选模型服务；不上传原始数据表。
+          默认保留开头范围；扩大范围可能发送未公开内容，运行前请确认选择。
         </div>
+        <div class="task-fields" style="margin-top:8px;padding-left:24px;">
+          <label>AI 审阅范围<select id="auditContextMode"><option value="head">开头：最多2000字符</option><option value="evidence">跨章节摘录：全文检索，最多24000字符</option><option value="full">全文审阅：最多120000字符，超限停止AI</option></select></label>
+          <label>AI 输出预算<select id="auditOutputTokens"><option value="4096">标准：4096 token</option><option value="8192">深入：8192 token</option><option value="16384">扩展：16384 token</option></select></label>
+        </div>
+        <label style="display:block;font-size:13px;padding-left:24px;margin-top:8px;"><input type="checkbox" id="auditResearchTools"> 研究工具：允许模型主动补读论文、在本机复算统计报告，并核验研究假说</label>
+        <p style="font-size:12px;color:var(--c-muted);padding-left:24px;">工具遵守所选范围：开头仅可访问前2000字符；跨章节允许全文搜索并额外提供至多24000字符；全文沿用120000字符上限。最多两轮补证和一次最终审阅，可能增加模型请求、费用与耗时；不发送原始数据表。报告保留工具记录，待验证假说须回原文及数据核对。</p>
+        <p style="font-size:12px;color:var(--c-muted);padding-left:24px;">仅勾选并主动运行 AI 后生效。跨章节按用户关注、比对原句及章节邻域在本机选取；模型可提出规则未覆盖的疑点。全文模式需要服务支持相应上下文；较高预算可能增加费用与耗时，不保证全部用满或判断更准。报告列出实际输入覆盖。</p>
       </div>
       <!-- v1.8：BYOK 收进统一设置弹窗（页头 ⚙️）；AI 深度审计用哪家的 Key 也在那里填 -->
     </section>
@@ -1494,7 +1513,7 @@
 </main>
 
 <footer data-page-node-id="UR3lbMaoSOFTznng8WpMt2">
-  © 智论助手 MVP · 本地内测版 · 数据仅在内存中处理，不持久化{% if user %} · 账号：{{ user }} · <a href="/logout-user">退出账号</a>{% endif %}
+  © 智论助手 MVP · 本地内测版 · 核心计算本地完成{% if user %} · 账号：{{ user }} · <a href="/logout-user">退出账号</a>{% endif %}
 </footer>
 
 <script>
@@ -1571,6 +1590,8 @@
 
   // v2.22：上传成功后的统一入口（手动上传 / 拖拽到 exe 图标自动加载共用）
   function applyUploadData(data) {
+    if (window.ZhilunGuide) ZhilunGuide.invalidate(['data_read','analysis_ready','analysis_read','data_exported']);
+    window._lastDatacheckMarkdown = ''; window._lastMarkdown = '';
     state = {
       fileId: data.file_id,
       filename: data.filename,
@@ -1580,6 +1601,7 @@
       history: [],
     };
     renderWorkspace();
+    if (window.ZhilunGuide) ZhilunGuide.record('data_ready');
     // v2.0：上传即体检（产品入口第一站）
     runDataCheck();
   }
@@ -1632,6 +1654,7 @@
       const j = await r.json();
       if (!r.ok || !j || !j.ok) { renderDataCheckFailure(); return; }
       renderDataCheck(j);
+      if (window.ZhilunGuide) ZhilunGuide.record('data_check_ready');
     } catch (e) {
       renderDataCheckFailure();
     }
@@ -2804,6 +2827,7 @@
       $('streamStatus').textContent = '❌ ' + (data.message || '分析失败');
       $('streamBar').style.background = 'var(--c-error, #ef4444)';
     } else if (event === 'done') {
+      if (window.ModelSettings) ModelSettings.record(data.ai_invocation);
       if (data.ok) {
         $('streamStatus').textContent = '✓ 分析完成';
         $('streamBar').style.width = '100%';
@@ -2842,6 +2866,7 @@
   // v2.10 答辩准备：把本次成功分析的参数存进 state.history（同方法同列去重）。
   // 只存"做了什么"，不存结果数字——数字由 /api/defense_pack 后端重放实算。
   function rememberRun() {
+    if (window.ZhilunGuide) ZhilunGuide.record('analysis_ready');
     const p = state.lastChart;
     if (!p || !p.method) return;
     const sig = [p.method, p.group_col || '', p.value_col || '',
@@ -3004,12 +3029,52 @@
   // ===== v2.34 提交前规范体检（只传论文，纯本地规则；含 statcheck 式 p 值复算）=====
   const paperLintInput = $('paperLintInput');
   $('paperLintBtn').addEventListener('click', () => paperLintInput.click());
-  paperLintInput.addEventListener('change', runPaperLint);
+  let selectedLintPaper = null, paperBasisConfirmed = false, paperPreparing = 0;
+  paperLintInput.addEventListener('change', async () => {
+    const f = paperLintInput.files && paperLintInput.files[0];
+    if (!f) return;
+    const generation = ++paperPreparing;
+    selectedLintPaper = null; paperBasisConfirmed = false;
+    $('paperBasisStatus').textContent = '';
+    $('paperLintRunBtn').disabled = true;
+    $('paperLintStatus').textContent = '正在本地解析论文…';
+    $('paperLintResult').innerHTML = ''; $('paperLintExportBtn').style.display = 'none';
+    window._lastPaperLintMarkdown = '';
+    if (window.ZhilunGuide) ZhilunGuide.invalidate(['paper_ready','paper_basis','paper_result','paper_read','paper_exported']);
+    try {
+      const fd = new FormData(); fd.append('paper', f);
+      const r = await fetch('/api/paper_preview', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (generation !== paperPreparing) return;
+      if (!r.ok || !d.ok) throw new Error(d.error || '解析失败');
+      selectedLintPaper = f;
+      $('paperLintStatus').textContent = '已解析：' + f.name + ' · ' + d.text_length + ' 字。请确认检查依据。';
+      if (window.ZhilunGuide) ZhilunGuide.record('paper_ready');
+    } catch (e) { if (generation === paperPreparing) $('paperLintStatus').textContent = '解析失败：' + e.message + '；请重新选择文件。'; }
+    finally { paperLintInput.value = ''; }
+  });
+  window.confirmPaperBasis = function (label) {
+    paperBasisConfirmed = true; $('paperBasisStatus').textContent = ' 已确认：' + label;
+    $('paperLintRunBtn').disabled = !selectedLintPaper;
+    if (window.ZhilunGuide) ZhilunGuide.record('paper_basis');
+  };
+  window.invalidatePaperBasis = function () {
+    paperBasisConfirmed = false; $('paperBasisStatus').textContent = ' 要求已更改，请重新确认';
+    $('paperLintRunBtn').disabled = true;
+    if (window.ZhilunGuide) ZhilunGuide.invalidate(['paper_basis']);
+  };
+  $('paperBasisConfirm').addEventListener('click', () => {
+    if (window.SchoolRules) SchoolRules.useGeneric();
+    window.confirmPaperBasis('通用参考（不代表学校要求）');
+  });
+  $('paperLintRunBtn').addEventListener('click', runPaperLint);
   $('paperLintExportBtn').addEventListener('click', () => exportPaperLint());
 
   async function runPaperLint() {
-    const f = paperLintInput.files && paperLintInput.files[0];
-    if (!f) return;
+    const f = selectedLintPaper;
+    if (!f || !paperBasisConfirmed) return;
+    const schoolSnapshot = window.SchoolRules ? SchoolRules.snapshot() : null;
+    $('paperLintRunBtn').disabled = true; $('paperLintBtn').disabled = true;
     $('paperLintStatus').textContent = '⏳ 正在按本地规则体检（不上传数据）…';
     $('paperLintResult').innerHTML = '';
     $('paperLintExportBtn').style.display = 'none';
@@ -3031,13 +3096,13 @@
       const chip = (p) => `<span style="font-size:12px; padding:2px 9px; border-radius:999px; background:#f4f4f5; color:${PCOL[p]}; margin:2px;">${PLAB[p]} ${Number(c[p]) || 0}</span>`;
       // 所有后端字段一律 escapeHtml：体检的就是用户论文原文，摘录里什么字符都可能有
       const items = (d.findings || []).map(x =>
-        `<div style="margin:6px 0; font-size:13px; line-height:1.7;">
+        `<details style="margin:6px 0; font-size:13px; line-height:1.7;"><summary>${escapeHtml(x.issue)}</summary>
            <b style="color:${PCOL[x.priority] || '#52525b'};">[${escapeHtml(PLAB[x.priority] || x.priority)}]</b>
            <span style="color:var(--c-muted);">${escapeHtml(x.category)}</span> · ${escapeHtml(x.issue)}<br>
            <span style="color:var(--c-muted);">→ ${escapeHtml(x.action)}</span>
            ${x.context ? `<br><span style="font-size:12px; color:var(--c-muted);">位置：${escapeHtml(x.context)}</span>` : ''}
            ${x.example ? `<br><span style="font-size:12px; color:#15803d;">改后示例：${escapeHtml(x.example)}</span>` : ''}
-         </div>`).join('') || '<div style="font-size:13px; color:#16a34a;">没有发现规则可识别的问题 ✅</div>';
+         </details>`).join('') || '<details><summary>没有发现规则可识别的问题 ✅ · 查看已检查范围</summary><p>仅表示本次已运行规则没有提示；未检查项和未判定项不算通过。</p></details>';
       const overview = `参考文献 ${Number(s.references) || 0} 条（${escapeHtml(s.ref_mode_label || '')}）· `
         + `正文引用 ${Number(s.citations) || 0} 处（${escapeHtml(s.cite_style_label || '')}）· `
         + `图 ${Number(s.figures) || 0} / 表 ${Number(s.tables) || 0} · 复算 p 值 ${Number(st.checked) || 0} 处`;
@@ -3056,11 +3121,15 @@
           <div style="margin-top:8px; font-size:11.5px; color:var(--c-muted);">${escapeHtml(d.disclaimer || '')} ${escapeHtml((d.stats && d.stats.disclaimer) || '')}</div>
         </div>`;
       window._lastPaperLintMarkdown = d.markdown || '';
+      if (schoolSnapshot && window.SchoolRules) await SchoolRules.check(f, schoolSnapshot);
       if (window._lastPaperLintMarkdown) $('paperLintExportBtn').style.display = '';
+      if (window.ZhilunGuide) ZhilunGuide.record('paper_result');
     } catch (e) {
       $('paperLintStatus').textContent = '出错：' + e.message;
     } finally {
       paperLintInput.value = '';   // 改完论文后再选同一个文件也能触发 change，重新体检
+      $('paperLintRunBtn').disabled = !selectedLintPaper || !paperBasisConfirmed;
+      $('paperLintBtn').disabled = false;
     }
   }
 
@@ -3089,6 +3158,7 @@
       a.remove();
       URL.revokeObjectURL(a.href);
       toast('体检清单已下载');
+      if (window.ZhilunGuide) ZhilunGuide.record('paper_exported');
     } catch (e) {
       toast('导出出错：' + e.message);
     } finally {
@@ -3280,6 +3350,7 @@
       a.remove();
       URL.revokeObjectURL(url);
       toast('Word 报告已下载');
+      if (window.ZhilunGuide) ZhilunGuide.record('data_exported');
     } catch (e) {
       toast('导出出错：' + e.message);
     } finally {
@@ -3472,14 +3543,18 @@
     const useLLMCheck = $('useLLMCheck').checked;
     if (useLLMCheck) {
       fd.append('use_llm', '1');
-      document.getElementById('checkProgress').textContent = '🔬 AI 深度审计中（V4-Pro，约 30-60 秒）…';
+      fd.append('ai_context_mode', $('auditContextMode').value);
+      fd.append('ai_output_tokens', $('auditOutputTokens').value);
+      fd.append('ai_research_tools', $('auditResearchTools').checked ? '1' : '0');
+      document.getElementById('checkProgress').textContent = 'AI 深度审计中，使用本次选择的模型…';
     }
     // v1.8：BYOK（用户自带 Key，六家平台统一从设置弹窗收集）
-    const byok = collectByok();
-    for (const [k, v] of Object.entries(byok)) fd.append(k, v);
+      const byok = collectByok();
+    for (const [k, v] of Object.entries(byok)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
     try {
       const r = await fetch('/api/check_paper', { method: 'POST', body: fd });
       const data = await r.json();
+      if (window.ModelSettings) ModelSettings.record(data.ai_invocation);
       if (!data.ok) {
         toast(data.error || '核查失败');
         $('checkResult').innerHTML = `<div class="placeholder"><div class="icon">⚠️</div><div>${escapeHtml(data.error || '核查失败')}</div></div>`;
@@ -3579,6 +3654,7 @@
         .then(function (o) {
           wait.remove();
           const d = o.d || {};
+          if (window.ModelSettings) ModelSettings.record(d.ai_invocation);
           let body, cls = '', metaHtml = '';
           if (!o.r.ok || !d.ok) {
             // 红线拒绝 / 参数错误 → 直接展示后端文案
@@ -3776,7 +3852,7 @@
       if (claim) fd.append('claim', claim);
       // v2.25：BYOK 请求级隔离后每次都要带上用户 Key（同 check_paper）
       const byokIa = collectByok();
-      for (const [k, v] of Object.entries(byokIa)) fd.append(k, v);
+      for (const [k, v] of Object.entries(byokIa)) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v);
 
       const box = $('iaResult');
       if (box) {
@@ -3790,6 +3866,7 @@
         .then(function (r) { return r.json().then(function (d) { return { r: r, d: d }; }); })
         .then(function (o) {
           const d = o.d || {};
+          if (window.ModelSettings) ModelSettings.record(d.ai_invocation);
           if (o.r.status === 400 || o.r.status === 413) {
             // 参数/体积错误：后端已给明确文案
             renderResult({ ok: false, error: d.error || '请求被拒绝' });
@@ -4361,12 +4438,14 @@
           title: $('cplTitle').value.trim() || '未命名研究',
           template: $('cplTemplate').value,
           analyses,
+          ...collectByok(),
           use_llm: $('cplUseLlm').checked ? 1 : 0,
           llm_force: $('cplLlmForce').checked ? 1 : 0,
         }),
       });
       const d = await r.json();
       if (!d.ok) throw new Error(d.error || '生成失败');
+      if (window.ModelSettings) ModelSettings.record(d.ai_invocation);
       cplRenderResult(d);
       cplRefresh();
     } catch (e) {
@@ -4634,56 +4713,49 @@
     <button class="zl-close" onclick="closeModal('zlSettings')" title="关闭">×</button>
     <h3>⚙️ 模型设置</h3>
     <div class="zl-sub">
-      <b>不填也能正常用</b>——工具默认走免费模型（智谱 GLM-4.7-Flash 等）。
+      <b>不填也能使用核心功能</b>——统计、数据体检与规则核查在本机完成；可选 AI 功能依赖模型服务及其可用额度。
       填上自己的 Key 后，AI 解读 / 深度审计会优先用你自己的额度，回答风格也随你选的模型走。
-      Key 只保存在<b>你自己的浏览器</b>里，发请求时直接交给本机服务，不经任何第三方转手。
+      Key 保存在<b>当前浏览器</b>，使用时经本机服务发送到所选模型端点。连接测试也可能计费。
     </div>
-
+    <div id="modelSettingsHost"></div>
+    <details><summary>已有平台密钥与更多自定义配置</summary>
     <div class="zl-keyrow">
-      <label>智谱 GLM（推荐，有永久免费模型）</label>
-      <div class="zl-why">glm-4.7-flash 永久免费，够日常解读用。领 Key：bigmodel.cn → 右上角「API Key」</div>
-      <input type="password" id="settingsKey_zhipu" placeholder="不填 = 用默认免费额度" autocomplete="off">
+      <label>智谱 GLM</label>
+      <div class="zl-why">按所用平台的当前服务条款和额度使用，填写 Key 不代表连通成功。</div>
+      <input type="password" id="settingsKey_zhipu" placeholder="可选；当前进程配置状态见上方" autocomplete="off">
     </div>
     <div class="zl-keyrow">
       <label>硅基流动（一个 Key 用多家模型）</label>
-      <div class="zl-why">里面有 DeepSeek / GLM / 千问等，注册送额度。领 Key：cloud.siliconflow.cn → 账号 → API 密钥</div>
-      <input type="password" id="settingsKey_sf" placeholder="不填 = 用默认免费额度" autocomplete="off">
+      <div class="zl-why">支持平台提供的模型 ID，模型与额度以你的账号为准。</div>
+      <input type="password" id="settingsKey_sf" placeholder="可选；当前进程配置状态见上方" autocomplete="off">
     </div>
     <div class="zl-keyrow">
       <label>DeepSeek 官方</label>
-      <div class="zl-why">深度审计质量最好的档位（付费但便宜）。领 Key：platform.deepseek.com</div>
-      <input type="password" id="settingsKey_deepseek" placeholder="填了后 AI 深度审计优先用它" autocomplete="off">
+      <div class="zl-why">填写平台密钥，并在上方选择准确模型 ID。</div>
+      <input type="password" id="settingsKey_deepseek" placeholder="选择该服务时使用此 Key" autocomplete="off">
     </div>
     <div class="zl-keyrow">
       <label>阿里云百炼（通义千问）</label>
       <div class="zl-why">千问全系列。领 Key：bailian.console.aliyun.com → API-KEY 管理</div>
-      <input type="password" id="settingsKey_dashscope" placeholder="不填 = 用默认免费额度" autocomplete="off">
+      <input type="password" id="settingsKey_dashscope" placeholder="可选；当前进程配置状态见上方" autocomplete="off">
     </div>
     <div class="zl-keyrow">
       <label>Kimi（月之暗面）</label>
-      <div class="zl-why">超长上下文，整篇论文都放得下。领 Key：platform.kimi.com</div>
+      <div class="zl-why">仅按功能说明发送有限摘录，上下文上限以所选服务为准。</div>
       <input type="password" id="settingsKey_kimi" placeholder="填了后长文审计可走 Kimi" autocomplete="off">
     </div>
     <div class="zl-keyrow">
       <label>小米 MiMo</label>
-      <div class="zl-why">新平台，注册有赠送额度。领 Key：platform.xiaomimimo.com</div>
+      <div class="zl-why">模型、能力与费用以所选平台的当前说明为准。</div>
       <input type="password" id="settingsKey_mimo" placeholder="不填 = 不使用" autocomplete="off">
     </div>
     <div class="zl-keyrow">
       <label>自定义供应商（OpenAI 兼容 · 可添加多家）</label>
-      <div class="zl-why">任何 OpenAI 兼容端点都能接（官方平台或 one-api / new-api 等中转）。可添加多家：排在前面的优先，失败自动试后面的；每家的模型名也可填多个（逗号分隔，前者失败自动试后者）。接口格式：OpenAI 兼容 chat/completions。</div>
+      <div class="zl-why">填写 OpenAI 兼容 chat/completions 服务配置。按从上到下编号 custom1、custom2；高级模式用编号选择。新设置仅使用明确选择的配置和允许的候选。</div>
       <div id="customProvidersBox"></div>
       <button class="zl-btn ghost" type="button" onclick="addCustomProviderRow()" style="margin-top:6px;">＋ 添加自定义供应商</button>
     </div>
-    <div class="zl-keyrow">
-      <label>💡 额度不够用？这些地方有免费额度（仅指引，不强制）</label>
-      <div class="zl-why">
-        · 智谱 bigmodel.cn —— glm-4.7-flash 永久免费（上方智谱栏填 Key 即用）<br>
-        · 硅基流动 cloud.siliconflow.cn —— 注册送额度，另有免费小模型<br>
-        · Kimi platform.kimi.com / 阿里百炼 bailian.console.aliyun.com —— 新用户均有赠送额度<br>
-        · 领到 Key 填进上方对应栏即可；其他渠道一律用「自定义供应商」接入
-      </div>
-    </div>
+    </details>
 
     <div class="zl-actions">
       <button class="zl-btn ghost" onclick="clearKeys()">清空全部</button>
@@ -4698,9 +4770,9 @@
   <div class="zl-modal" style="width:min(560px,96vw);">
     <button class="zl-close" onclick="closeModal('zlOnboard')" title="关闭">×</button>
     <h3>👋 第一次用？30 秒看懂这个工具</h3>
-    <div class="zl-sub">一句话：把数据丢进来，它帮你算对、看懂、写好论文的数据部分。</div>
+    <div class="zl-sub">上传论文或数据，先看检查依据，再核对统计结果。</div>
     <div class="zl-sub" style="margin-top:6px; padding:8px 10px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; color:#15803d; font-size:13px;">
-      ✅ <b>不用注册、不用登录</b>，打开就能用；<b>不用填 API Key</b>，自带免费额度。数据只在你电脑本地算，不上传服务器。
+      ✅ <b>核心功能无需注册或 API Key</b>，统计与规则核查在本机完成；可选 AI 功能会向模型服务发送所需内容。
     </div>
     <div class="zl-steps">
       <div class="zl-step">
@@ -4712,7 +4784,7 @@
       <div class="zl-step">
         <div class="zl-num">2</div>
         <div><b>论文写完，来核对</b>
-          <p>切到「🔍 论文排查」，把论文初稿和数据一起上传，工具会把论文里写的每个数字（均值、p 值……）用你的数据重算一遍，告诉你哪里对不上。</p>
+          <p>在「📋 论文排查」中，只传论文可检查引用、编号与统计报告；论文和配套数据一起上传，可比对已支持的统计项目。未识别或缺少条件的项目会注明，仍需回原文核对。</p>
         </div>
       </div>
       <div class="zl-step">
@@ -4724,7 +4796,9 @@
     </div>
     <div class="zl-actions">
       <button class="zl-btn ghost" onclick="closeModal('zlOnboard');openHelp()">看更详细的说明</button>
-      <button class="zl-btn primary" onclick="closeModal('zlOnboard')">明白了，开始用</button>
+      <button class="zl-btn primary" onclick="ZhilunGuide.start('paper')">开始体验：论文</button>
+      <button class="zl-btn primary" onclick="ZhilunGuide.start('data')">开始体验：数据</button>
+      <button class="zl-btn ghost" onclick="closeModal('zlOnboard')">稍后再说</button>
     </div>
     <div class="zl-sub" style="margin-top:10px; font-size:12.5px;">或者现在就直接去：</div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
@@ -4748,11 +4822,11 @@
       </details>
       <details>
         <summary>哪些内容会发送给 AI 服务？</summary>
-        <p>常规数据体检、统计计算和规则核查在本机完成。主动运行「AI 深度解读」时，会发送已计算的统计摘要；主动运行「AI 深度审计」时，会向当前配置的模型服务发送论文开头最多 2000 字、从全文提取的规则核查摘要（最多 1500 字，可能包含论文原句中的统计量）以及本次核查指令；主动运行「AI 图表核查」时，会发送所选图片和你填写的结论句（如有）。完整论文正文不会作为整篇发送，但规则摘要可能包含从全文抽取的片段。不开启相应 AI 功能时，该功能不会发送论文文本或图片。</p>
+        <p>核心计算本地完成。主动运行「AI 深度解读」会发送已计算的统计摘要；「AI 深度审计」默认发送论文开头最多 2000 字，可自行选择跨章节摘录（最多24000字符）或全文（最多120000字符，超限停止AI），同时发送从全文提取的规则核查摘要（最多 1500 字，可能包含论文原句中的统计量）及本次指令；「AI 图表核查」会发送所选图片和填写的结论句（如有）；对比结果的 AI 追问会发送问题及相关比对摘要。协作审阅会把报告和批注保存在本机 <code>.review_share/</code>。不开启相应 AI 功能时，该功能不会向模型服务发送论文文本或图片。</p>
       </details>
       <details>
         <summary>「✨ AI 深度解读」开关是干嘛的？</summary>
-        <p>不勾：报告由内置模板生成，零成本、秒出、永远可用。勾上：额外请一个大模型把结果写成更口语化的解读和写作建议，走免费模型，失败会自动跳回模板版——两种都不会影响统计数字本身。</p>
+        <p>不勾选时使用本地模板。勾选后按本次模型设置尝试解读；未配置、关闭或失败时保留本地结果。费用和可用性以所选服务为准。</p>
       </details>
       <details>
         <summary>「🔬 AI 深度审计」和「✨ 深度解读」有什么区别？</summary>
@@ -4760,7 +4834,7 @@
       </details>
       <details>
         <summary>为什么要填 API Key？填了有什么好处？</summary>
-        <p>不填：工具用自带的免费模型额度，所有人都能用。填了：AI 功能优先消耗<b>你自己的</b>额度，不跟别人抢，还能选自己偏好的模型（GLM / DeepSeek / 千问 / Kimi / MiMo 都支持）。Key 只存在你浏览器里，点右上角「⚙️ 模型设置」随时改、随时清。</p>
+        <p>不填：核心统计与规则核查照常可用；可选 AI 功能能否使用取决于默认模型服务及其可用额度。填了：AI 功能优先使用<b>你自己的</b>额度，还能选偏好的模型（GLM / DeepSeek / 千问 / Kimi / MiMo 都支持）。Key 保存在浏览器中，点右上角「⚙️ 模型设置」随时改、随时清。</p>
       </details>
       <details>
         <summary>统计方法选错了怎么办？</summary>
@@ -4814,7 +4888,7 @@
         if (plist.length) out.custom_providers = plist;
       }
     } catch (e) { /* 静默 */ }
-    return out;
+    return window.ModelSettings ? ModelSettings.collect(out) : out;
   };
 
   function loadKeys() {
@@ -4829,10 +4903,11 @@
   }
 
   window.saveKeys = function () {
+    if (window.ModelSettings && !ModelSettings.save()) return;
     var saved = {};
     var byok = window.collectByok();
-    var cpList = byok.custom_providers || [];
-    delete byok.custom_providers;
+    var cpList = (byok.custom_providers || []).filter(p => p.id !== 'custom_primary');
+    delete byok.custom_providers; delete byok.ai_policy;
     for (var field in byok) saved[field] = byok[field];
     var storeOk = true;
     try { localStorage.setItem(LS, JSON.stringify(saved)); } catch (e) { storeOk = false; }
@@ -4846,10 +4921,11 @@
     }
     toast('模型设置已保存' + ((Object.keys(saved).length + cpList.length)
       ? '（预置 ' + Object.keys(saved).length + ' 家，自定义 ' + cpList.length + ' 家）'
-      : '（未填 Key，走默认免费额度）'));
+      : '（本地核心功能可用；AI 状态请查看设置）'));
   };
 
   window.clearKeys = function () {
+    if (window.ModelSettings) ModelSettings.clear();
     for (var id in FIELD_MAP) {
       var el = document.getElementById(id);
       if (el) el.value = '';
@@ -4858,7 +4934,7 @@
     if (cpBox) cpBox.innerHTML = '';
     try { localStorage.removeItem(LS); } catch (e) {}
     try { localStorage.removeItem(LS_CP); } catch (e) {}
-    toast('已清空全部 Key，之后走默认免费额度');
+    toast('已清空浏览器 Key，并关闭本页 AI；本地核心功能可用');
   };
 
   // ── v2.33：自定义供应商列表（多家，cc-switch 式管理）──
@@ -4919,31 +4995,35 @@
 
   // ── 弹窗通用开关 ──
   window.closeModal = function (id) {
+    if (id === 'zlSettings' && window.ModelSettings) { ModelSettings.restore(); loadKeys(); }
     var el = document.getElementById(id);
     if (el) el.classList.remove('on');
   };
-  window.openSettings = function () { loadKeys(); document.getElementById('zlSettings').classList.add('on'); };
+  window.openSettings = function () { loadKeys(); if(window.ModelSettings){ModelSettings.restore();ModelSettings.refresh();} document.getElementById('zlSettings').classList.add('on'); };
   window.openHelp = function () { document.getElementById('zlHelp').classList.add('on'); };
   window.openOnboard = function () { document.getElementById('zlOnboard').classList.add('on'); };
 
   // 点遮罩关闭 + Esc 关闭
   document.addEventListener('click', function (e) {
-    if (e.target.classList && e.target.classList.contains('zl-overlay')) e.target.classList.remove('on');
+    if (e.target.classList && e.target.classList.contains('zl-overlay')) window.closeModal(e.target.id);
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') document.querySelectorAll('.zl-overlay.on').forEach(function (m) { m.classList.remove('on'); });
+    if (e.key === 'Escape') document.querySelectorAll('.zl-overlay.on').forEach(function (m) { window.closeModal(m.id); });
   });
 
   // 首次访问自动弹引导（记住选择，之后不再打扰）
   loadKeys();
   try {
     if (!localStorage.getItem('zhilun_onboarded')) {
-      localStorage.setItem('zhilun_onboarded', '1');
       window.openOnboard();
     }
   } catch (e) { window.openOnboard(); }
 })();
 </script>
 
+<script src="/static/task_guide.js"></script>
+<script src="/static/school_rules_ui.js"></script>
+<script src="/static/model_settings_ui.js"></script>
+<script src="/static/task_help.js"></script>
 </body>
 </html>

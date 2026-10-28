@@ -1,0 +1,32 @@
+/* Execute actual settings code and saveKeys: pin/off/override and primary persistence. */
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const elements={},storage={};
+function element(id){return elements[id]||(elements[id]={id,value:'',checked:false,textContent:'',disabled:false,addEventListener(){}});}
+const host=element('modelSettingsHost');
+Object.defineProperty(host,'innerHTML',{set(html){for(const m of html.matchAll(/id="([^"]+)"/g))element(m[1]);}});
+const document={getElementById:element};
+const context={document,localStorage:{getItem:k=>storage[k]||null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]},console,window:{},fetch:async()=>{throw Error('probe must not connect');},FIELD_MAP:{},LS:'zhilun_keys',LS_CP:'zhilun_custom_providers',closeModal(){},toast(){}};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(require('path').join(__dirname,'../static/model_settings_ui.js'),'utf8'),context);
+const api=context.window.ModelSettings;context.ModelSettings=api;
+assert.equal(api.collect({}).ai_policy.mode,'off');
+element('modelMode').value='advanced';element('modelID').value='primary';element('modelURL').value='http://localhost:1234/v1';element('modelKey').value='fixture-only';
+element('taskMode_audit_chat').value='off';element('taskMode_paper_check').value='select';element('taskProvider_paper_check').value='custom1';element('taskID_paper_check').value='extra';
+context.window.collectByok=()=>api.collect({custom_providers:[{base_url:'http://localhost:1235/v1',key:'fixture-only',models:'extra'}]});
+const initial=context.window.collectByok();
+assert.equal(initial.ai_policy.tasks.audit_chat.mode,'off');assert.equal(initial.ai_policy.tasks.paper_check.provider,'custom1');
+assert.deepEqual(Array.from(initial.custom_providers,x=>x.id),['custom_primary','custom1']);
+const html=fs.readFileSync(require('path').join(__dirname,'../templates/index.html'),'utf8');
+const source=html.slice(html.indexOf('  window.saveKeys = function'),html.indexOf('  window.clearKeys = function'));
+vm.runInContext(source,context);context.window.saveKeys();
+const persisted=JSON.parse(storage.zhilun_custom_providers);
+assert.equal(persisted.length,1);assert.equal(persisted[0].id,'custom1');assert.equal(persisted[0].models,'extra');
+element('modelMode').value='off';api.restore();assert.equal(element('modelMode').value,'advanced','cancel restores saved selection');
+api.clear();assert.equal(api.collect({}).ai_policy.mode,'off');
+let opened=0;context.window.openSettings=()=>{opened++;api.restore();};
+api.chooseAI();assert.equal(opened,1);assert.equal(api.collect({}).ai_policy.mode,'unified');
+assert.equal(storage.zhilun_model_policy_v1,undefined,'opening AI settings does not persist a choice');
+api.restore();assert.equal(api.collect({}).ai_policy.mode,'off','cancelled AI choice restores local mode');
+api.localOnly();assert.equal(api.collect({}).ai_policy.mode,'off');
+assert.equal(JSON.parse(storage.zhilun_model_policy_v1).modelMode,'off');
+console.log('[PASS] model_settings: default off / task override / stable custom IDs / restore cancelled draft / AI and local entry actions');

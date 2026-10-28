@@ -82,9 +82,12 @@ def explain_comparison(summary: dict[str, Any], question: str,
 
     # ---- 查缓存（key 含 question，不同追问各自成键）----
     model_name = ""
+    explicit_policy = False
     try:
         from agents import get_router
-        model_name = _router_model_name(get_router(), "audit_chat")
+        router = get_router()
+        explicit_policy = router.task_policy is not None
+        model_name = _router_model_name(router, "audit_chat")
     except Exception:  # noqa: BLE001
         pass
 
@@ -92,7 +95,7 @@ def explain_comparison(summary: dict[str, Any], question: str,
         model_name, PROMPT_VERSION, "audit_chat",
         {"summary": payload, "q": question},
     )
-    if not force:
+    if not force and not explicit_policy:
         entry = llm_cache.get(cache_key)
         if entry is not None:
             return entry["text"], None, {"cached": True, "model": model_name}
@@ -114,7 +117,7 @@ def explain_comparison(summary: dict[str, Any], question: str,
             max_tokens=500,
         )
     except AgentError as e:
-        entry = llm_cache.peek(cache_key) if not force else None
+        entry = llm_cache.peek(cache_key) if not force and not explicit_policy else None
         if entry is not None:
             return entry["text"], None, {"cached": True, "model": model_name}
         return None, f"LLM 不可用：{_short(str(e))}", {"cached": False, "model": model_name}
@@ -131,12 +134,17 @@ def explain_comparison(summary: dict[str, Any], question: str,
         actual = _router_model_name(get_router(), "audit_chat")
     except Exception:  # noqa: BLE001
         actual = model_name
-    if actual and actual != model_name:
-        llm_cache.put(llm_cache.make_key(
-            actual, PROMPT_VERSION, "audit_chat",
-            {"summary": payload, "q": question}), text)
-        model_name = actual
-    llm_cache.put(cache_key, text)
+    if explicit_policy:
+        invocation = get_router().last_invocation() or {}
+        actual = invocation.get("actual_model") or actual
+        model_name = actual or model_name
+    else:
+        if actual and actual != model_name:
+            llm_cache.put(llm_cache.make_key(
+                actual, PROMPT_VERSION, "audit_chat",
+                {"summary": payload, "q": question}), text)
+            model_name = actual
+        llm_cache.put(cache_key, text)
     return text, None, {"cached": False, "model": model_name}
 
 

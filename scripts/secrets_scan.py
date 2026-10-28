@@ -45,6 +45,7 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 # ── 已知测试夹具（路径 + 原文双确认，防有人把真 Key 改名塞进测试）─────────
 # 形式：{文件相对路径: {允许出现的密钥字面量}}
 ALLOW_FIXTURES: dict[str, set[str]] = {
+    "scripts/secrets_scan.py": {"sk-abcdefghijklmnop"},  # 本文件说明和白名单中的既有合成夹具
     "compat_agent_test.py": {"sk-abcdefghijklmnop"},
     "secrets_guard_test.py": {"sk-abcdefghijklmnop"},
     "paid_brake_test.py": {"sk-user-own-key"},

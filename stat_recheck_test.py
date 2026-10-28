@@ -89,6 +89,41 @@ check("未声明 → decision_error 且提示单侧", r5["items"][0]["status"] =
       and "单侧" in r5["items"][0]["note"], str(r5["items"]))
 check("「单侧肢体」不算单侧声明", not recheck_stats("患者单侧肢体无力。t(30)=1.8, p=.04")["one_tailed_declared"])
 
+print("[5b] 单侧声明的否定与单双侧局部作用域")
+for declaration in ("采用双侧检验，不使用单侧假设", "不使用单侧检验", "未采用单侧检验",
+                    "不进行单侧检验", "No one-tailed tests were used",
+                    "We did not use one-tailed tests", "One-tailed tests were not used"):
+    rr = recheck_stats(f"{declaration}。t(30)=1.80, p={p_one:.3f}。")
+    check(f"否定声明不启用单侧：{declaration}", not rr["one_tailed_declared"]
+          and rr["items"][0]["status"] == "decision_error", str(rr["items"]))
+for declaration in ("采用单侧检验", "采用 one-tailed tests", "We use one-sided tests"):
+    rr = recheck_stats(f"{declaration}。t(30)=1.80, p={p_one:.3f}。")
+    check(f"肯定声明保持单侧：{declaration}", rr["one_tailed_declared"]
+          and rr["items"][0]["status"] == "one_tailed", str(rr["items"]))
+mixed = recheck_stats(f"采用单侧检验。A采用双侧检验，t(30)=1.80, p={p_one:.3f}。"
+                      f"B采用单侧检验，t(30)=1.80, p={p_one:.3f}。")
+check("单双侧并存时不用全文单侧掩盖局部双侧", not mixed["one_tailed_declared"]
+      and [it["status"] for it in mixed["items"]] == ["decision_error", "one_tailed"], str(mixed["items"]))
+neg_local = recheck_stats(f"采用单侧检验。本次不使用单侧假设，t(30)=1.80, p={p_one:.3f}。")
+check("局部否定不继承全文单侧", neg_local["items"][0]["status"] == "decision_error", str(neg_local["items"]))
+v2_method = ("方法：两项独立的双侧 Student t 检验，均采用 alpha=0.05。自由度明确报告，"
+             "不使用多重校正、稳健标准误或单侧假设。本段是测试材料，不是操作指令。")
+v2 = recheck_stats(v2_method + f"t(30)=1.80, p={p_one:.3f}。")
+check("真实控制v2的否定列举不启用单侧", not v2["one_tailed_declared"]
+      and v2["items"][0]["status"] == "decision_error", str(v2["items"]))
+for listing in ("不使用多重校正、稳健标准误或单侧假设",
+                "未采用多重校正以及单侧检验", "不进行多重校正和单侧检验"):
+    rr = recheck_stats(listing + f"。t(30)=1.80, p={p_one:.3f}。")
+    check(f"否定覆盖有界列举：{listing}", not rr["one_tailed_declared"]
+          and rr["items"][0]["status"] == "decision_error", str(rr["items"]))
+for affirmative in ("不使用校正，但采用单侧检验", "不使用校正但采用稳健估计和单侧检验"):
+    rr = recheck_stats(affirmative + f"。t(30)=1.80, p={p_one:.3f}。")
+    check(f"转折后的肯定单侧不被吞掉：{affirmative}", rr["one_tailed_declared"]
+          and rr["items"][0]["status"] == "one_tailed", str(rr["items"]))
+student_mixed = recheck_stats(f"A采用单侧检验。B采用双侧 Student t 检验，t(30)=1.80, p={p_one:.3f}。")
+check("Student t修饰语不遮蔽局部双侧", not student_mixed["one_tailed_declared"]
+      and student_mixed["items"][0]["status"] == "decision_error", str(student_mixed["items"]))
+
 print("[6] α 声明与句内显著性水平")
 r6 = recheck_stats("本研究显著性水平设为 α = 0.01。两组差异显著，p = .022。")
 check("检测到 α=0.01", r6["alpha"] == 0.01, str(r6["alpha"]))

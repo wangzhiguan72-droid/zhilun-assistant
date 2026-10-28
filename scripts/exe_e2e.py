@@ -14,6 +14,7 @@
     文件从根目录挪进 `scripts/` 之后就会永远找不到 exe（静默 SKIP，看起来"通过"）。
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -24,7 +25,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # 向上找到含 dist/ 或 examples/ 的那一层，作为仓库根
 ROOT = HERE if (HERE / "examples").exists() else HERE.parent
-EXE = ROOT / "dist" / "智论助手.exe"
+EXE = Path(os.environ.get("ZHILUN_E2E_EXE") or ROOT / "dist" / "智论助手.exe").resolve()
 BASE = "http://127.0.0.1:5000"
 
 # =============================================================================
@@ -132,6 +133,26 @@ def main():
         # 1) 首页
         st, body = http("/")
         log("GET / 返回首页", st == 200 and len(body) > 50000, "status=%s len=%d" % (st, len(body)))
+        # Version and new resources belong to this exact build, never an old R1 log.
+        from runpy import run_path
+        APP_VERSION = run_path(str(ROOT / 'version.py'))['APP_VERSION']
+        st, health_body = http('/health')
+        health = json.loads(health_body.decode('utf-8'))
+        log("新构建版本一致", st == 200 and APP_VERSION in body.decode('utf-8'), APP_VERSION)
+        homepage = body.decode('utf-8')
+        log("AI 上下文与输出预算控件", all(item in homepage for item in (
+            'id="auditContextMode"', 'id="auditOutputTokens"', 'id="auditResearchTools"',
+            'value="full"', 'value="16384"')))
+        for resource in ('task_guide.js', 'school_rules_ui.js', 'model_settings_ui.js', 'task_help.js', 'task_ui.css'):
+            code, content = http('/static/' + resource)
+            log('新前端资源 ' + resource, code == 200 and len(content) > 100)
+        code, status_body = http('/api/model/status')
+        status = json.loads(status_body.decode('utf-8'))
+        log('实例模型状态端点', code == 200 and status.get('ok') is True and 'server' in status)
+        raw_requirements, requirement_type = multipart({}, {'requirements': ('demo.txt', '开发自造规范：正文12pt。'.encode('utf-8'))})
+        code, source_body = http('/api/school_rules/preview', 'POST', raw=raw_requirements, ctype=requirement_type)
+        source = json.loads(source_body.decode('utf-8'))
+        log('学校规范独立预览', code == 200 and source.get('ok') is True and len(source.get('sources', [])) == 1)
 
         # 2) 上传
         mp, ct = multipart({}, {"file": ("rm_anova_data.csv", csv)})
@@ -178,14 +199,15 @@ def main():
             "| 前测 | 60.90 | 12.34 |\n\n"
             "差异检验显示 p = 0.03，达到显著水平。\n"
         ).encode("utf-8")
-        mp, ct = multipart({}, {
+        mp, ct = multipart({"use_llm": "0", "ai_research_tools": "1"}, {
             "paper": ("paper.md", paper_md),
             "data": ("rm_anova_data.csv", csv),
         })
         st, body = http("/api/check_paper", "POST", raw=mp, ctype=ct)
         cp = json.loads(body.decode("utf-8")) if st == 200 else {}
         log("POST /api/check_paper 论文核查（含表格交叉核查）",
-            st == 200 and cp.get("ok") is True,
+            st == 200 and cp.get("ok") is True and not cp.get("llm_enhanced")
+            and cp.get("llm_research") is None,
             "status=%s keys=%s" % (st, list(cp.keys())[:6]))
 
         # 8) 流水线阶段（pipeline）
@@ -215,7 +237,15 @@ def main():
     finally:
         try:
             if proc.poll() is None:
-                proc.terminate()
+                # Windows onefile has a bootloader parent and a serving child.
+                # Stop only the tree launched by this test, before the parent
+                # exits and its child becomes an untraceable port-5000 orphan.
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=15)
+                else:
+                    proc.terminate()
                 try:
                     proc.wait(timeout=10)
                 except Exception:

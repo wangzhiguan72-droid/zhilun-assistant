@@ -40,6 +40,7 @@ LLM_PATH_PREFIXES: tuple[str, ...] = (
     "/api/copilot/",
     "/api/audit_chat",
     "/api/audit_image",
+    "/api/model/test",
 )
 
 # 完全不限流的路径（静态资源 / 健康检查 / 首页）

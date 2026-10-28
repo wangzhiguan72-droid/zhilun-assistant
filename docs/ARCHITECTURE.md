@@ -2,6 +2,10 @@
 
 本文档面向要读代码 / 改代码的人。产品定位与使用方式见根目录 `README.md`。
 
+v2.58 增量：`paper_context.py` 在本地选择用户授权范围内的论文上下文；默认head保留2000字符，evidence从全文选取至多24000字符，full提供至多120000字符、超限明确拒绝。P片段保留提取文本偏移与完整输入哈希，模型能基于文本独立提出规则之外的研究疑点。`llm_audit.py`提示版本v6，缓存身份同时考虑全篇输入、策略、摘录和输出预算。API仅在主动启用AI时接收范围与预算；原始数据行不进入模型。
+
+v2.57 增量：`school_format.py` 注册独立 Blueprint，接收规范预览和格式检查请求，请求内验证规范哈希/原文/人工确认并比较 DOCX 有效属性；`model_settings.py` 提供配置存在性及主动连接测试；`agents/task_policy.py` 定义显式模型选择和交接校验契约。前端增量位于 `static/task_guide.js`、`task_help.js`、`school_rules_ui.js`、`model_settings_ui.js` 和 `task_ui.css`。本轮不保存规范正文，不执行 AI 规范提取或 OCR。引导记录仅含每标签页位置，不包含论文或密钥。
+
 ---
 
 ## 一、总体结构：一个 Flask 进程，三个 Tab

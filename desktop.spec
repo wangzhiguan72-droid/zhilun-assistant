@@ -80,6 +80,11 @@ datas = [
     ('stat_recheck.py', '.'),       # v2.34 statcheck 式 p 值复算（被 paper_lint 引用）
     ('review_share.py', '.'),       # v2.16 协作审阅（app.py 顶层 import，漏了必闪退）
     ('version.py', '.'),            # v2.23 版本号（desktop_launcher 引用，漏了必闪退）
+    ('school_format.py', '.'),      # V1.8 学校规范与 DOCX 属性核对
+    ('model_settings.py', '.'),     # V1.8 实例配置状态与主动连接测试
+    ('paper_context.py', '.'),      # 本地全文检索与用户选择的 AI 上下文
+    ('research_tools.py', '.'),     # 只读论文补读与本地统计复算
+    ('research_review.py', '.'),    # 有界模型补证与假说验证循环
 
     # —— v2.14 可插拔方法市场（插件市场全套，缺一不可）——
     ('plugin_registry.py', '.'),    # 插件扫描 / 沙箱调度 / 结果合理性校验

@@ -63,7 +63,9 @@ import contextvars
 import os
 import threading
 import time
+from copy import deepcopy
 from typing import Any
+from urllib.parse import urlparse
 
 from .base import AgentError, BaseAgent
 from .custom_agent import CustomAgent
@@ -74,6 +76,7 @@ from .mimo_agent import MimoAgent
 from .qwen_agent import QwenAgent
 from .siliconflow_agent import SiliconFlowAgent
 from .zhipu_agent import ZhipuAgent
+from .task_policy import parse_task_policy, selected_for
 
 
 # provider 前缀 → Agent 类（七个平台全部登记）
@@ -260,6 +263,10 @@ class Router:
         # _user_keys 同走 ContextVar——请求级隔离，绝不跨请求残留。
         self._custom_cfg_var: contextvars.ContextVar[dict | None] = \
             contextvars.ContextVar(f"zhilun_custom_cfg_{id(self)}", default=None)
+        self._task_policy_var: contextvars.ContextVar[dict | None] = \
+            contextvars.ContextVar(f"zhilun_task_policy_{id(self)}", default=None)
+        self._last_invocation_var: contextvars.ContextVar[dict | None] = \
+            contextvars.ContextVar(f"zhilun_invocation_{id(self)}", default=None)
         # 上一次成功调用的 Agent（v0.5.2：供 llm_enhance 拿 usage 做前缀缓存观测）
         self._last_agent: BaseAgent | None = None
         # 上一次调用的 usage（同上；None = 尚未调用或调用失败）
@@ -402,6 +409,57 @@ class Router:
             self.set_user_key(pid, key)
         self._custom_cfg_var.set({"providers": provs})
 
+    @property
+    def _task_policy(self) -> dict | None:
+        return self._task_policy_var.get()
+
+    @property
+    def task_policy(self) -> dict | None:
+        """Current request's explicit choice, or None for legacy routing."""
+        policy = self._task_policy_var.get()
+        return deepcopy(policy) if policy is not None else None
+
+    def set_task_policy(self, raw: object) -> None:
+        """Apply an explicit model choice to this request only; None keeps legacy routing."""
+        # A malformed new policy must never leave a previous request's choice active.
+        self._task_policy_var.set(None)
+        self._last_invocation_var.set(None)
+        try:
+            policy = parse_task_policy(raw)
+        except ValueError as exc:
+            raise AgentError(str(exc)) from exc
+        if policy:
+            choices = ([policy["selected"]] if policy["selected"] else []) + policy["candidates"]
+            choices += [v for v in policy["tasks"].values() if v["mode"] == "select"]
+            for choice in choices:
+                provider, model = choice["provider"], choice["model"]
+                if provider.startswith("custom"):
+                    info = ((self._custom_cfg or {}).get("providers") or {}).get(provider)
+                    if not info or model not in info["models"]:
+                        raise AgentError("自定义模型配置与当前请求不一致。")
+                elif provider not in _PROVIDERS or provider == "custom":
+                    raise AgentError("未知模型服务。")
+        self._task_policy_var.set(policy)
+
+    def reset_request_state(self) -> None:
+        """WSGI workers may reuse threads: clear credentials and choices explicitly."""
+        self._user_keys_var.set(None)
+        self._custom_cfg_var.set(None)
+        self._task_policy_var.set(None)
+        self._last_invocation_var.set(None)
+
+    def last_invocation(self) -> dict | None:
+        """This request's selected/actual model and status; no prompt, URL or key."""
+        record = self._last_invocation_var.get()
+        return dict(record) if record else None
+
+    def _external_model(self, provider: str) -> bool:
+        if not provider.startswith("custom"):
+            return True
+        info = ((self._custom_cfg or {}).get("providers") or {}).get(provider) or {}
+        parsed = urlparse(info.get("base_url", ""))
+        return parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+
     def _make_agent(self, provider: str, model: str, temp: float) -> BaseAgent:
         """按 provider 实例化对应 Agent。缺 Key 时抛 AgentError。
 
@@ -432,6 +490,26 @@ class Router:
         服务端内置 Key（平台额度）。没填 Key 的用户完全无感知。
         """
         chain = list(STATE_TO_MODEL[state])
+        policy = self._task_policy
+        if policy is not None:
+            selected = selected_for(policy, state)
+            if selected is None:
+                return []
+            temp = chain[0][2] if chain else 0.5
+            choices = [selected]
+            if policy["allow_fallback"]:
+                for candidate in policy["candidates"]:
+                    if candidate == selected:
+                        continue
+                    if (not self._external_model(selected["provider"])
+                            and self._external_model(candidate["provider"])
+                            and not policy["allow_external_fallback"]):
+                        continue
+                    if ((candidate["provider"], candidate["model"]) not in FREE_MODELS
+                            and not policy["allow_paid_fallback"]):
+                        continue
+                    choices.append(candidate)
+            return [(item["provider"], item["model"], temp) for item in choices]
         cfg = self._custom_cfg
         if cfg and state not in VISION_REQUIRED_STATES:
             # v2.31/33：自定义供应商排最前（用户明确配置 = 最高
@@ -460,7 +538,7 @@ class Router:
         # 换用户 Key」时才可走 —— 缓存里只会是环境变量 Key 的 Agent，
         # 当前请求若带了该 provider 的用户 Key，必须绕开捷径走下面的
         # 全新实例化，否则用户 Key 会被静默忽略（旧行为靠清缓存实现）。
-        if state in self._resolved:
+        if self._task_policy is None and state in self._resolved:
             key = self._resolved[state]
             cached = self._agents.get(key)
             if (cached is not None and not self._cooling(key)
@@ -475,6 +553,9 @@ class Router:
         if state not in STATE_TO_MODEL:
             raise AgentError(f"未知状态：{state}。已知：{list(STATE_TO_MODEL.keys())}")
 
+        if self._task_policy is not None and not self._ordered_chain(state):
+            raise AgentError(f"任务 {state} 的 AI 已关闭。")
+
         errors: list[str] = []
         for provider, model, temp in self._ordered_chain(state):
             key = (provider, model)
@@ -484,7 +565,7 @@ class Router:
             if not self._allowed(provider, model):
                 errors.append(f"{provider}/{model}: 免费档跳过（付费模型，需会员）")
                 continue
-            if self._cooling(key):
+            if provider not in self._user_keys and self._cooling(key):
                 errors.append(f"{provider}/{model}: 冷却中（近期调用失败，"
                               f"{int(self._cooldown_until[key] - time.time())}s 后恢复）")
                 continue
@@ -518,6 +599,16 @@ class Router:
         运行时失败（429 / 5xx / 超时）→ 冷却该 Agent 60 秒 → 自动重试
         容灾链下一个。全链失败才抛 AgentError（让上层 fallback 到纯模板）。
         """
+        policy = self._task_policy
+        if policy is not None and state in STATE_TO_MODEL:
+            chosen = selected_for(policy, state)
+            self._last_invocation_var.set({"task": state, "selected_model": (
+                f"{chosen['provider']}/{chosen['model']}" if chosen else ""),
+                "actual_model": "", "status": "pending", "attempts": []})
+            if chosen is None:
+                self._last_invocation_var.set({"task": state, "selected_model": "",
+                                               "actual_model": "", "status": "disabled", "attempts": []})
+                raise AgentError(f"任务 {state} 的 AI 已关闭。")
         if state == "analyze" or state not in STATE_TO_MODEL:
             # 复用 _get_agent 的状态校验与报错文案
             agent = self._get_agent(state)
@@ -536,7 +627,7 @@ class Router:
                     errors.append(f"{provider}/{model}: 付费熔断"
                                   f"（{PAID_MAX_CALLS_ENV}={self._paid_max_calls()} 已用尽）")
                     continue
-                if self._cooling(key):
+                if provider not in self._user_keys and self._cooling(key):
                     errors.append(f"{provider}/{model}: 冷却中（近期调用失败）")
                     continue
                 # 实例化（缺 Key 等失败 → 记录，试下一个）
@@ -552,6 +643,10 @@ class Router:
                 except AgentError as e:
                     errors.append(f"{provider}/{model}: {e}")
                     continue
+                if policy is not None:
+                    current = self._last_invocation_var.get() or {}
+                    current["attempts"] = [*current.get("attempts", []), f"{provider}/{model}"]
+                    self._last_invocation_var.set(current)
                 # 运行时调用（429 等 → 冷却，试下一个）
                 # v2.29：项目方付费调用先记账再发——只要请求发出去了，
                 # 哪怕中途失败 token 也可能已计费，熔断必须拦住源头。
@@ -566,12 +661,17 @@ class Router:
                     self._last_usage = getattr(agent, "last_usage", None)
                     self._last_state = state
                     self._remember_model(state, agent)  # v1.1.1 缓存 key 稳定性
+                    if policy is not None:
+                        current = self._last_invocation_var.get() or {}
+                        current.update(actual_model=f"{provider}/{model}", status="success")
+                        self._last_invocation_var.set(current)
                     return result
                 except AgentError as e:
                     # v0.5：429 带 Retry-After 时按平台说的冷却，封顶 COOLDOWN_MAX
                     retry_after = getattr(e, "retry_after", None)
                     cooldown = min(retry_after, COOLDOWN_MAX) if retry_after else COOLDOWN_SECONDS
-                    self._cooldown_until[key] = time.time() + cooldown
+                    if provider not in self._user_keys:
+                        self._cooldown_until[key] = time.time() + cooldown
                     if self._resolved.get(state) == key:
                         del self._resolved[state]  # 别让下次直接复用刚失败的
                     wait_txt = (f"{cooldown:.0f}s（平台 Retry-After）" if retry_after
@@ -580,6 +680,10 @@ class Router:
                                   f"{wait_txt}）：{e}")
                     continue
 
+            if policy is not None:
+                current = self._last_invocation_var.get() or {}
+                current["status"] = "failed"
+                self._last_invocation_var.set(current)
             raise AgentError(
                 f"状态 {state} 的容灾链全部失败。\n" +
                 "\n".join(f"  - {e}" for e in errors)
@@ -607,6 +711,9 @@ class Router:
         没有历史时回退到"当前首选候选"（首次调用前的探测）。
         拿不到就返回 ""（key 仍可生成，只是不区分模型）。
         """
+        if self._task_policy is not None:
+            selected = selected_for(self._task_policy, state)
+            return f"{selected['provider']}/{selected['model']}" if selected else ""
         name = self._last_ok_model.get(state)
         if name:
             return name

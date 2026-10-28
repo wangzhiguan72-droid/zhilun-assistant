@@ -182,6 +182,13 @@ def markdown_to_docx(
     i = 0
     while i < len(lines):
         line = lines[i]
+        # Markdown indented code is literal evidence, not a heading/table/list.
+        # Handle it before strip() so Word preserves the browser's local ledger.
+        if line.startswith("    "):
+            p = doc.add_paragraph()
+            _set_cn_font(p.add_run(line[4:]), size=12)
+            i += 1
+            continue
         stripped = line.strip()
 
         # 空行

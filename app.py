@@ -90,6 +90,8 @@ import datacheck as data_doctor  # v2.0 产品入口：数据体检（纯本地�
 import lessons  # v2.32 经验库（越用越聪明：同类问题计数与固化建议）
 import paper_table_forensics  # v2.32 论文表格取证（docx 表格数字本身）
 import rules_kb  # v2.32 行业规则知识库（本地《行业规则.json》）
+from school_format import school_format_bp
+from model_settings import create_model_blueprint
 
 # 中文字体（Windows 自带；其他系统会回退到默认）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
@@ -158,6 +160,8 @@ def _session_put(file_id: str, df: pd.DataFrame,
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+app.register_blueprint(school_format_bp)
+app.register_blueprint(create_model_blueprint())
 
 
 # -----------------------------------------------------------------------------
@@ -337,6 +341,9 @@ def run_independent_t(df: pd.DataFrame, group_col: str, value_col: str) -> dict[
         if p_val < 0.05
         else "p ≥ 0.05（差异不显著）"
     )
+    p_report = "<0.001" if p_val < 0.001 else _fmt(float(p_val))
+    p_conclusion = "p < 0.001" if p_val < 0.001 else f"p = {_fmt(float(p_val))}"
+    levene_p_report = "p < 0.001" if levene_p < 0.001 else f"p = {_fmt(float(levene_p))}"
 
     # 渲染 Markdown（沿用 PRD 中的「论文分析与结论」风格）
     md = []
@@ -348,7 +355,7 @@ def run_independent_t(df: pd.DataFrame, group_col: str, value_col: str) -> dict[
     md.append(f"| {g1} | {n1} | {_fmt(float(v1.mean()))} | {_fmt(float(v1.std(ddof=1)))} |")
     md.append(f"| {g2} | {n2} | {_fmt(float(v2.mean()))} | {_fmt(float(v2.std(ddof=1)))} |")
     md.append("\n### 二、方差齐性检验（Levene）\n")
-    md.append(f"- F = {_fmt(float(levene_stat))}, p = {_fmt(float(levene_p))}")
+    md.append(f"- F = {_fmt(float(levene_stat))}, {levene_p_report}")
     md.append(f"- 结论：{'方差齐性（p > 0.05）' if equal_var else '方差不齐（p ≤ 0.05）'}，"
               f"T 检验采用 {'合并方差' if equal_var else 'Welch 校正'}。\n")
     md.append("### 三、差异检验\n")
@@ -356,7 +363,7 @@ def run_independent_t(df: pd.DataFrame, group_col: str, value_col: str) -> dict[
     md.append(f"| --- | ---: |")
     md.append(f"| t | {_fmt(float(t_stat))} |")
     md.append(f"| 自由度（df） | {dfree} |")
-    md.append(f"| p 值 | {_fmt(float(p_val))} |")
+    md.append(f"| p 值 | {p_report} |")
     md.append(f"| 均值差（{g1} − {g2}） | {_fmt(diff)} |")
     md.append(f"| 95% 置信区间 | [{_fmt(ci_low)}, {_fmt(ci_high)}] |")
     md.append(f"| Cohen's d | {_fmt(float(d))} |")
@@ -365,16 +372,16 @@ def run_independent_t(df: pd.DataFrame, group_col: str, value_col: str) -> dict[
     md.append("\n### 五、结论（可直接引用进论文初稿）\n")
     direction = "高于" if diff > 0 else "低于"
     sig_phrase = (
-        "差异达到统计学显著水平"
+        "达到统计学显著水平"
         if p_val < 0.05
-        else "差异未达到统计学显著水平"
+        else "未达到统计学显著水平"
     )
     md.append(
         f"为考察【{group_col}】对【{value_col}】的影响，本研究对两组数据进行了独立样本 T 检验。"
         f"结果显示，{g1} 组（n = {n1}，M = {_fmt(float(v1.mean()))}，SD = {_fmt(float(v1.std(ddof=1)))}）"
         f"与 {g2} 组（n = {n2}，M = {_fmt(float(v2.mean()))}，SD = {_fmt(float(v2.std(ddof=1)))}）"
         f"在【{value_col}】上的差异{sig_phrase}（t({dfree}) = {_fmt(float(t_stat))}，"
-        f"p = {_fmt(float(p_val))}，Cohen's d = {_fmt(float(d))}）。"
+        f"{p_conclusion}，Cohen's d = {_fmt(float(d))}）。"
         f"具体而言，{g1} 组的平均得分{direction} {g2} 组，均值差为 {_fmt(diff)}（95% CI [{_fmt(ci_low)}, {_fmt(ci_high)}]）。"
     )
 
@@ -2877,12 +2884,13 @@ _BYOK_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _apply_byok(router, getter) -> int:
+def _apply_byok(router, getter, *, ai_enabled=True) -> int:
     """把用户在页面上填的 Key 注入 Router（BYOK 模式）。
 
     getter: 取值函数（JSON payload 用 payload.get，表单用 request.form.get）。
     返回注入的平台数（0 = 用户没填任何 Key，走服务端默认免费档）。
     """
+    router.reset_request_state()
     n = 0
     for provider, field in _BYOK_FIELDS:
         raw = (getter(field) or "").strip()
@@ -2893,6 +2901,12 @@ def _apply_byok(router, getter) -> int:
     # 多供应商列表优先（v2.33，设置页可添加多家、按序容灾）；
     # 单供应商旧字段向后兼容。
     c_list = getter("custom_providers")
+    if isinstance(c_list, str):
+        import json
+        try:
+            c_list = json.loads(c_list)
+        except (ValueError, TypeError):
+            c_list = []
     if isinstance(c_list, list) and c_list:
         router.set_custom_providers([
             p for p in c_list
@@ -2902,6 +2916,7 @@ def _apply_byok(router, getter) -> int:
             and str(p.get("models") or p.get("model") or "").strip()
         ])
         n += 1
+        router.set_task_policy(getter("ai_policy") if ai_enabled else {"schema_version": 1, "mode": "off"})
         return n
     c_url = (getter("custom_base_url") or "").strip()
     c_key = (getter("custom_key") or "").strip()
@@ -2909,6 +2924,7 @@ def _apply_byok(router, getter) -> int:
     if c_url and c_key and c_models:
         router.set_custom_provider(c_url, c_key, c_models)
         n += 1
+    router.set_task_policy(getter("ai_policy") if ai_enabled else {"schema_version": 1, "mode": "off"})
     return n
 
 
@@ -2964,7 +2980,7 @@ def api_analyze():
     # ⚠️ 必须在 stream 分流**之前**注入：v2.26 之前此段在分流之后，
     # 流式路径（前端默认 stream=1）完全拿不到用户 Key —— 双路径漂移。
     router = get_router()
-    _apply_byok(router, payload.get)
+    _apply_byok(router, payload.get, ai_enabled=payload.get("use_llm") == 1)
 
     if payload.get("stream") == 1:
         return _analyze_sse(payload)
@@ -3044,6 +3060,8 @@ def _analyze_sse(payload: dict):
 
     def gen():
         try:
+            # Streaming can start after Flask has left the initial request context.
+            _apply_byok(get_router(), payload.get, ai_enabled=payload.get("use_llm") == 1)
             yield _sse("stage", {"stage": "init", "message": "正在接收请求…", "progress": 5})
             if not file_id or file_id not in _SESSION:
                 yield _sse("error", {"message": "会话已过期，请重新上传文件。"})
@@ -3123,7 +3141,7 @@ def _analyze_sse(payload: dict):
                 yield _sse("chart", {"error": f"图表异常：{e}", "image": None})
 
             yield _sse("stage", {"stage": "done", "message": "分析完成", "progress": 100})
-            yield _sse("done", {"ok": True})
+            yield _sse("done", {"ok": True, "ai_invocation": get_router().last_invocation()})
         except Exception as e:  # noqa: BLE001
             yield _sse("error", {"message": f"SSE 流异常：{e}"})
             yield _sse("done", {"ok": False})
@@ -3628,6 +3646,35 @@ PAPER_LINT_MAX_CHARS = 1_500_000
 _PAPER_LINT_SOURCES = {"docx", "pdf", "txt", "md"}
 
 
+@app.route("/api/paper_preview", methods=["POST"])
+def api_paper_preview():
+    """只验证论文可解析，不运行核查、不调用模型、不保存正文。"""
+    paper = request.files.get("paper")
+    if not paper or Path(paper.filename or "").suffix.lower().lstrip(".") not in _PAPER_LINT_SOURCES:
+        return jsonify(ok=False, error="请选择 DOCX、PDF、TXT 或 Markdown 论文。"), 400
+    try:
+        raw = paper.read(MAX_UPLOAD_MB * 1024 * 1024 + 1)
+        if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
+            raise ValueError("文件超过 20MB 上限")
+        if Path(paper.filename).suffix.lower() == ".docx":
+            import zipfile
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                entries = archive.infolist()
+                if len(entries) > 2000 or sum(x.file_size for x in entries) > 50 * 1024 * 1024:
+                    raise ValueError("DOCX 解压规模超过限制，请精简文件")
+                if any(x.flag_bits & 1 for x in entries):
+                    raise ValueError("不支持加密 DOCX")
+        paper.seek(0)
+        text = read_paper_text(paper)
+        if not text.strip():
+            raise ValueError("未读取到正文，扫描件请转换为可提取文本或 DOCX")
+        if len(text) > PAPER_LINT_MAX_CHARS:
+            raise ValueError("论文文字超过解析上限")
+        return jsonify(ok=True, text_length=len(text), sha256=hashlib.sha256(raw).hexdigest())
+    except Exception:
+        return jsonify(ok=False, error="论文无法解析或超过限制；请检查文件类型、加密状态及大小，扫描件需先转换。"), 400
+
+
 @app.route("/api/paper_lint", methods=["POST"])
 def api_paper_lint():
     """📋 论文提交前规范体检（v2.34 · Claude 线，纯规则零 LLM，无需上传数据）。
@@ -3800,7 +3847,7 @@ def api_check_paper():
 
     # 4) 处理 BYOK（用户自带 Key，v1.8 起支持六家平台）
     router = get_router()
-    _apply_byok(router, request.form.get)
+    _apply_byok(router, request.form.get, ai_enabled=request.form.get("use_llm") == "1")
 
     # 5) 跑核查报告（v0.4 支持用户指令过滤）
     directive = (request.form.get("directive") or "").strip()
@@ -3828,6 +3875,9 @@ def api_check_paper():
         llm_section, llm_error, llm_meta = audit_paper_with_llm(
             paper_text, audit, directive,
             force=(request.form.get("llm_force") or "").strip() == "1",
+            context_mode=request.form.get("ai_context_mode", "head"),
+            output_tokens=request.form.get("ai_output_tokens", "4096"),
+            research_tools=request.form.get("ai_research_tools") == "1",
         )
         if llm_section:
             audit = {**audit, "markdown": (audit.get("markdown") or "") + "\n\n" + llm_section}
@@ -3848,6 +3898,8 @@ def api_check_paper():
         "llm_input_tokens": llm_meta.get("input_tokens", 0),
         "llm_output_tokens": llm_meta.get("output_tokens", 0),
         "llm_cost": llm_meta.get("cost_estimate", 0.0),
+        "llm_context": llm_meta.get("context"),
+        "llm_research": llm_meta.get("research"),
     })
 
 
@@ -4133,6 +4185,7 @@ def api_copilot_paper():
     # 2.5) 可选 LLM 润色（证据闸门约束：污染稿静默回退原稿）
     polish_meta: dict = {"llm_used": False}
     if payload.get("use_llm") == 1:
+        _apply_byok(get_router(), payload.get)
         bundle, polish_meta = copilot_polisher.polish_bundle(
             bundle, claims, template=template,
             force=payload.get("llm_force") == 1,
@@ -4381,6 +4434,36 @@ def _cors_headers(resp):
         # 加头失败绝不能把正常请求变成 500
         return resp
 
+
+
+@app.before_request
+def _validate_model_policy():
+    """Fail closed on malformed explicit model choices before starting a task."""
+    if request.method != "POST" or not request.path.startswith("/api/"):
+        return None
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    if not payload or "ai_policy" not in payload:
+        get_router().reset_request_state()
+        return None
+    if request.path in {"/api/analyze", "/api/check_paper", "/api/copilot/paper"} and str(payload.get("use_llm", "")) != "1":
+        get_router().reset_request_state()
+        return None
+    try:
+        _apply_byok(get_router(), payload.get)
+    except Exception:
+        return jsonify(ok=False, error="模型配置无效或与本次请求不一致；请核对设置后重试。"), 400
+    return None
+
+
+@app.after_request
+def _model_invocation_metadata(resp):
+    if request.path in {"/api/analyze", "/api/check_paper", "/api/audit_chat", "/api/audit_image", "/api/copilot/paper"} and resp.is_json:
+        body = resp.get_json(silent=True)
+        meta = get_router().last_invocation()
+        if isinstance(body, dict) and meta is not None:
+            body["ai_invocation"] = meta
+            resp.set_data(app.json.dumps(body))
+    return resp
 
 
 # ==========================================================================

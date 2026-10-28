@@ -52,7 +52,7 @@ if not Path(PY).exists():
     if _fallback.exists():
         PY = str(_fallback)
 EXE_E2E = str(ROOT / "scripts" / "exe_e2e.py")
-EXE_PATH = str(ROOT / "dist" / "智论助手.exe")
+EXE_PATH = str(Path(os.environ.get("ZHILUN_E2E_EXE") or ROOT / "dist" / "智论助手.exe").resolve())
 SUMMARY = str(ROOT / "_tmp_reg.txt")
 
 # -----------------------------------------------------------------------------

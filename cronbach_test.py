@@ -115,6 +115,18 @@ check("示例数据 α 在 0.7~0.95 合理区间", 0.7 <= qa <= 0.95, f"got={qa:
 check("示例数据 n = 30", qres["summary"]["n"] == 30)
 print(f"  · 示例 α = {qa:.4f}（{qres['summary']['grade']}）")
 
+# v2.60：题项只取 Likert 型列，成绩等连续列即使被论文提到也不混入
+from audit import _auto_pick_group_value  # noqa: E402
+from app import _summarize_column  # noqa: E402
+mix = qdf.copy()
+mix["后测成绩"] = [60.5 + i * 1.3 for i in range(len(mix))]
+mix["前测成绩"] = [58.2 + i * 1.1 for i in range(len(mix))]
+_, picked = _auto_pick_group_value(
+    [{"method_key": "cronbach_alpha"}],
+    [_summarize_column(mix[c]) for c in mix.columns],
+    [{"data_col": "后测成绩"}, {"data_col": "前测成绩"}])
+check("信度题项不混入连续成绩列", picked == "q1|q2|q3|q4|q5|q6", f"got={picked}")
+
 # ============ 3. HTTP 契约（test_client） ============
 section("3. HTTP 契约 · /api/analyze JSON + SSE")
 client = app.test_client()

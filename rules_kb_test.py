@@ -49,6 +49,9 @@ check("非整数被拦", "行业规则·应为整数" in cats, str(cats))
 check("卡片结构同构", all(set(i) >= {"level", "category", "title", "evidence",
                                     "explain", "suggestion", "rows", "columns"}
                           for i in issues))
+check("过半越界=规则不适用,不报(v2.60)",
+      not any("焦虑总分" in (i.get("columns") or []) and i["category"] == "行业规则·取值越界"
+              for i in issues), str([i["title"] for i in issues]))
 check("正常列零误报", all("姓名" not in (i.get("columns") or []) for i in issues))
 
 print("[3] 规则文件损坏 = 无规则不炸")

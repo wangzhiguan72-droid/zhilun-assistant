@@ -134,7 +134,14 @@ def _auto_pick_group_value(paper_methods: list[dict], columns: list[dict],
     # （含 Likert 量表题）。信度是"量表整体"分析，与 T 检验的单因变量诉求不冲突，
     # 故优先级最高；题项用 | 连接，供 _run_real_analysis 拆分。
     if "cronbach_alpha" in method_keys and len(numeric_items) >= 2:
-        items = matched_items if len(matched_items) >= 2 else numeric_items
+        # v2.60：题项先取 Likert 型列（数值但取值少）。成绩、时长等连续列
+        # 不是量表题，混进去会把 α 算成无意义的值并误报不一致。
+        likert = [c["name"] for c in columns
+                  if c.get("is_numeric") and c["type"] == "categorical"
+                  and not _is_id_like(c["name"])]
+        pool = likert if len(likert) >= 2 else numeric_items
+        matched_pool = [n for n in pool if n in matched_data_cols]
+        items = matched_pool if len(matched_pool) >= 2 else pool
         return None, "|".join(items)
 
     # v1.1 重复测量优先于配对 T：论文若声称"重复测量/被试内/多时间点"，
@@ -440,6 +447,18 @@ def _find_group_column(labels: set[str], df: pd.DataFrame,
     return hits[0] if len(hits) == 1 else None
 
 
+def _header_value_col(header: list[str], df: pd.DataFrame,
+                      exclude: str | None = None) -> str | None:
+    """表头点名的数值列（如「后测成绩 M」→「后测成绩」），恰好一列才返回。"""
+    text = " ".join(str(h) for h in header or [])
+    hits = {c for c in df.columns
+            if isinstance(c, str) and len(c) >= 2 and c != exclude
+            and c in text and pd.api.types.is_numeric_dtype(df[c])}
+    # 短名被长名包含时只留长名（「成绩」⊂「后测成绩」）
+    hits = {c for c in hits if not any(c != o and c in o for o in hits)}
+    return hits.pop() if len(hits) == 1 else None
+
+
 def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
                         value_col: str | None = None) -> dict[str, Any]:
     """把论文 docx 里的描述统计表和原始数据逐格核对（v2.11 · P3）。
@@ -474,6 +493,8 @@ def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
             notes.append(f"第 {ti} 张表的分组（{'、'.join(sorted(labels))}）"
                          "没有唯一对应的数据列，未核对。")
             continue
+        # v2.60：表头写明了变量就按表头核对，不沿用别的方法挑的列
+        vcol = _header_value_col(rows[0], df, exclude=gcol) or value_col
 
         for r in parsed:
             mask = df[gcol].astype(str).str.strip() == r["label"]
@@ -490,8 +511,8 @@ def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
                         "real": f"按列「{gcol}」实算 n={real_n}",
                         "diff": str(r["n"] - real_n),
                     })
-            if value_col and value_col in df.columns:
-                nums = pd.to_numeric(sub[value_col], errors="coerce").dropna()
+            if vcol and vcol in df.columns:
+                nums = pd.to_numeric(sub[vcol], errors="coerce").dropna()
                 if nums.empty:
                     continue
                 if r["mean"] is not None:
@@ -502,7 +523,7 @@ def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
                         mismatches.append({
                             "status": "mismatch", "kind": "table_mean",
                             "paper": (f"表格「{r['label']}」行 M={r['mean']:g}"
-                                      f"（列「{value_col}」）"),
+                                      f"（列「{vcol}」）"),
                             "real": f"实算 M={real_m:.3f}",
                             "diff": f"{abs(real_m - r['mean']):.3f}",
                         })
@@ -519,7 +540,7 @@ def compare_table_stats(tables: list[list[list[str]]], df: pd.DataFrame,
                         mismatches.append({
                             "status": "mismatch", "kind": "table_sd",
                             "paper": (f"表格「{r['label']}」行 SD={r['sd']:g}"
-                                      f"（列「{value_col}」）"),
+                                      f"（列「{vcol}」）"),
                             "real": f"实算 SD={real_sd:.3f}",
                             "diff": f"{abs(real_sd - r['sd']):.3f}",
                         })

@@ -118,7 +118,9 @@ def check_rules(df: pd.DataFrame) -> list[dict]:
             lo, hi = rule.get("min"), rule.get("max")
             if lo is not None and hi is not None:
                 bad = series[(series < float(lo)) | (series > float(hi))]
-                if len(bad):
+                # v2.60:过半数值越界说明规则不适用这一列(如「焦虑总分」撞上
+                # 五点量表模板),不是录入错误——报出来就是整列误报
+                if len(bad) and len(bad) <= len(series) / 2:
                     shown = ", ".join(f"{v:g}" for v in bad.head(5))
                     issues.append(_issue(
                         LEVEL_MID, "行业规则·取值越界",
@@ -133,7 +135,7 @@ def check_rules(df: pd.DataFrame) -> list[dict]:
                         f"{RULES_FILENAME} 调整 match/min/max。", column=name))
             if rule.get("integer"):
                 non_int = series[series != series.round()]
-                if len(non_int):
+                if len(non_int) and len(non_int) <= len(series) / 2:
                     issues.append(_issue(
                         LEVEL_LOW, "行业规则·应为整数",
                         f"「{name}」有 {len(non_int)} 个非整数,但规则「{rname}」要求整数",

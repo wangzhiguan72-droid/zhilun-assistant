@@ -143,6 +143,14 @@ tol = [["组别", "n", "M", "SD"],
 out10 = compare_table_stats([tol], df, value_col="score")
 check("0.01 舍入差不报", out10["mismatches"] == [], f"实际={out10['mismatches']}")
 
+# v2.60：表头点名变量（「score M」）时按表头列核对，不沿用别的方法挑的列
+named = [["组别", "n", "score M", "score SD"],
+         ["男", "15", "75.0", "3.25"], ["女", "15", "87.07", "2.99"]]
+out11 = compare_table_stats([named], df, value_col="q1|q2")
+check("表头点名列 → 篡改 M 照样检出",
+      {m["kind"] for m in out11["mismatches"]} == {"table_mean"}
+      and out11["checked"] == 6, f"实际={out11}")
+
 # ---------------------------------------------------------------------------
 print("\n[C] build_audit_report 集成")
 # ---------------------------------------------------------------------------

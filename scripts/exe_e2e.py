@@ -230,7 +230,52 @@ def main():
         st, body = http("/api/sample/rm_anova_data.csv")
         log("GET /api/sample/* 示例数据", st == 200 and len(body) > 100, "status=%s" % st)
 
-        # 11) 门禁默认关闭（未设 ACCESS_CODE 时应零干扰）
+        # 11) v2.61 风格提示护栏：新模块必须真被打进包（函数内 import，漏 datas 只在运行时炸）
+        #     夹具同时覆盖「豁免」与「保留」两条路径：封面段被本地门豁免，讨论段留下。
+        #     夹具全部合成脱敏（姓名/校名/题名/正文均非真实论文），只保留门依赖的
+        #     字段族、分行排版与讨论段的套话密度。
+        cover = (
+            "2025 届 硕 士 学 位 论 文\n合成视角下样例群体示例观念状况与改进路径考察\n"
+            "作者姓名 测试甲\n指导教师 测试乙 教授\n学科专业 示例学\n研究方向 示例方向\n"
+            "培养单位 示例学院\n学习年限 2021年9月至2024年6 月\n二〇二五年六月\n示例大学\n"
+            "综上所述，本文进一步构建了模型。此外，与此同时，值得注意的是，可以看出模型效果很好。"
+            "该模型显著提高了预测精度。结果表明本方法广泛应用于各个领域。由此可见，本方法具有重要价值。")
+        discussion = (
+            "本研究围绕示例平台的使用意愿展开讨论。结果显示，感知有用性对使用意愿具有正向影响，"
+            "感知易用性的作用则相对有限。这一发现与既有技术接受模型的结论基本一致，但在本样本中，"
+            "主观规范的调节作用并未达到显著水平，可能与样本集中于高年级学生有关。需要指出的是，"
+            "本研究采用横断面设计，无法据此推断因果关系，后续研究可考虑追踪设计加以检验。\n"
+            "综上所述，该模型显著提高了预测精度。此外，结果显著。与此同时，方法有效。由此可见，方案可行。")
+        st, body = http("/api/ai_audit", "POST", {"text": cover + "\n\n" + discussion})
+        audit = json.loads(body.decode("utf-8"))
+        exempted = audit.get("passages_exempted") or []
+        log("POST /api/ai_audit 本地豁免门已打包生效",
+            st == 200 and audit.get("ok") is True and audit.get("gate_version") == "v1"
+            and len(exempted) >= 1 and bool(exempted[0].get("gate", {}).get("reason"))
+            and len(audit.get("passages") or []) >= 1,
+            "status=%s gate=%s 保留=%d 豁免=%d" % (
+                st, audit.get("gate_version"), len(audit.get("passages") or []), len(exempted)))
+
+        # 关掉 AI 必须零调用，且不得谎称「模型输出无法解析」
+        st, body = http("/api/style_triage", "POST",
+                        {"text": cover + "\n\n" + discussion, "llm": False})
+        tri = json.loads(body.decode("utf-8"))
+        items = tri.get("items") or []
+        log("POST /api/style_triage llm=false 零调用不丢条",
+            st == 200 and tri.get("ok") is True and tri.get("model_calls") == 0
+            and len(items) == len(audit.get("passages") or [])
+            and all(i.get("verdict") in ("真", "假", "存疑") for i in items)
+            and all(i.get("source") != "unparseable" for i in items)
+            and "不判定" in (tri.get("disclaimer") or ""),
+            "status=%s calls=%s items=%d sources=%s" % (
+                st, tri.get("model_calls"), len(items), [i.get("source") for i in items]))
+
+        st, _ = http("/api/style_triage", "POST", {"text": "", "llm": False})
+        log("POST /api/style_triage 空文本 → 400", st == 400, "status=%s" % st)
+        log("首页含护栏复核控件",
+            'id="styleTriageBtn"' in homepage and 'id="styleTriageResult"' in homepage)
+
+        # 12) 门禁默认关闭（未设 ACCESS_CODE 时应零干扰）
         st, body = http("/logout")
         log("GET /logout 门禁关闭时正常", st in (200, 302), "status=%s" % st)
 

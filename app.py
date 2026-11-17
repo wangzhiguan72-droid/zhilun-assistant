@@ -3609,6 +3609,13 @@ def api_ai_audit():
     report = audit_ai_traces(text)
     report["text_length"] = len(text)
 
+    # v2.61：确定性豁免门（封面/版权页、方法段单项被动、参考文献条目）。
+    # 双臂实验里这三类正是「接入 Agent 后反而变差」的主要来源——交给模型
+    # 自觉执行豁免不可靠，改由代码判定；被豁免的段落移到 passages_exempted
+    # 并附依据，不悄悄丢弃。纯本地，零 LLM。
+    from style_triage import apply_gate
+    report = apply_gate(report)
+
     # v2.32：论文表格取证（耿同学式——对表格数字本身做
     # 末位/尾串/合计/GRIM 可达性取证;只需 docx,不需要原始数据）。
     # 结果并入 suggestions 通道渲染（P1=可疑/P2=提示）,原始数据挂
@@ -3639,6 +3646,58 @@ def api_ai_audit():
     except Exception:  # noqa: BLE001
         pass
     return jsonify(report)
+
+
+@app.route("/api/style_triage", methods=["POST"])
+def api_style_triage():
+    """🛡️ 风格提示护栏复核（v2.61，实验功能，可选 LLM）。
+
+    入参与 /api/ai_audit 相同（multipart paper 或 JSON text），另可传 llm=false
+    只跑本地门。出参：逐条 verdict（真/假/存疑）+ source + 本地证据 +
+    model_opinion（模型独立意见原样保留，不被覆盖）。
+
+    口径：模型负责识别，本地负责定性。「真」必须有本地作者可控证据；
+    证据不足一律「存疑」，绝不塌缩成「假」；只评风格风险，不判作者身份。
+    """
+    if request.files.get("paper"):
+        paper = request.files["paper"]
+        try:
+            paper.seek(0)
+            text = read_paper_text(paper)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": f"论文解析失败：{e}"}), 400
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"论文读取异常：{e}"}), 400
+        use_llm = str(request.form.get("llm", "true")).lower() != "false"
+    else:
+        payload = request.get_json(silent=True) or {}
+        text = str(payload.get("text") or "")
+        use_llm = payload.get("llm", True) is not False
+
+    if not text.strip():
+        return jsonify({"ok": False, "error": "请上传论文文件或粘贴论文文本。"}), 400
+
+    from ai_audit import audit_ai_traces
+    from style_triage import apply_gate, triage_batch
+    report = apply_gate(audit_ai_traces(text))
+
+    complete = None
+    if use_llm:
+        from agents import get_router
+        router = get_router()
+
+        def _complete(prompt, system):
+            return router.complete("style_triage", prompt,
+                                   system=system, max_tokens=4096) or ""
+
+        complete = _complete
+
+    result = triage_batch(report.get("passages") or [], complete)
+    result["exempted"] = report.get("passages_exempted") or []
+    result["text_length"] = len(text)
+    result["disclaimer"] = ("护栏复核只评估「风格提示是否成立」，不判定是否由 AI 生成、"
+                            "不判定作者身份。模型意见与本地证据并列呈现，请自行核对。")
+    return jsonify(result)
 
 
 # 规范体检的文本上限：30 万字的博士论文约 35 万字符，留足余量；再大多半是误传

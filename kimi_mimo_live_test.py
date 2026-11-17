@@ -189,7 +189,7 @@ mimo_model = None
 if os.environ.get("MIMO_API_KEY", "").strip():
     mimo_model = probe_provider(
         MimoAgent, "小米 MiMo",
-        ["mimo-v2.5", "mimo-v2.5-pro"],
+        ["mimo-v2.6-flash", "mimo-v2.6-pro"],
         "依据材料，", _call_gap=25.0)
 else:
     print("  [SKIP] 未设置 MIMO_API_KEY")

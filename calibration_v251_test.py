@@ -40,15 +40,15 @@ cover = ("单位代码： 10000 密 级：公开\n硕 士 学 位 论 文\n论�
 check('封面页(多标记+稀疏)判为前置页', is_front_matter_page(cover))
 sparse1 = ("分类号\nG444")
 check('仅 1 个标记的稀疏页不剥离', not is_front_matter_page(sparse1))
-body = ("5 结论与讨论\n招募出色的人才进入公共部门是各国政府治理中的关键问题。" * 20)
+body = ("5 结论与讨论\n示例平台的治理水平是影响用户持续使用意愿的关键因素。" * 20)
 check('正文页(长文本)不剥离', not is_front_matter_page(body))
 
 print('== P1a 风格视角：参考文献区剔除 + 引文占位 ==')
 from ai_audit import _style_view
 
-txt = ("正文第一段 discusses 调查结果。\n\n参考文献\n[1] Dal Bó, Finan F. 2017.\n[2] 某某. 2020.")
+txt = ("正文第一段 discusses 调查结果。\n\n参考文献\n[1] 样例作者甲, 样例作者乙. 2017.\n[2] 某某. 2020.")
 v = _style_view(txt)
-check('参考文献区从最后一处标题起剔除', 'Dal Bó' not in v and '正文第一段' in v)
+check('参考文献区从最后一处标题起剔除', '样例作者甲' not in v and '正文第一段' in v)
 q = '受访者说：“这个平台非常方便好用而且可以随时随地查询汉语的意思”，他认为很好。'
 vq = _style_view(q)
 check('直接引语(≥8字)被占位替换', '非常方便好用' not in vq and '引文略' in vq and '他认为很好' in vq)

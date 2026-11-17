@@ -2,7 +2,8 @@
 Kimi + 小米 MiMo 接入离线测试（v1.8，全 mock，零 API 调用）
 ================================================================
 覆盖 2026-09-14 用真实 Key 实测（kimi_mimo_live_test.py 12/12）沉淀下来的
-平台事实，离线锁定、防止回归：
+平台事实，离线锁定、防止回归；MiMo 部分已按 2026-11-17 官方平台复测更新
+（v2.5 系列下线 → 现役 v2.6 三档，见 agents/mimo_agent.py 的关键事实）：
 
     1. PROVIDER_REGISTRY 登记完整（base_url / env_var / 显示名）
     2. 模型别名解析：kimi-k2.6 原样 / mimo 小写别名 → 官方 ID /
@@ -29,7 +30,7 @@ for v in ("KIMI_API_KEY", "MIMO_API_KEY"):
 
 from agents import AgentError, KimiAgent, MimoAgent, Router
 from agents.openai_compat import PROVIDER_REGISTRY
-from agents.router import STATE_TO_MODEL
+from agents.router import STATE_TO_MODEL, VISION_MODELS
 
 PASS = 0
 FAIL = 0
@@ -70,13 +71,24 @@ check("kimi-k2.7-code 原样解析", k2.model_name == "kimi-k2.7-code")
 k3 = KimiAgent(model="some-future-model")
 check("未登记名透传", k3.model_name == "some-future-model")
 
-m = MimoAgent(model="mimo-v2.5")
-check("mimo-v2.5 原样解析", m.model_name == "mimo-v2.5", f"实际={m.model_name}")
-m2 = MimoAgent(model="mimo-v2.5-pro")
-check("mimo-v2.5-pro 原样解析", m2.model_name == "mimo-v2.5-pro")
+m = MimoAgent(model="mimo-v2.6-flash")
+check("mimo-v2.6-flash 原样解析", m.model_name == "mimo-v2.6-flash",
+      f"实际={m.model_name}")
+m2 = MimoAgent(model="mimo-v2.6-pro")
+check("mimo-v2.6-pro 原样解析", m2.model_name == "mimo-v2.6-pro")
 m3 = MimoAgent(model="MiMo-V2-Flash")  # 旧写法 → 就近映射
-check("旧写法 MiMo-V2-Flash 映射到 mimo-v2.5", m3.model_name == "mimo-v2.5",
-      f"实际={m3.model_name}")
+check("旧写法 MiMo-V2-Flash 映射到 mimo-v2.6-flash",
+      m3.model_name == "mimo-v2.6-flash", f"实际={m3.model_name}")
+
+# 下线 ID 必须就近映射到现役模型：平台对 mimo-v2.5 真调回
+# `400 Unsupported model`，不映射则整条 MiMo 容灾链都是死候选
+# （缺 Key 时看不出来，有 Key 才炸，比报错更隐蔽）。
+for _dead, _live in (("mimo-v2.5", "mimo-v2.6-flash"),
+                     ("mimo-v2.5-pro", "mimo-v2.6-pro"),
+                     ("MiMo-V2.5", "mimo-v2.6-flash"),
+                     ("mimo-v2-pro", "mimo-v2.6-pro")):
+    _got = MimoAgent(model=_dead).model_name
+    check(f"下线 ID {_dead} → {_live}", _got == _live, f"实际={_got}")
 
 # ---------------------------------------------------------------------------
 print("\n[3] Kimi 温度约束自动适配（mock 父类，模拟平台 400）")
@@ -129,10 +141,10 @@ finally:
 print("\n[4] MiMo 默认 max_tokens + 空内容防护 + 超时放宽")
 # ---------------------------------------------------------------------------
 check("MiMo 默认 max_tokens=4096（思考模型防吃光）",
-      MimoAgent(model="mimo-v2.5").default_max_tokens == 4096)
+      MimoAgent(model="mimo-v2.6-flash").default_max_tokens == 4096)
 sf_mod.SiliconFlowAgent.complete = lambda self, prompt, **kw: ""
 try:
-    ma = MimoAgent(model="mimo-v2.5")
+    ma = MimoAgent(model="mimo-v2.6-flash")
     try:
         ma.complete("x")
         check("MiMo 空内容抛 AgentError", False, "居然没抛")
@@ -141,17 +153,19 @@ try:
 finally:
     sf_mod.SiliconFlowAgent.complete = _orig_complete
 
-client = MimoAgent(model="mimo-v2.5")._build_client()  # 不发请求，只构建
+client = MimoAgent(model="mimo-v2.6-flash")._build_client()  # 不发请求，只构建
 check("MiMo 客户端构建成功（openai.Timeout 放宽连接超时）", client is not None)
 
 # ---------------------------------------------------------------------------
 print("\n[5] 路由链 + BYOK 规则")
 # ---------------------------------------------------------------------------
 for state, expect_kimi, expect_mimo in (
-    ("paper_check", "kimi-k2.6", "mimo-v2.5-pro"),
-    ("write_text", None, "mimo-v2.5"),
-    ("recommend", None, "mimo-v2.5"),
-    ("audit_chat", None, "mimo-v2.5"),
+    ("paper_check", "kimi-k2.6", "mimo-v2.6-pro"),
+    ("write_text", None, "mimo-v2.6-flash"),
+    ("recommend", None, "mimo-v2.6-flash"),
+    ("audit_chat", None, "mimo-v2.6-flash"),
+    ("style_triage", None, "mimo-v2.6-flash"),
+    ("audit_image", None, "mimo-v2.6-flash"),
 ):
     chain = STATE_TO_MODEL[state]
     kimi_hit = next((c for c in chain if c[0] == "kimi"), None)
@@ -164,9 +178,21 @@ for state, expect_kimi, expect_mimo in (
           mimo_hit is not None and mimo_hit[1] == expect_mimo,
           f"实际={mimo_hit}")
 
+# 路由表里必须写**现役** ID：别名映射只发生在 Agent 层，表里留下线 ID 会让
+# VISION_MODELS / FREE_MODELS 这些按 ID 比对的门全部失配（图表臂静默跳过候选）。
+from agents.mimo_agent import MIMO_MODELS
+
+_live_ids = set(MIMO_MODELS.values())
+_dead = [(s, m) for s, chain in STATE_TO_MODEL.items()
+         for p, m, _t in chain if p == "mimo" and m not in _live_ids]
+check("路由表无下线 mimo 候选", not _dead, f"实际={_dead}")
+check("audit_image 的 mimo 候选在 VISION_MODELS 内",
+      all(m in VISION_MODELS for p, m, _t in STATE_TO_MODEL["audit_image"]
+          if p == "mimo"))
+
 r = Router()
 check("free 档默认不放行 kimi", not r._allowed("kimi", "kimi-k2.6"))
-check("free 档默认不放行 mimo", not r._allowed("mimo", "mimo-v2.5"))
+check("free 档默认不放行 mimo", not r._allowed("mimo", "mimo-v2.6-flash"))
 r.set_user_key("kimi", "user-key")
 check("BYOK 后 free 档放行 kimi", r._allowed("kimi", "kimi-k2.6"))
 check("BYOK 后 kimi 排链首",

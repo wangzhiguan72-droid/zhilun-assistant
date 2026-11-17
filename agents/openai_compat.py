@@ -102,7 +102,7 @@ PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
     ),
     "mimo": ProviderConfig(
         # 小米 MiMo 开放平台（v1.8 新增）。OpenAI / Anthropic 双协议
-        # 兼容，这里走 OpenAI 协议。现役 mimo-v2.5 系列适合 recommend / write_text 尾位兜底。
+        # 兼容，这里走 OpenAI 协议。现役 mimo-v2.6 系列适合 recommend / write_text 尾位兜底。
         # 付费档（新平台免费额度政策多变，不进白名单）。
         base_url="https://api.xiaomimimo.com/v1",
         env_var="MIMO_API_KEY",

@@ -5,14 +5,20 @@
 仿 QwenAgent 写薄壳（FreeLLMAPI 的 provider 模板模式）：
 加平台只写 ProviderConfig + 薄壳类，调用逻辑全复用通用适配器。
 
-关键事实（2026-09 实测，凭真实 Key 打通）：
+关键事实（2026-11-17 凭真实 Key 复测，取代 2026-09 那一版）：
     - 兼容接口：https://api.xiaomimimo.com/v1（OpenAI Chat Completions
       与 Anthropic 双协议兼容，这里走 OpenAI 协议）
     - Key 环境变量：MIMO_API_KEY（platform.xiaomimimo.com 控制台申请，
       Key 形如 sk-xxxxx）
-    - 平台现役模型（GET /models 实测）：mimo-v2.5、mimo-v2.5-pro，
-      外加 asr / tts 语音系列（不在本项目链路里，不登记）。
-      模型 ID 全小写；未登记的名字原样透传。
+    - 平台现役聊天模型（GET /models 实测）：mimo-v2.6-flash、mimo-v2.6-pro、
+      mimo-v2.6-pro-ultraspeed，外加 v2.5 的 asr / tts 语音系列
+      （不在本项目链路里，不登记）。模型 ID 全小写；未登记的名字原样透传。
+    - **mimo-v2.5 / mimo-v2.5-pro 已下线**：真调返回
+      `400 Unsupported model mimo-v2.5`。旧 ID 一律就近映射到 v2.6，
+      否则路由表里整条 MiMo 容灾链都是死候选（缺 Key 时看不出来，
+      有 Key 才炸，比报错更隐蔽）。
+    - 三个 v2.6 档都**实测支持视觉输入**：图里画唯一数字 7391 + 紫色矩形，
+      三档都读对了数字与颜色，故登记进 router.VISION_MODELS。
     - **连接偏慢（实测踩坑）**：首连接 6 秒以上，openai SDK 默认 5 秒
       连接超时会误杀 → _build_client 放宽到 connect=15s / 总 120s。
     - 新平台常有免费额度 / 首周免费活动，但政策随时可变 —— 不进
@@ -32,13 +38,17 @@ from .base import AgentError
 from .siliconflow_agent import SiliconFlowAgent
 
 
-# 小米 MiMo 现役模型 ID（GET /models 实测，全小写）
+# 小米 MiMo 现役模型 ID（2026-11-17 GET /models 实测，全小写）
 MIMO_MODELS = {
-    "mimo-v2.5":     "mimo-v2.5",      # 主力档（默认）
-    "mimo-v2.5-pro": "mimo-v2.5-pro",  # 质量档
-    # 旧一代别名 → 就近映射（平台已不提供 V2 系列，防前端/旧配置写死）
-    "mimo-v2-flash": "mimo-v2.5",
-    "mimo-v2-pro":   "mimo-v2.5-pro",
+    "mimo-v2.6-flash": "mimo-v2.6-flash",                    # 主力档（默认）
+    "mimo-v2.6-pro": "mimo-v2.6-pro",                        # 质量档
+    "mimo-v2.6-pro-ultraspeed": "mimo-v2.6-pro-ultraspeed",  # 质量档高速版
+    # 已下线的旧 ID → 就近映射。平台对 mimo-v2.5 直接返回 400 Unsupported
+    # model，不映射的话路由表里整条 MiMo 容灾链都是死候选。
+    "mimo-v2.5":     "mimo-v2.6-flash",
+    "mimo-v2.5-pro": "mimo-v2.6-pro",
+    "mimo-v2-flash": "mimo-v2.6-flash",
+    "mimo-v2-pro":   "mimo-v2.6-pro",
     # 未登记的模型名原样透传（用户直接填官方 ID 也能用）
 }
 
@@ -60,9 +70,9 @@ class MimoAgent(SiliconFlowAgent):
         未登记的名字原样透传（用户直接填官方 ID 也能用）。"""
         return MIMO_MODELS.get(model.lower(), model)
 
-    def __init__(self, model: str = "mimo-v2.5", *,
+    def __init__(self, model: str = "mimo-v2.6-flash", *,
                  default_max_tokens: int = 4096, **kwargs):
-        # 默认 4096（对齐 QwenAgent）：mimo-v2.5 是思考模型，思考 token
+        # 默认 4096（对齐 QwenAgent）：v2.6 是思考模型，思考 token
         # 计入 completion，max_tokens 给小了（如 64）会被思考吃光，
         # 正文为空 → 看起来像"没回答"
         super().__init__(model=model, default_max_tokens=default_max_tokens,

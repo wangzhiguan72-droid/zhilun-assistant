@@ -17,14 +17,14 @@
 路由表（状态 → 容灾链，顺序 = 优先级）：
 
     recommend     → zhipu/glm-4.7-flash → sf/glm-z1-9b → dashscope/qwen3.7-flash
-                    → maas/qwen-plus-2025-07-28 → mimo/mimo-v2.5
+                    → maas/qwen-plus-2025-07-28 → mimo/mimo-v2.6-flash
     analyze       → 不调 LLM（Python 算就够了）
     paper_check   → deepseek/deepseek-flash → sf/deepseek-v4-pro
                     → zhipu/glm-4.7-flash → maas/glm-5
-                    → kimi/kimi-k2.6（v1.8 长上下文备胎）→ mimo/mimo-v2.5-pro
+                    → kimi/kimi-k2.6（v1.8 长上下文备胎）→ mimo/mimo-v2.6-pro
     write_text    → zhipu/glm-4.7-flash → sf/deepseek-v4-flash
                     → dashscope/qwen3.7-flash → maas/qwen-plus-2025-07-28
-                    → mimo/mimo-v2.5（v1.8）
+                    → mimo/mimo-v2.6-flash（v1.8）
 
     （maas = 百炼 MaaS 私有工作空间端点，v0.5.4 新增，恒为尾位兜底；
       kimi / mimo = v1.8 新增的两家付费档平台，BYOK 用户自带 Key 即插即用）
@@ -101,7 +101,7 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
         ("sf",        "glm-z1-9b",     0.5),   # ★☆☆ 免费：硅基流动免费档（智谱没 Key 时退回这）
         ("dashscope", "qwen3.7-flash", 0.5),   # ★★☆ 免费：百炼免费额度，缓存实测 92.5%
         ("maas",      "qwen-plus-2025-07-28", 0.5),  # v0.5.4 私有端点尾位兜底
-        ("mimo",      "mimo-v2.5",     0.5),   # ★★☆ v1.8 BYOK 尾位：轻量快档
+        ("mimo",      "mimo-v2.6-flash", 0.5),  # ★★☆ v1.8 BYOK 尾位：轻量快档
     ],
     "paper_check": [
         # 付费档（会员）优先：deepseek-flash 官方直连，缓存命中价差最大；
@@ -114,14 +114,24 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
         ("dashscope", "qwen3.7-flash", 0.3),   # ★★☆ v2.50 免费尾位：百炼免费额度
         ("maas",     "glm-5",          0.3),   # ★★★ v0.5.4 私有端点：GLM 旗舰审计兜底
         ("kimi",     "kimi-k2.6",      0.3),   # ★★★ v1.8 长上下文备胎：整篇论文放得下（BYOK）
-        ("mimo",     "mimo-v2.5-pro", 0.3),   # ★★☆ v1.8 质量档备胎（BYOK）
+        ("mimo",     "mimo-v2.6-pro",  0.3),   # ★★☆ v1.8 质量档备胎（BYOK）
+    ],
+    # v2.61 风格提示护栏复核：只做「识别」，定性由 style_triage 本地合成。
+    # 输入是 ≤200 字摘录 + 现象清单，不走 paper_check 的冻结前缀契约；
+    # 温度 0.2 与双臂实验一致。免费档优先——豁免项根本不调模型，成本很低。
+    "style_triage": [
+        ("zhipu",     "glm-4.7-flash", 0.2),   # ★★☆ 免费：分类够用，200K
+        ("sf",        "glm-z1-9b",     0.2),   # ★☆☆ 免费备胎
+        ("dashscope", "qwen3.7-flash", 0.2),   # ★★☆ 免费尾位
+        ("maas",      "qwen-plus-2025-07-28", 0.2),  # 私有端点兜底
+        ("mimo",      "mimo-v2.6-flash", 0.2),  # ★★☆ BYOK 尾位
     ],
     "write_text": [
         ("zhipu",     "glm-4.7-flash",    0.5),  # ★★☆ 免费：长文本生成主力
         ("sf",        "deepseek-v4-flash", 0.5), # ★★☆ 付费档备胎
         ("dashscope", "qwen3.7-flash",    0.5),  # ★★☆ 免费：v0.5.3 尾位兜底（缓存实测 92.5%）
         ("maas",      "qwen-plus-2025-07-28", 0.5),  # ★★★ v0.5.4 私有端点尾位
-        ("mimo",      "mimo-v2.5",      0.5),  # ★★☆ v1.8 BYOK 尾位：轻量快档
+        ("mimo",      "mimo-v2.6-flash", 0.5),  # ★★☆ v1.8 BYOK 尾位：轻量快档
     ],
     # v1.6 ②审计对话：用户对「一条比对」追问。
     # LLM 只负责**解释**（把已算好的统计量讲成人话），绝不参与计算。
@@ -131,7 +141,7 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
         ("sf",        "glm-z1-9b",     0.6),   # ★☆☆ 免费：备胎
         ("dashscope", "qwen3.7-flash", 0.6),   # ★★☆ 免费：尾位
         ("maas",      "qwen-plus-2025-07-28", 0.6),  # 私有端点兜底
-        ("mimo",      "mimo-v2.5",     0.6),   # ★★☆ v1.8 BYOK 尾位：轻量问答
+        ("mimo",      "mimo-v2.6-flash", 0.6),  # ★★☆ v1.8 BYOK 尾位：轻量问答
     ],
     # v1.8 Kimi / MiMo 接入原则：
     #   - 两家都是付费档（不进 FREE_MODELS），默认链里排在免费候选之后
@@ -146,7 +156,7 @@ STATE_TO_MODEL: dict[str, list[tuple[str, str, float]]] = {
         ("zhipu",     "glm-4.6v-flash", 0.2),   # ★★☆ 免费：智谱多模态（图片+视频）
         ("maas",      "qwen3-vl-235b-a22b-thinking", 0.2),  # ★★★ 私有端点视觉旗舰兜底
         ("maas",      "qwen3-vl-32b-thinking", 0.2),  # ★★☆ 私有点端视觉中档
-        ("mimo",      "mimo-v2.5",      0.2),   # ★★☆ v1.8 BYOK 尾位
+        ("mimo",      "mimo-v2.6-flash", 0.2),  # ★★☆ v1.8 BYOK 尾位
     ],
 }
 
@@ -162,7 +172,9 @@ VISION_MODELS: frozenset[str] = frozenset({
     "qwen-vl-max",
     "gpt-4o", "gpt-4o-mini", "gpt-4-turbo",
     "claude-3-5-sonnet", "claude-3-opus",
-    "mimo-v2.5", "mimo-vl",
+    # 小米三档 v2.6（2026-11-17 唯一数字+颜色图实测三档都读对）；
+    # 旧 mimo-vl 与整个 v2.5 系列平台已下线，留着只会让容灾链挑到死候选
+    "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed",
 })
 
 # 需要视觉能力的路由状态（目前只有图表核查）

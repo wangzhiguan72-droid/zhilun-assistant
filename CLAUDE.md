@@ -90,7 +90,9 @@
 - exe 控制台重定向下 print 是块缓冲：启动诊断必须 `flush=True`（托盘那课）
 - HTTP 响应头只允许 latin-1：中文放头里 werkzeug 直接断连（X-Missing-Charts 那课）
 - 中文与英文缩写相邻时 `\b` 词边界失效（"采用LSTM" 检测不到，用 lookaround）
-- 思考型模型（Qwen3.7 / mimo-v2.5 / kimi-k2.6）小 max_tokens 会被思考吃光，
+- 思考型模型（Qwen3.7 / mimo-v2.6 / kimi-k2.6）小 max_tokens 会被思考吃光，
   正文为空——默认 4096 起
+- 平台会下线模型 ID（小米 v2.5 系列 2026-11 实测回 `400 Unsupported model`）：
+  改模型表要真调一次确认，别名映射到现役 ID，别留死候选在容灾链上
 
 _本文件由三方共同维护：改约定先在 CHANGELOG 记一笔，让其它会话能感知。_

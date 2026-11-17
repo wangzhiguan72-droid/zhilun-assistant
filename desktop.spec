@@ -85,6 +85,7 @@ datas = [
     ('paper_context.py', '.'),      # 本地全文检索与用户选择的 AI 上下文
     ('research_tools.py', '.'),     # 只读论文补读与本地统计复算
     ('research_review.py', '.'),    # 有界模型补证与假说验证循环
+    ('style_triage.py', '.'),       # v2.61 风格提示本地豁免门与护栏复核（/api/ai_audit、/api/style_triage 函数内 import）
 
     # —— v2.14 可插拔方法市场（插件市场全套，缺一不可）——
     ('plugin_registry.py', '.'),    # 插件扫描 / 沙箱调度 / 结果合理性校验

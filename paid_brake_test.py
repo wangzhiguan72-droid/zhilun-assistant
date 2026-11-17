@@ -71,7 +71,7 @@ def make_router(agents_spec, tier="pro"):
 
 # paper_check 链（当前）：deepseek/deepseek-flash（付费）→ sf/deepseek-v4-pro（付费）
 #                     → zhipu/glm-4.7-flash（免费）→ maas/glm-5（付费）
-#                     → kimi/kimi-k2.6（付费）→ mimo/mimo-v2.5-pro（付费）
+#                     → kimi/kimi-k2.6（付费）→ mimo/mimo-v2.6-pro（付费）
 PAID1 = ("deepseek", "deepseek-flash")
 PAID2 = ("sf", "deepseek-v4-pro")
 FREE1 = ("zhipu", "glm-4.7-flash")

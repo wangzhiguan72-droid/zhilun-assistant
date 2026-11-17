@@ -1281,10 +1281,13 @@
         </div>
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <button class="ghost" id="aiAuditBtn" style="padding:7px 16px;">选择论文并自查</button>
+          <button class="ghost" id="styleTriageBtn" style="padding:7px 16px;" disabled
+                  title="先完成本地自查，再对定位到的段落做护栏复核">AI 护栏复核（实验）</button>
           <span style="font-size:12px; color:var(--c-muted);" id="aiAuditStatus">支持 .docx / .txt / .md / .pdf</span>
           <input type="file" id="aiAuditInput" accept=".docx,.txt,.md,.pdf" style="display:none" />
         </div>
         <div id="aiAuditResult" style="margin-top:10px;"></div>
+        <div id="styleTriageResult" style="margin-top:10px;"></div>
       </div>
 
       <div class="dual-upload">
@@ -2962,6 +2965,8 @@
     if (!f) return;
     $('aiAuditStatus').textContent = '⏳ 正在按本地规则扫描（不上传数据）…';
     $('aiAuditResult').innerHTML = '';
+    $('styleTriageResult').innerHTML = '';
+    $('styleTriageBtn').disabled = true;
     try {
       const fd = new FormData();
       fd.append('paper', f);
@@ -2972,6 +2977,7 @@
         return;
       }
       $('aiAuditStatus').textContent = `已完成：全文 ${d.text_length} 字`;
+      $('styleTriageBtn').disabled = !(d.passages || []).length;
       const lvColor = { '低': '#16a34a', '中低': '#65a30d', '中': '#d97706',
                         '中高': '#ea580c', '高': '#dc2626' }[d.level] || '#52525b';
       const bd = Object.entries(d.breakdown || {})
@@ -3005,6 +3011,24 @@
               范例只动套话与语态，一律不编造数字；套用前请自行核对事实与引用。
             </div>
           </details>` : '';
+      // v2.61 本地豁免门：被判定不适用的段落不悄悄丢弃，列出依据供核对
+      const exempt = (d.passages_exempted || []).map(p => `
+        <div style="margin:6px 0; padding:8px 10px; border-left:3px solid #94a3b8; background:#f8fafc; border-radius:0 8px 8px 0;">
+          <div style="font-size:12.5px; color:var(--c-muted); margin-bottom:3px;">
+            ${escapeHtml(p.gate.category)} · ${escapeHtml((p.reasons || []).join('、'))}
+          </div>
+          <div style="font-size:12.5px; line-height:1.7; color:#475569;">${escapeHtml(p.excerpt)}</div>
+          <div style="font-size:12px; line-height:1.7; margin-top:4px; color:var(--c-muted);">→ ${escapeHtml(p.gate.reason)}</div>
+        </div>`).join('');
+      const exemptBlock = exempt ? `
+          <details style="margin-top:8px;">
+            <summary style="cursor:pointer; font-size:12.5px; color:var(--c-muted);">
+              本地豁免 ${(d.passages_exempted || []).length} 处（封面/版权页、方法段单项被动、参考文献条目，不计入风格问题）</summary>
+            <div style="margin-top:4px;">${exempt}</div>
+            <div style="font-size:11.5px; color:var(--c-muted);">
+              豁免由本地代码确定性判定，不交给模型自觉执行；如认为豁免有误请自行核对原文。
+            </div>
+          </details>` : '';
       $('aiAuditResult').innerHTML = `
         <div style="border:1px solid var(--c-border); border-radius:10px; padding:12px 14px; background:var(--c-card,#fff);">
           <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
@@ -3014,7 +3038,7 @@
             <span style="font-size:12.5px; color:var(--c-muted);">${escapeHtml(d.level_text)}</span>
           </div>
           <div style="margin:8px 0;">${bd}</div>
-          <div>${sugg}</div>${passBlock}
+          <div>${sugg}</div>${passBlock}${exemptBlock}
           <details style="margin-top:8px;">
             <summary style="cursor:pointer; font-size:12.5px; color:var(--c-muted);">机器查不了、需要人工核对的 ${d.manual_checks.length} 项</summary>
             <ul style="margin:6px 0 0 18px; padding:0; font-size:12.5px; color:var(--c-muted); line-height:1.7;">${manual}</ul>
@@ -3023,6 +3047,86 @@
         </div>`;
     } catch (e) {
       $('aiAuditStatus').textContent = '出错：' + e.message;
+    }
+  }
+
+  // ===== v2.61 风格提示护栏复核（模型负责识别，本地负责定性）=====
+  $('styleTriageBtn').addEventListener('click', runStyleTriage);
+
+  async function runStyleTriage() {
+    const f = aiAuditInput.files && aiAuditInput.files[0];
+    if (!f) return;
+    const btn = $('styleTriageBtn');
+    btn.disabled = true;
+    $('styleTriageResult').innerHTML =
+      '<div style="font-size:12.5px; color:var(--c-muted);">⏳ 正在护栏复核（豁免项不调模型）…</div>';
+    try {
+      const fd = new FormData();
+      fd.append('paper', f);
+      const r = await fetch('/api/style_triage', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!d.ok) {
+        $('styleTriageResult').innerHTML =
+          `<div style="font-size:12.5px; color:#dc2626;">${escapeHtml(d.error || '复核失败')}</div>`;
+        return;
+      }
+      const vColor = { '真': '#dc2626', '假': '#16a34a', '存疑': '#d97706' };
+      const srcName = {
+        local_gate: '本地豁免门', section_gate: '模型识别段落类型',
+        disciplinary: '学科惯例维度', unparseable: '模型输出无法解析',
+        local_only: '未启用模型（纯本地）', soft_signal_only: '方法/结果段仅密度型信号',
+        contradiction: '判词与理由矛盾', no_local_evidence: '本地无作者可控证据',
+        not_visible: '现象在摘录中不可见', disagreement: '本地与模型分歧',
+        unconfirmed: '模型未确认现象', local_plus_model: '本地证据 + 模型确认'
+      };
+      const items = (d.items || []).map(it => {
+        const op = it.model_opinion;
+        const ev = Object.entries(it.local_evidence || {})
+          .map(([k, v]) => `<span style="font-size:11.5px; padding:1px 7px; border-radius:999px; background:#fef2f2; color:#b91c1c; margin:2px;">${escapeHtml(k)}：${escapeHtml((v || []).join('、'))}</span>`)
+          .join('') || '<span style="font-size:11.5px; color:var(--c-muted);">本地未检出作者可控证据</span>';
+        const model = op ? `
+            <div style="font-size:12px; line-height:1.7; margin-top:5px; color:var(--c-muted);">
+              <b>模型独立意见（原样保留）：</b>段落类型 ${escapeHtml(op.section_type || '未答')} ·
+              需修改 ${escapeHtml(op.needs_revision || '未答')} ·
+              证据充分 ${escapeHtml(op.evidence_sufficient || '未答')}<br>
+              依据：${escapeHtml(op.basis || '（无）')}
+            </div>` : `
+            <div style="font-size:12px; line-height:1.7; margin-top:5px; color:var(--c-muted);">
+              <b>模型独立意见：</b>${it.error ? '调用失败，已回落本地判定：' + escapeHtml(it.error) : (it.source === 'local_only' ? '未启用模型复核，本条仅本地判定' : '本条未调用模型（本地豁免门已可判定）')}
+            </div>`;
+        const guards = (it.guards || []).length ? `
+            <div style="font-size:11.5px; line-height:1.7; margin-top:4px; color:#b45309;">
+              护栏：${escapeHtml(it.guards.join('；'))}
+            </div>` : '';
+        return `
+          <div style="margin:8px 0; padding:9px 11px; border-left:3px solid ${vColor[it.verdict] || '#52525b'}; background:var(--c-card,#fff); border-radius:0 8px 8px 0;">
+            <div style="font-size:13px; font-weight:600; color:${vColor[it.verdict] || '#52525b'};">
+              ${escapeHtml(it.verdict)}
+              <span style="font-weight:400; font-size:12px; color:var(--c-muted);">· ${escapeHtml(srcName[it.source] || it.source)} · 风险分 ${it.score}</span>
+            </div>
+            <div style="font-size:12.5px; line-height:1.7; margin-top:4px; color:#78350f;">${escapeHtml(it.excerpt || '')}</div>
+            <div style="font-size:12.5px; line-height:1.7; margin-top:4px;">${escapeHtml(it.reason)}</div>
+            <div style="margin-top:4px;">${ev}</div>
+            ${model}${guards}
+          </div>`;
+      }).join('');
+      const vs = d.verdicts || {};
+      $('styleTriageResult').innerHTML = `
+        <div style="border:1px solid var(--c-border); border-radius:10px; padding:12px 14px; background:var(--c-bg,#faf9fc);">
+          <div style="font-size:13.5px; font-weight:600;">🛡️ 护栏复核（实验功能，请自行核对）</div>
+          <div style="font-size:12.5px; color:var(--c-muted); margin:4px 0 8px;">
+            ${d.items.length} 条 · 模型调用 ${d.model_calls} 次 ·
+            真 ${vs['真'] || 0} / 假 ${vs['假'] || 0} / 存疑 ${vs['存疑'] || 0} ·
+            本地豁免 ${(d.exempted || []).length} 处 · 门 ${escapeHtml(d.gate_version)} / 提示 ${escapeHtml(d.prompt_version)}
+          </div>
+          ${items}
+          <div style="margin-top:8px; font-size:11.5px; color:var(--c-muted);">${escapeHtml(d.disclaimer)}</div>
+        </div>`;
+    } catch (e) {
+      $('styleTriageResult').innerHTML =
+        `<div style="font-size:12.5px; color:#dc2626;">出错：${escapeHtml(e.message)}</div>`;
+    } finally {
+      btn.disabled = false;
     }
   }
 

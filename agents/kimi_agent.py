@@ -8,13 +8,19 @@ Kimi 开放平台（platform.kimi.com）OpenAI 兼容直连。
 关键事实（2026-09 实测，凭真实 Key 打通）：
     - 兼容接口：https://api.moonshot.cn/v1（OpenAI Chat Completions 兼容）
     - Key 环境变量：KIMI_API_KEY（platform.kimi.com 控制台申请）
-    - 平台现役模型（GET /models 实测只有两个）：kimi-k2.6、kimi-k2.7-code。
-      moonshot-v1 系列已于 2026-08-31 下线；k3 旗舰未在本平台开放。
-    - **温度约束（实测踩坑）**：kimi-k2.6 只接受 temperature=1，
+    - 平台现役模型（2026-11 逐个真调核验，5 个全部可用）：kimi-k2.6、
+      kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k3、kimi-k3.1-pro。
+      moonshot-v1 系列已于 2026-08-31 下线；k3 旗舰此后已开放。
+    - **温度约束（实测踩坑）**：平台只接受 temperature=1，
       传其他值报 400 "invalid temperature: only 1 is allowed for this
       model"。→ complete() 捕获该错误后自动锁定 temperature=1 重试，
       并记住约束（本实例后续调用直接用 1，不再多打一次）。
       路由表里按状态传的 0.3 / 0.5 对 Kimi 会被此机制覆盖。
+    - **组织级限流（实测踩坑）**：RPM=3，且是**账号组织级、跨模型共享**，
+      429 报文形如 "request reached organization max RPM: 3"。并发跑多个
+      Kimi 模型时按模型各自限流会叠加超限，必须全局限流（评测脚本
+      scripts/style_eval.py 的 kimi_acquire 用滚动 60s 窗口实现）。
+      该 429 正文还会带 org-/ak- 账号标识，落盘前需擦除。
     - 长上下文是看家本领（整篇论文放得下），适合 paper_check 深度审计；
       付费档（无免费模型），免费档用户填自己的 Key（BYOK）即可直用。
 
@@ -33,10 +39,13 @@ from .base import AgentError
 from .siliconflow_agent import SiliconFlowAgent
 
 
-# Kimi 开放平台现役模型 ID（GET /models 实测，2026-09）
+# Kimi 开放平台现役模型 ID（2026-11 逐个真调核验，5 个全部可用）
 KIMI_MODELS = {
-    "kimi-k2.6":      "kimi-k2.6",       # 现役主力（温度恒为 1，见类文档）
-    "kimi-k2.7-code": "kimi-k2.7-code",  # 代码/结构化任务档
+    "kimi-k2.6":               "kimi-k2.6",               # 产品默认档
+    "kimi-k2.7-code":          "kimi-k2.7-code",          # 代码/结构化任务档
+    "kimi-k2.7-code-highspeed": "kimi-k2.7-code-highspeed",  # 同上，低延迟
+    "kimi-k3":                 "kimi-k3",                 # 旗舰
+    "kimi-k3.1-pro":           "kimi-k3.1-pro",           # 旗舰 Pro
     # 未登记的模型名原样透传（平台以后上新不用改代码）
 }
 

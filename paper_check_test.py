@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 import urllib.request
 import urllib.error
 
-BASE = "http://127.0.0.1:5000"
+BASE = os.environ.get("ZHILUN_TEST_BASE", "http://127.0.0.1:5000").rstrip("/")
 
 
 

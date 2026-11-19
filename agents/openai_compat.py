@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -127,6 +128,29 @@ def parse_keys(raw: str) -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
+def _normalize_no_proxy() -> None:
+    """把 NO_PROXY 里带方括号的 IPv6 项改写成裸写法。
+
+    真实故障：Clash / v2rayN 之类代理工具默认写
+        NO_PROXY=localhost,.localhost,127.0.0.1,127.0.0.0/8,[::1],::1
+    openai SDK 底下的 httpx2 解析 `[::1]` 时按 host:port 切，抛
+    `InvalidURL: Invalid port: ':1]'` —— **所有** OpenAI 兼容平台一次都调不通，
+    而报错信息完全指不到代理配置上，排查成本极高。
+
+    `[::1]` 与 `::1` 语义相同（都表示「这个地址不走代理」），后者才是
+    httpx2 认的写法，所以这里只做等价改写，不动其它项、不改代理开关。
+    """
+    for name in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(name)
+        if not raw or "[" not in raw:
+            continue
+        fixed = ",".join(p.strip()[1:-1] if p.strip().startswith("[")
+                         and p.strip().endswith("]") else p
+                         for p in raw.split(","))
+        if fixed != raw:
+            os.environ[name] = fixed
+
+
 class OpenAICompatAgent:
     """所有 OpenAI 兼容平台的通用调用逻辑（混入 BaseAgent 子类使用）。
 
@@ -173,6 +197,9 @@ class OpenAICompatAgent:
         self._client: Any = None     # 懒加载，Key 轮转时重建
         self._api_key = self._api_keys[0]
         self.base_url = env_url.rstrip("/")
+        # 放在构造期而不是 _build_client：MimoAgent 等子类会覆盖 _build_client，
+        # 挂在基类构建函数上就漏掉了它们（实测 MiMo 仍然 Invalid port）。
+        _normalize_no_proxy()
         # 上次调用的 usage 观测（None = 尚未调用/失败）
         self.last_usage: dict[str, Any] | None = None
 
@@ -209,18 +236,29 @@ class OpenAICompatAgent:
         self._api_key = self._api_keys[self._key_index]
         self._client = self._build_client()
 
+    #: 有的平台把等待提示写在**正文**而不是响应头。Kimi 实测：
+    #: "request reached organization max RPM: 3, please try again after 1 seconds"
+    #: （type=rate_limit_reached_error，无 Retry-After 头）。只读头会把这 1 秒
+    #: 当成「无提示」，Router 对服务端 Key 平台套用 60s 默认冷却，
+    #: 把 1 秒的限流放大 60 倍。
+    _RETRY_BODY_RE = re.compile(
+        r'try again after\s+(\d+(?:\.\d+)?)\s*second', re.I)
+
     def _extract_retry_after(self, exc: Exception) -> float | None:
-        """从 429 异常里解析 Retry-After（秒）。解析不了返回 None。"""
+        """429 该等几秒：响应头 Retry-After 优先，其次正文提示，都没有返回 None。"""
         headers = getattr(getattr(exc, "response", None), "headers", None)
-        if not headers:
-            return None
-        raw = headers.get("retry-after") or headers.get("Retry-After")
-        if raw is None:
-            return None
-        try:
-            return max(float(raw), 1.0)
-        except (TypeError, ValueError):
-            return None  # HTTP 日期格式等，暂不支持（MVP 用默认冷却）
+        raw = None
+        if headers:
+            raw = headers.get("retry-after") or headers.get("Retry-After")
+        if raw is not None:
+            try:
+                return max(float(raw), 1.0)
+            except (TypeError, ValueError):
+                pass  # HTTP 日期格式等，转去看正文
+        m = self._RETRY_BODY_RE.search(str(exc))
+        if m:
+            return max(float(m.group(1)), 1.0)
+        return None
 
     def _is_rate_limit(self, exc: Exception) -> bool:
         """是否 429 限流（openai SDK 的 RateLimitError 判定，含字符串兜底）。"""
@@ -229,12 +267,27 @@ class OpenAICompatAgent:
             return True
         return "429" in str(exc)[:500] and "rate" in str(exc).lower()[:800]
 
+    #: 欠费/停用类报错：平台同样回 HTTP 429，SDK 同样抛 RateLimitError，
+    #: 但轮 Key 与等待都不会好转。Kimi 官方零余额实测正文为
+    #: "is suspended due to insufficient balance … billing details"，
+    #: type=exceeded_current_quota_error。
+    _QUOTA_WORDS = ("额度已用尽", "余额不足", "insufficient_quota",
+                    "insufficient balance", "exceeded_current_quota",
+                    "exceeded your current quota", "quota exceeded",
+                    "credit package", "suspended")
+
+    def _is_quota_exhausted(self, exc: Exception) -> bool:
+        """是否账号欠费/停用（非瞬时限流）。判定看正文，不看状态码。"""
+        text = str(exc).lower()
+        return any(w in text for w in self._QUOTA_WORDS)
+
     def _call_with_rotation(self, make_request):
         """带 Key 轮转的请求执行器。
 
         make_request: 无参函数，返回 openai 响应对象。
         429 → 轮 Key 重试（每个 Key 一次机会）；全部 Key 都 429 → 抛带
         retry_after 的 AgentError。其他异常直接抛 AgentError。
+        欠费/停用虽然也是 429，但轮 Key 无效，必须如实归因、不做无谓轮转。
         """
         last_exc: Exception | None = None
         tried = set()
@@ -246,6 +299,10 @@ class OpenAICompatAgent:
                 if not self._is_rate_limit(e):
                     raise AgentError(
                         f"{self._display_name} 调用失败：{e}") from e
+                if self._is_quota_exhausted(e):
+                    raise AgentError(
+                        f"{self._display_name} {self.model_name} 账号额度耗尽或已停用"
+                        f"（非瞬时限流，轮转 Key 无效，请充值或更换 Key）：{e}") from e
                 last_exc = e
                 if len(tried) >= len(self._api_keys):
                     break  # 所有 Key 都 429 了

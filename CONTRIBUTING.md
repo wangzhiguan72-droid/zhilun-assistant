@@ -185,6 +185,20 @@ Stop-Process -Id <PID> -Force
 
 ## 五、提交
 
+### 0. 先装隐私门（新克隆必做）
+
+```bash
+.venv/Scripts/python.exe scripts/install_hooks.py
+.venv/Scripts/python.exe scripts/install_hooks.py --check
+```
+
+装好后每次 `git commit` 前自动扫描**暂存内容**（`git show :<path>`，不是工作区、
+也不是 diff 的 `-` 行），命中历史隐私串或长 API Key 就阻止提交，只报 `文件:行号 ← 类别`，
+不回显命中内容。找不到解释器或扫描器时**失败即拦**——静默放行比没有门更危险。
+
+手动全仓审计：`scripts/privacy_gate.py --all`；机制自检：`--selftest`。
+测试见 [`privacy_gate_test.py`](privacy_gate_test.py)、[`install_hooks_test.py`](install_hooks_test.py)。
+
 - 提交信息说明**为什么改**，而不只是改了什么。
 - 涉及行为变更的，在 [`CHANGELOG.md`](CHANGELOG.md) 相应版本下补一行。
 - 新增能力后跑一遍全量回归：

@@ -56,15 +56,21 @@
 2. **全量回归**：`.venv/Scripts/python.exe scripts/regress_run.py`
    （单元 + exe 链路）；快跑加 `--fast`。
 3. **CI（.github/workflows/tests.yml）**：
-   - 套件下限 `ran >= 30`（当前 57 个套件，排除 4 个真调 API 的 LIVE 白名单，
-     ran≈53，余量充足；删套件前先想这条）
+   - 套件下限 `ran >= 30`（2026-11-19 实测 **90 个套件全绿**，LIVE 白名单
+     4 个不参与自动发现，余量充足；删套件前先想这条）
    - LIVE 白名单（真烧 API，CI 排除）：`llm_cache_test prefix_cache_test
      zhipu_cache_test kimi_mimo_live_test`——新写真调外部 API 的测试要么进
      白名单，要么自带 SKIP 门槛
    - **前端探针 `_syntaxcheck/*_probe.js`（≥3，自动发现）已入库**——它们用
      node 真跑前端函数契约（DOM mock），删目录会让 CI 红；新增前端契约时
      顺手加探针，别只靠肉眼看页面
-4. **exe 验证**：`scripts/exe_e2e.py`（构建后必跑，12 步链路）。
+4. **exe 验证**：`scripts/exe_e2e.py`（构建后必跑，26 条断言）。
+   > **别把重建 exe 和全量回归并行跑**：回归末尾的 `exe_e2e.py` 会启动
+   > `dist/智论助手.exe`，PyInstaller 装配 EXE 时要 `os.remove` 同名文件，
+   > 撞上就是 `PermissionError: [WinError 5] 拒绝访问`（2026-11-18 实测，
+   > 白跑 4 分钟分析阶段）。**顺序：先构建 → 再全量回归**——回归末尾自带
+   > `exe_e2e.py`，这样验的才是**新**产物；反过来「先回归再构建」验的是旧 exe，
+   > 等于没验。只改测试/文档、产品代码没动时不必重建（可比 mtime 确认）。
 
 ## 五、提交与推送纪律
 
@@ -81,6 +87,12 @@
   直连 `github.com:443` 本身也不稳（约 1/3 成功率），失败就重试，不是代码问题。
 - **commit 前置**：全量回归绿 + 看一眼 `git status`——并行会话的工作区经常有
   别人的半成品，`git add -p` 逐块确认，别把别人的中间态一起带走。
+- **隐私门（机器拦，不靠人看）**：新克隆先跑一次
+  `.venv/Scripts/python.exe scripts/install_hooks.py`。
+  装好后每次 `git commit` 自动扫暂存内容，命中历史隐私串或长 API Key 直接阻止提交。
+  由来：v2.61 清理历史时，正在删除的隐私片段被两次写回文档，人工复查两次都没拦住。
+  门只存 sha256，不存明文；找不到解释器/扫描器一律**失败即拦**，绝不静默放行。
+  手动全仓审计 `scripts/privacy_gate.py --all`，自检 `--selftest`，状态 `install_hooks.py --check`。
 - commit 信息用中文 conventional 风格（`feat: v2.XX — 一句话`），与 CHANGELOG
   条目对应。
 
@@ -94,5 +106,17 @@
   正文为空——默认 4096 起
 - 平台会下线模型 ID（小米 v2.5 系列 2026-11 实测回 `400 Unsupported model`）：
   改模型表要真调一次确认，别名映射到现役 ID，别留死候选在容灾链上
+- **应用不许自设逐跳头**（`Connection` / `Keep-Alive` / `Transfer-Encoding` …）：
+  PEP 3333 禁止，Flask 自带服务器容忍但 **waitress 直接 AssertionError → 500**。
+  SSE 那条 `Connection: keep-alive` 就是这么让「本机好、上线崩」的。
+  查这个坑要看**源码**，别查响应头——waitress 自己也发 `Connection: close`，分不清是谁设的
+- **`NO_PROXY` 里的 `[::1]` 会让所有 OpenAI 兼容平台一次都调不通**：
+  Clash / v2rayN 默认就写 `...,[::1],::1`，openai 3.8 底下的 httpx2 按 host:port 解析，
+  抛 `InvalidURL: Invalid port: ':1]'`，报错完全指不到代理上。
+  已在 `agents/openai_compat.py` **构造期**归一化（`[::1]`→`::1`）。
+  注意**别修在基类 `_build_client`**：`MimoAgent` 覆盖了它，修那儿照样炸；
+  构造期才是所有子类绕不过的路径
+- 进程退出 ≠ 端口释放：停服务要轮询到端口真空出来，否则下一个夹具报「端口被占」
+- 服务日志名要带端口：多个夹具共用 `_test_server.log` 会互相覆盖，出 500 时 traceback 找不回来
 
 _本文件由三方共同维护：改约定先在 CHANGELOG 记一笔，让其它会话能感知。_

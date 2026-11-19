@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 
-BASE = "http://127.0.0.1:5000"
+BASE = os.environ.get("ZHILUN_TEST_BASE", "http://127.0.0.1:5000").rstrip("/")
 
 
 def _require_server():

@@ -3149,10 +3149,12 @@ def _analyze_sse(payload: dict):
     return Response(
         gen(),
         mimetype="text/event-stream",
+        # 不许出现 Connection / Keep-Alive 这类逐跳头：WSGI（PEP 3333）禁止应用设置，
+        # waitress 会直接 AssertionError 把整条流打成 500（Flask 自带服务器却容忍）。
+        # 长连接由服务器负责，X-Accel-Buffering 才是这里真正需要的那条。
         headers={
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 

@@ -679,14 +679,15 @@ class Router:
                         self._last_invocation_var.set(current)
                     return result
                 except AgentError as e:
-                    # v0.5：429 带 Retry-After 时按平台说的冷却，封顶 COOLDOWN_MAX
+                    # v0.5：429 带平台等待提示时按它冷却，封顶 COOLDOWN_MAX。
+                    # 提示可能来自响应头 Retry-After，也可能来自正文（Kimi）。
                     retry_after = getattr(e, "retry_after", None)
                     cooldown = min(retry_after, COOLDOWN_MAX) if retry_after else COOLDOWN_SECONDS
                     if provider not in self._user_keys:
                         self._cooldown_until[key] = time.time() + cooldown
                     if self._resolved.get(state) == key:
                         del self._resolved[state]  # 别让下次直接复用刚失败的
-                    wait_txt = (f"{cooldown:.0f}s（平台 Retry-After）" if retry_after
+                    wait_txt = (f"{cooldown:.0f}s（平台提示）" if retry_after
                                 else f"{int(COOLDOWN_SECONDS)}s")
                     errors.append(f"{provider}/{model}: 运行时失败（已冷却 "
                                   f"{wait_txt}）：{e}")

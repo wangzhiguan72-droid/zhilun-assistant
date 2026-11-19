@@ -231,13 +231,20 @@ sys.stdout.buffer.flush()
 '''
 
 
-def call_oldish(plugin_path: str):
-    """用"旧式实现"（不重定向 stdout）跑一次，返回子进程结果。"""
+def call_oldish(plugin_path: str, unbuffered: str = "0"):
+    """用"旧式实现"（不重定向 stdout）跑一次，返回子进程结果。
+
+    必须显式钉住 PYTHONUNBUFFERED：本节断言的是「文本层缓冲」下的行为，
+    而 runner 会给子进程设 PYTHONUNBUFFERED=1（管道下块缓冲会让日志看着像卡死）。
+    不钉住的话，父进程环境一变，"侥幸通过"那条就翻脸——测的不是代码而是环境。
+    """
     runner = os.path.join(TMP, "_oldish_worker.py")
     with open(runner, "w", encoding="utf-8") as f:
         f.write(OLDISH_SRC)
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = unbuffered
     return subprocess.run([sys.executable, runner], input=req(plugin_path),
-                          capture_output=True, timeout=90)
+                          capture_output=True, timeout=90, env=env)
 
 
 def section6() -> None:
@@ -266,6 +273,11 @@ def section6() -> None:
           tag_soft == "ok", f"tag={tag_soft} payload={payload_soft!r}")
     check("但污染字节确实进了 stdout（只是落在尾部）",
           proc.stdout.endswith(b"\n"), repr(proc.stdout[-20:]))
+    # 把「定时炸弹」的引信显式测出来：同一段不 flush 的 print，
+    # 只要容器/runner 设了 PYTHONUNBUFFERED=1 就立刻炸。
+    tag_unbuf, _ = unpack(call_oldish(p_soft, unbuffered="1"))
+    check("同一段小 print + PYTHONUNBUFFERED=1 → 立刻炸（引信确实存在）",
+          tag_unbuf == "<garbage>", f"tag={tag_unbuf}")
 
     p_big = write_plugin(TMP, "def run(df, **kw):\n"
                                "    for i in range(3000):\n"

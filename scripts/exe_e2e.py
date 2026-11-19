@@ -185,6 +185,19 @@ def main():
             st == 200 and an.get("ok") is True,
             "status=%s keys=%s" % (st, list(an.keys())[:5]))
 
+        # 5b) 流式分析（SSE）—— 打包后必须真能流出来。
+        # 原先这个脚本完全没测流式，而流式恰恰是产品主路径：
+        # 自设逐跳头那类缺陷只在真起服务器时才暴露（见 wsgi_test）。
+        st, body = http("/api/analyze", "POST", {
+            "file_id": fid, "method": "independent_t",
+            "group_col": "group", "value_col": "前测", "stream": 1,
+        })
+        txt = body.decode("utf-8", "replace") if st == 200 else ""
+        ev = [l[7:].strip() for l in txt.split("\n") if l.startswith("event: ")]
+        log("POST /api/analyze stream=1 流式分析",
+            st == 200 and "done" in ev and "markdown" in ev,
+            "status=%s events=%s" % (st, ev[:6]))
+
         # 6) 方法知识图谱（methods_graph）
         st, body = http("/api/methods_graph")
         mg = json.loads(body.decode("utf-8")) if st == 200 else {}
@@ -250,7 +263,7 @@ def main():
         audit = json.loads(body.decode("utf-8"))
         exempted = audit.get("passages_exempted") or []
         log("POST /api/ai_audit 本地豁免门已打包生效",
-            st == 200 and audit.get("ok") is True and audit.get("gate_version") == "v1"
+            st == 200 and audit.get("ok") is True and audit.get("gate_version") == "v3"
             and len(exempted) >= 1 and bool(exempted[0].get("gate", {}).get("reason"))
             and len(audit.get("passages") or []) >= 1,
             "status=%s gate=%s 保留=%d 豁免=%d" % (

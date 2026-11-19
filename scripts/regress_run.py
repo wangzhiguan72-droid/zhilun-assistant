@@ -6,17 +6,28 @@
     exe 缺一个模块是"构建期"问题，任何单测都发现不了（2026-09-11 那次
     93.9MB 的包双击闪退，单测当时是全绿的）。所以把打包链路验证也收进来。
 
+v2.62 起的两条硬规矩：
+    1. **自己起服务**：9 个套件走真实 HTTP。以前没服务时它们 rc=2 或静默 SKIP，
+       runner 记成「环境未就绪，已忽略」，最后照样打印「全部通过」——
+       测试没跑 ≠ 测试通过。现在 runner 起一个干净的服务实例（无凭据、限流关），
+       这些套件必须真的执行；起不来就明确报「未执行」并返回 2，绝不报绿。
+    2. **声明式排除**：需要真 Key / --live 的段落默认不在范围内，但必须**写出来**，
+       而不是混在「通过」里。加 --live 才把它们纳入范围，届时缺 Key 同样返回 2。
+
 用法：
     .venv/Scripts/python.exe scripts/regress_run.py            # 全量（单元测试 + exe 验证）
     .venv/Scripts/python.exe scripts/regress_run.py --fast     # 只跑单元测试（跳过 exe 验证）
     .venv/Scripts/python.exe scripts/regress_run.py --only exe # 只跑 exe 验证
+    .venv/Scripts/python.exe scripts/regress_run.py --live     # 把真 Key 段落也纳入范围
+    .venv/Scripts/python.exe scripts/regress_run.py --no-server # 不起服务（那 9 个套件会记未执行）
 
 退出码：
-    0 = 全部通过
+    0 = 范围内全部执行且通过
     1 = 有套件失败
-    2 = 环境未就绪（exe 不存在 / 缺依赖）—— 与项目既有约定一致
+    2 = 范围内有套件**没能执行**（服务起不来 / 缺 Key / 缺 exe）
 
-产出：`_tmp_reg.txt`（Human-readable 汇总）；有失败时另写 `_regress_<套件名>.log`。
+产出：`_tmp_reg.txt`（Human-readable 汇总，**每跑完一个套件就增量写一次**，
+      中途被掐断也看得到已完成部分）；有失败时另写 `_regress_<套件名>.log`。
 """
 import argparse
 import io
@@ -28,6 +39,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
 
 def _find_root(start: Path) -> Path:
@@ -65,8 +77,7 @@ SUMMARY = str(ROOT / "_tmp_reg.txt")
 # 规则与 CI（.github/workflows/tests.yml）保持同一套：
 #   1. 自动发现根目录全部 `*_test.py`；
 #   2. 排除 LIVE_SUITES（真调外部 API / 真 Key，与 CI 同一清单）；
-#   3. 排除 HTTP 外部服务型（需要先起 Flask 服务才能跑，单独跑必 rc=2，
-#      与项目「环境未就绪」退出码约定一致，**不算失败**）。
+#   3. HTTP 外部服务型**不再排除**：runner 自己起服务，它们必须真的跑。
 # -----------------------------------------------------------------------------
 TESTS = sorted(p.stem for p in ROOT.glob("*_test.py"))
 
@@ -74,9 +85,16 @@ TESTS = sorted(p.stem for p in ROOT.glob("*_test.py"))
 LIVE_SUITES = {"llm_cache_test", "prefix_cache_test",
                "zhipu_cache_test", "kimi_mimo_live_test"}
 
-# HTTP 外部服务型：单独跑必 rc=2（需要 Flask 服务已启动），不计为失败
-ENV_DEPENDENT = {"paper_check_test", "methods_test",
-                 "regression_test", "smoke_test", "regression_audit_test"}
+# 需要 Flask 服务才能跑的套件。runner 会起服务；起不来时这些记「未执行」而非「忽略」。
+SERVER_SUITES = {"paper_check_test", "methods_test", "regression_test",
+                 "smoke_test", "regression_audit_test", "ai_audit_test",
+                 "defense_pack_test", "table_cross_test"}
+
+# 套件内部有「需要真 Key / --live」的段落。默认声明排除（会写进汇总），
+# --live 时纳入范围。既不是失败，也不许冒充通过。
+KEY_GATED = {"llm_audit_test", "llm_enhance_test", "multimodal_test"}
+LIVE_ARGS = {"multimodal_test": ["--live"]}
+KEY_ENV = ("SILICONFLOW_API_KEY", "ZHIPU_API_KEY")
 
 TESTS = [t for t in TESTS if t not in LIVE_SUITES]
 
@@ -102,10 +120,13 @@ def _child_env() -> dict:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env.setdefault("PYTHONUTF8", "1")
+    # 管道下 stdout 是块缓冲：套件跑 11 分钟日志还是 0 字节，看起来像卡死。
+    env["PYTHONUNBUFFERED"] = "1"
+    env["NO_PROXY"] = "127.0.0.1,localhost,::1"
     return env
 
 
-def run_suite(name: str, timeout: int = 900, retry: bool = True):
+def run_suite(name: str, timeout: int = 900, retry: bool = True, args=()):
     """跑一个测试套件，返回 (rc, summary, seconds, detail)。
 
     detail 是套件原始输出的尾部（失败时才有价值）—— 落盘到 `_regress_<name>.log`。
@@ -119,10 +140,10 @@ def run_suite(name: str, timeout: int = 900, retry: bool = True):
         真正挂在断言上的失败，通过数+失败数 == 总数，不会触发重跑（不掩盖真 bug）。
     """
     t0 = time.time()
-    rc, summary, detail, complete = _run_once(name, timeout)
+    rc, summary, detail, complete = _run_once(name, timeout, args)
     retried = ""
     if retry and rc not in (0, 2) and not complete:
-        rc, summary, detail, complete = _run_once(name, timeout)
+        rc, summary, detail, complete = _run_once(name, timeout, args)
         retried = "（重跑后仍不可完整执行）"
     return rc, summary + retried, time.time() - t0, detail
 
@@ -142,14 +163,14 @@ def _count_skips(txt: str) -> int:
     return len(re.findall(r"^\s*\[SKIP\]", txt, re.M))
 
 
-def _run_once(name: str, timeout: int):
+def _run_once(name: str, timeout: int, args=()):
     """跑一次套件，返回 (rc, summary, detail, complete)。
 
     complete=True 表示「通过数 + 失败数 == 总数」，即测试全部执行完毕；
     为 False 表示有用例没跑起来（典型：CLI 起不来 → 环境问题而非代码回归）。
     """
     try:
-        r = subprocess.run([PY, name + ".py"],
+        r = subprocess.run([PY, "-u", name + ".py", *args],
                            cwd=str(ROOT), capture_output=True, timeout=timeout,
                            env=_child_env())
     except subprocess.TimeoutExpired:
@@ -172,9 +193,10 @@ def _run_once(name: str, timeout: int):
             return r.returncode, summary, txt, False
         # 没有「合计」的套件靠 SKIP 计数兜底：跳过 = 没跑，就不是 complete
         return r.returncode, summary, txt, not skips
-    if r.returncode == 2 and name in ENV_DEPENDENT:
-        # rc=2 是既定的「环境未就绪」码，不是失败 —— 别写成 NONZERO 吓人
-        return r.returncode, "环境未就绪（需先启服务）", txt, False
+    if r.returncode == 2:
+        # rc=2 是既定的「环境未就绪」码。**不再当成「已忽略」**——
+        # 服务由 runner 负责起，还 rc=2 就是范围内没跑成，必须浮到结果行。
+        return r.returncode, "未执行（环境未就绪 rc=2）", txt, False
     return (r.returncode,
             ("OK" if r.returncode == 0 else "NONZERO(rc=%d)" % r.returncode) + skip_note,
             txt, False)
@@ -186,8 +208,9 @@ def run_exe_e2e(timeout: int = 600):
         return 2, "SKIP：未找到 %s（先跑 build_desktop.py）" % EXE_PATH, 0.0, ""
     t0 = time.time()
     try:
-        r = subprocess.run([PY, EXE_E2E],
-                           cwd=str(ROOT), capture_output=True, timeout=timeout)
+        r = subprocess.run([PY, "-u", EXE_E2E],
+                           cwd=str(ROOT), capture_output=True, timeout=timeout,
+                           env=_child_env())
     except subprocess.TimeoutExpired:
         return -1, "TIMEOUT(%ds)" % timeout, time.time() - t0, ""
     except Exception as e:  # noqa: BLE001
@@ -207,16 +230,22 @@ def run_exe_e2e(timeout: int = 600):
 def main():
     # 父进程自己的汇总行也带 ⚠ —— Windows GBK 控制台编不出来直接崩（不是套件失败，
     # 是 runner 死在打印上，后面的套件一个都没跑）。子进程有 _child_env() 兜底，
-    # 父进程这儿必须自己来。
+    # 父进程这儿必须自己来。line_buffering 同样必须：重定向到文件时块缓冲会让
+    # 日志 11 分钟停在 0 字节，看起来像卡死。
     for _s in (sys.stdout, sys.stderr):
         try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
+            _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         except (AttributeError, ValueError):
             pass
 
     ap = argparse.ArgumentParser(description="智论助手全量回归")
     ap.add_argument("--fast", action="store_true", help="跳过 exe 链路验证（快）")
     ap.add_argument("--only", choices=["unit", "exe"], help="只跑其中一类")
+    ap.add_argument("--live", action="store_true",
+                    help="把需要真 Key / --live 的段落也纳入范围（缺 Key 则记未执行）")
+    ap.add_argument("--no-server", action="store_true",
+                    help="不起共享服务（依赖服务的套件会记未执行，不会报绿）")
+    ap.add_argument("--port", type=int, default=5000, help="共享服务端口")
     args = ap.parse_args()
 
     do_unit = args.only != "exe"
@@ -224,34 +253,72 @@ def main():
 
     out = []
     failed = []
-    env_not_ready = []
+    not_run = []       # 范围内但没能执行 —— 绝不许冒充通过
+    excluded = []      # 声明式排除（默认范围外的真 Key 段落）
     logs = {}          # name -> 原始输出（失败时落盘，方便直接看失败详情）
-    summaries = {}     # name -> 汇总行文案（用于最后扫出「有 SKIP 的套件」）
     t_start = time.time()
+
+    def flush_summary():
+        """每跑完一个套件就落盘：中途被掐断也看得到已完成部分。"""
+        with io.open(SUMMARY, "w", encoding="utf-8") as f:
+            f.write("\n".join(out))
+
+    srv = None
+    srv_error = ""
+    if do_unit and not args.no_server:
+        from test_server import TestServer
+        srv = TestServer(port=args.port, root=ROOT)
+        try:
+            srv.start()
+            out.append("共享服务：%s（无凭据、限流已关、日志 _test_server.log）" % srv.base)
+        except RuntimeError as e:
+            srv_error = str(e)
+            srv = None
+            out.append("共享服务起不来：%s" % srv_error)
+        print(out[-1], flush=True)
+        flush_summary()
 
     if do_unit:
         out.append("=" * 74)
         out.append("单元测试（%d 套件）" % len(TESTS))
         out.append("=" * 74)
         for t in TESTS:
-            rc, summary, secs, txt = run_suite(t)
-            mark = "  "
-            if rc == 0:
-                pass
-            elif rc == 2 and t in ENV_DEPENDENT:
-                mark = "~ "      # 环境依赖，不算失败
-                env_not_ready.append(t)
+            sargs = LIVE_ARGS.get(t, []) if args.live else []
+            rc, summary, secs, txt = run_suite(t, args=sargs)
+            has_skip = "[SKIP]" in txt
+            if rc == 0 and has_skip and t in KEY_GATED and not args.live:
+                mark = "- "      # 声明式排除：范围外，写出来但不算失败
+                excluded.append(t)
+            elif rc == 0 and not has_skip:
+                mark = "  "
+            elif rc == 2 or (rc == 0 and has_skip):
+                mark = "~ "      # 范围内没跑成
+                not_run.append(t)
             else:
                 mark = "!! "
                 failed.append(t)
-            if rc not in (0, 2):
+            if rc not in (0, 2) or has_skip:
                 logs[t] = txt
-            summaries[t] = summary
-            out.append("%s%-26s rc=%-4d %-26s %5.1fs" % (mark, t, rc, summary, secs))
-            print("%s%-26s rc=%-4d %s" % (mark, t, rc, summary))
-        if env_not_ready:
+            line = "%s%-26s rc=%-4d %-30s %5.1fs" % (mark, t, rc, summary, secs)
+            out.append(line)
+            print(line, flush=True)
+            flush_summary()
+        if srv_error:
             out.append("")
-            out.append("(~ = 环境未就绪 rc=2，非失败：%s)" % ", ".join(env_not_ready))
+            out.append("服务未就绪导致以下套件未执行：%s"
+                       % ", ".join(sorted(SERVER_SUITES & set(TESTS))))
+        if excluded:
+            out.append("")
+            out.append("(- = 声明排除，需真 Key/--live：%s；加 --live 可纳入范围)"
+                       % ", ".join(excluded))
+        if not_run:
+            out.append("")
+            out.append("(~ = 范围内未真正执行：%s)" % ", ".join(not_run))
+
+    # exe 端到端自己占 5000，必须先让出端口
+    if srv is not None:
+        srv.stop()
+        srv = None
 
     if do_exe:
         out.append("")
@@ -264,12 +331,12 @@ def main():
             failed.append(EXE_E2E)
             logs[EXE_E2E] = txt
         elif rc == 2:
-            env_not_ready.append(EXE_E2E)
-        out.append("%s%-26s rc=%-4d %-26s %5.1fs" % (mark, EXE_E2E, rc, summary, secs))
-        print("%s%-26s rc=%-4d %s" % (mark, EXE_E2E, rc, summary))
+            not_run.append(EXE_E2E)
+        line = "%s%-26s rc=%-4d %-30s %5.1fs" % (mark, EXE_E2E, rc, summary, secs)
+        out.append(line)
+        print(line, flush=True)
 
     elapsed = time.time() - t_start
-    skipped_suites = [t for t, s in summaries.items() if "SKIP" in s]
     out.append("")
     out.append("=" * 74)
     if failed:
@@ -278,37 +345,42 @@ def main():
         # 一个套件都没发现 ≠ 全通过。宁可红，也不能给假绿。
         out.append("结果：未发现任何单元测试套件（ROOT=%s）—— 检查根目录查找是否跑偏" % ROOT)
         failed.append("<no-suites>")
-    elif env_not_ready:
-        out.append("结果：全部通过（%d 项为环境未就绪，已忽略）· 耗时 %.0fs"
-                   % (len(env_not_ready), elapsed))
+    elif not_run:
+        out.append("结果：%d 项未真正执行（不是通过）→ %s"
+                   % (len(not_run), ", ".join(not_run)))
+        out.append("      已执行的套件无失败 · 耗时 %.0fs" % elapsed)
     else:
-        out.append("结果：全部通过 · 耗时 %.0fs" % elapsed)
-    # 静默跳过要浮到结果行——明细里写了没人看得到（v2.46）
-    if skipped_suites:
-        out.append("注意：%d 个套件有按环境 SKIP 的用例，未真正执行 → %s"
-                   % (len(skipped_suites), ", ".join(skipped_suites)))
+        out.append("结果：范围内全部执行且通过（%d 套件）· 耗时 %.0fs"
+                   % (len(TESTS) + (1 if do_exe else 0), elapsed))
+    if excluded:
+        out.append("范围外（已声明，未执行）：%s —— 需真 Key 或 --live"
+                   % ", ".join(excluded))
     out.append("=" * 74)
 
-    io.open(SUMMARY, "w", encoding="utf-8").write("\n".join(out))
+    flush_summary()
 
     # 失败套件的原始输出单独存一份 —— 汇总表只给结论，详情在这里
-    if failed:
-        detail_lines = ["", "失败套件原始输出已写入："]
-        for f in failed:
+    if failed or not_run:
+        detail_lines = ["", "失败/未执行套件原始输出已写入："]
+        for f in failed + not_run:
             # v2.49：套件名可能是绝对路径（exe_e2e），直接拼日志名在
             # Windows 上非法（`_regress_D:\…`）→ OSError 把全部结果埋掉。
             safe = f.replace(":", "").replace("\\", "_").replace("/", "_")
             log_name = str(ROOT / ("_regress_%s.log" % safe))
-            io.open(log_name, "w", encoding="utf-8").write(logs.get(f, ""))
+            with io.open(log_name, "w", encoding="utf-8") as fh:
+                fh.write(logs.get(f, ""))
             detail_lines.append("    %s" % log_name)
-        io.open(SUMMARY, "a", encoding="utf-8").write("\n".join(detail_lines))
-        print("\n".join(detail_lines))
+        with io.open(SUMMARY, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(detail_lines))
+        print("\n".join(detail_lines), flush=True)
 
-    print("\n" + "\n".join(out[-3:]))
-    print("(明细见 %s)" % SUMMARY)
+    print("\n" + "\n".join(out[-4:]), flush=True)
+    print("(明细见 %s)" % SUMMARY, flush=True)
 
     if failed:
         return 1
+    if not_run:
+        return 2
     return 0
 
 

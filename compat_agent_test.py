@@ -11,6 +11,8 @@
     5. 全 Key 429 → AgentError 带 retry_after（从响应头解析）
     6. 非 429 错误不轮转，直接抛 AgentError
     7. Router 冷却感知 retry_after（120s 而非默认 60s）
+    7b. 等待提示写在正文里也要认（Kimi 无 Retry-After 头，正文说等 1 秒）
+        + 报错正文回显的 org-/ak- 账号标识必须被擦掉
     8. GLM-5 thinking 兼容：glm-5.3 不传 thinking 开关，glm-4.7 传 disabled
     9. 行为兼容：SiliconFlowAgent 空内容返回 ""，ZhipuAgent 空内容抛错
 """
@@ -225,6 +227,48 @@ except AgentError as err:
     check('Key 未轮转（仍 key1）', f._api_key == "sf-key-1")
 
 print()
+print('=== 6b. 欠费/停用也是 429，但不能报成「限流」 ===')
+
+
+class RateLimitError(Exception):
+    """与 openai SDK 同名：适配器按类名判 429，必须复现这一点才测得准。"""
+
+
+# Kimi 官方零余额实测正文（账号标识用合成串，绝不写真实 ID）
+_SUSPENDED = (
+    "{'error': {'message': 'Your account org-" + "a" * 32 + " ak-" + "b" * 24
+    + " is suspended due to insufficient balance, please recharge your account"
+      " or check your plan and billing details',"
+      " 'type': 'exceeded_current_quota_error'}}")
+
+g = SiliconFlowAgent(model="deepseek-v4-flash")
+g._build_client = ScriptedClient(g, [
+    ("sf-key-1", RateLimitError(f"Error code: 429 - {_SUSPENDED}")),
+])
+try:
+    g.complete("hi")
+    check('欠费应抛 AgentError', False)
+except AgentError as err:
+    check('如实归因为额度耗尽/停用', '额度耗尽或已停用' in str(err), str(err)[:120])
+    check('不再谎报「429 限流」', '429 限流' not in str(err), str(err)[:120])
+    check('不做无谓 Key 轮转（仍 key1）', g._api_key == "sf-key-1")
+except AssertionError:
+    check('不做无谓 Key 轮转（仍 key1）', False, '轮转到了没有脚本的 key2')
+
+h = SiliconFlowAgent(model="deepseek-v4-flash")
+h._build_client = ScriptedClient(h, [
+    ("sf-key-1", RateLimitError(
+        "Error code: 429 - {'error': {'message': 'The engine is currently"
+        " overloaded, please try again later', 'type': 'engine_overloaded_error'}}")),
+    ("sf-key-2", FakeResp("from-key-2")),
+])
+check('瞬时过载仍走轮转（不被误判为欠费）', h.complete("hi") == "from-key-2")
+check('瞬时过载不触发欠费判定',
+      not h._is_quota_exhausted(RateLimitError("Error code: 429 - rate limit")))
+check('普通 500 不触发欠费判定',
+      not h._is_quota_exhausted(RuntimeError("500 Internal Server Error")))
+
+print()
 print('=== 7. Router 冷却感知 retry_after ===')
 
 
@@ -247,6 +291,94 @@ except AgentError:
     pass
 cd = router._cooldown_until[("sf", "deepseek-v4-pro")] - before
 check('冷却 ≈120s（Retry-After）而非默认 60s', 115 <= cd <= 125, f'实际 {cd:.0f}s')
+
+print()
+print('=== 7b. 等待提示写在正文里也要认（Kimi 实测形态） ===')
+# Kimi 组织级 RPM 限流实测：无 Retry-After 头，正文说
+#   "request reached organization max RPM: 3, please try again after 1 seconds"
+# 只读头会把这 1 秒当成「无提示」→ Router 套 60s 默认冷却，放大 60 倍。
+# 账号标识用合成串（全 a / 全 b），绝不写真实 ID。
+_RPM_BODY = ("{'error': {'message': 'Your account org-" + "a" * 32
+             + " ak-" + "b" * 24 + " request reached organization max RPM: 3,"
+               " please try again after 1 seconds',"
+               " 'type': 'rate_limit_reached_error'}}")
+
+
+class Fake429Body(Exception):
+    """429 但响应头里没有任何等待提示。"""
+
+    def __init__(self, msg=_RPM_BODY):
+        super().__init__(f"Error code: 429 - {msg}")
+        self.response = type("R", (), {})()
+        self.response.headers = FakeHeaders()
+
+
+def _retry_after_of(exc):
+    a = SiliconFlowAgent(model="deepseek-v4-flash")
+    return a._extract_retry_after(exc)
+
+
+check('正文提示解析成 1s（无响应头）', _retry_after_of(Fake429Body()) == 1.0,
+      f'实际={_retry_after_of(Fake429Body())}')
+check('响应头优先于正文',
+      _retry_after_of(Fake429(_RPM_BODY, retry_after=120)) == 120.0)
+check('响应头是 HTTP 日期时回落到正文',
+      _retry_after_of(Fake429(_RPM_BODY,
+                              retry_after="Wed, 21 Oct 2026 07:28:00 GMT")) == 1.0)
+check('头与正文都无提示 → None', _retry_after_of(Fake429()) is None)
+check('小数秒提示',
+      _retry_after_of(Fake429Body("please try again after 2.5 seconds")) == 2.5)
+check('正文提示不得把欠费误判成限流等待',
+      SiliconFlowAgent(model="deepseek-v4-flash")._is_quota_exhausted(
+          Fake429Body()) is False)
+
+# 全 Key 都回正文提示 → AgentError.retry_after 必须带上它
+k = SiliconFlowAgent(model="deepseek-v4-flash")
+k._build_client = ScriptedClient(k, [
+    ("sf-key-1", Fake429Body()),
+    ("sf-key-2", Fake429Body()),
+])
+try:
+    k.complete("hi")
+    check('应抛 AgentError', False)
+except AgentError as err:
+    check('全 Key 429 后 retry_after 取自正文=1s', err.retry_after == 1.0,
+          f'retry_after={err.retry_after}')
+    check('报错文案不含账号标识',
+          'org-' + 'a' * 32 not in str(err) and 'ak-' + 'b' * 24 not in str(err))
+
+# 形态兜底：即使没登记过任何 Key，账号标识也必须被擦掉
+check('redact 擦 org- 账号标识',
+      'org-' + 'a' * 32 not in redact_secrets('account org-' + 'a' * 32 + ' hit RPM'))
+check('redact 擦 ak- 账号标识',
+      'ak-' + 'b' * 24 not in redact_secrets('account ak-' + 'b' * 24 + ' hit RPM'))
+check('擦除后仍留着可诊断的限流正文',
+      'max RPM: 3' in redact_secrets(_RPM_BODY)
+      and 'try again after 1 seconds' in redact_secrets(_RPM_BODY))
+check('擦除不影响欠费判定（判定在擦除之前）',
+      SiliconFlowAgent(model="deepseek-v4-flash")._is_quota_exhausted(
+          RateLimitError("Error code: 429 - " + _SUSPENDED)))
+
+
+class MockBodyHintAgent:
+    model_name = "mock"
+
+    def complete(self, prompt, **kw):
+        err = AgentError("mock 429")
+        err.retry_after = 1.0
+        raise err
+
+
+router2 = Router(tier="pro")
+router2._agents[("sf", "deepseek-v4-pro")] = MockBodyHintAgent()
+before2 = time.time()
+try:
+    router2.complete("paper_check", "hi")
+except AgentError:
+    pass
+cd2 = router2._cooldown_until[("sf", "deepseek-v4-pro")] - before2
+check('Router 按正文提示冷却 ≈1s 而非默认 60s', 0.5 <= cd2 <= 2.5,
+      f'实际 {cd2:.1f}s')
 
 print()
 print('=== 8. GLM-5 thinking 兼容 ===')
@@ -353,6 +485,91 @@ try:
     check('MaasAgent 缺 Key 报 AgentError', False)
 except AgentError:
     check('MaasAgent 缺 Key 报 AgentError', True)
+
+# —— NO_PROXY 里的方括号 IPv6：真实代理软件的默认写法 ——
+# Clash / v2rayN 默认导出 `[::1]`，httpx2 解析成 host:port 直接 InvalidURL，
+# 于是所有平台一次都调不通。这里用真实那串原样钉住。
+print('\n[NO_PROXY 兼容]')
+from agents.openai_compat import _normalize_no_proxy
+
+_REAL_WORLD = 'localhost,.localhost,127.0.0.1,127.0.0.0/8,[::1],::1'
+_saved = {k: os.environ.get(k) for k in ('NO_PROXY', 'no_proxy', 'HTTPS_PROXY')}
+try:
+    os.environ['NO_PROXY'] = _REAL_WORLD
+    os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:1'   # 不真连，只验解析
+    try:
+        import httpx2
+        _has_httpx2 = True
+    except ImportError:
+        _has_httpx2 = False
+
+    if _has_httpx2:
+        try:
+            httpx2.Client(trust_env=True).close()
+            check('引信存在：原始 NO_PROXY 确实让 httpx2 崩', False,
+                  '竟没崩——上游可能已修，此测试需重新评估')
+        except Exception as _e:
+            check('引信存在：原始 NO_PROXY 确实让 httpx2 崩',
+                  'Invalid port' in repr(_e), repr(_e)[:80])
+
+    _normalize_no_proxy()
+    check('方括号被改写', os.environ['NO_PROXY'] ==
+          'localhost,.localhost,127.0.0.1,127.0.0.0/8,::1,::1',
+          os.environ['NO_PROXY'])
+    check('其它项一个没动',
+          all(p in os.environ['NO_PROXY'] for p in
+              ('localhost', '.localhost', '127.0.0.1', '127.0.0.0/8')))
+    if _has_httpx2:
+        try:
+            httpx2.Client(trust_env=True).close()
+            check('改写后 httpx2 可构建', True)
+        except Exception as _e:
+            check('改写后 httpx2 可构建', False, repr(_e)[:80])
+
+    # 幂等 + 不误伤：没有方括号就一个字节都不改
+    os.environ['NO_PROXY'] = 'localhost,127.0.0.1,::1'
+    _normalize_no_proxy()
+    check('无方括号时原样不动',
+          os.environ['NO_PROXY'] == 'localhost,127.0.0.1,::1')
+    os.environ['no_proxy'] = '[::1],example.com'
+    _normalize_no_proxy()
+    check('小写 no_proxy 同样处理',
+          os.environ['no_proxy'] == '::1,example.com', os.environ['no_proxy'])
+    os.environ.pop('NO_PROXY', None)
+    os.environ.pop('no_proxy', None)
+    _normalize_no_proxy()
+    check('未设置时不凭空造变量',
+          'NO_PROXY' not in os.environ and 'no_proxy' not in os.environ)
+
+    # 走真实构建路径：构造期就得归一化，不能指望调用方记得预处理。
+    # 必须连**覆盖了 _build_client 的子类**一起验 —— MiMoAgent 就是这种，
+    # 只修基类构建函数时它照样 Invalid port（这个漏网真实发生过）。
+    os.environ['NO_PROXY'] = _REAL_WORLD
+    os.environ['SILICONFLOW_API_KEY'] = 'sf-key-probe'
+    os.environ['MIMO_API_KEY'] = 'sk-mimo-probe'
+    try:
+        SiliconFlowAgent(model='probe').client
+        check('基类子类构造后 NO_PROXY 已归一化',
+              '[' not in os.environ['NO_PROXY'], os.environ['NO_PROXY'])
+    except Exception as _e:
+        check('基类子类构造后 NO_PROXY 已归一化', False, repr(_e)[:90])
+
+    os.environ['NO_PROXY'] = _REAL_WORLD
+    try:
+        from agents import MimoAgent
+        MimoAgent(model='mimo-v2.6-flash').client
+        check('覆盖 _build_client 的子类（MiMo）同样被覆盖到',
+              '[' not in os.environ['NO_PROXY'], os.environ['NO_PROXY'])
+    except Exception as _e:
+        check('覆盖 _build_client 的子类（MiMo）同样被覆盖到', False, repr(_e)[:90])
+    del os.environ['SILICONFLOW_API_KEY']
+    del os.environ['MIMO_API_KEY']
+finally:
+    for _k, _v in _saved.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
 
 print()
 print(f'====== 结果：{PASS} PASS / {FAIL} FAIL ======')

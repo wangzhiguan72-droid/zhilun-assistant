@@ -126,6 +126,71 @@ class LocalGateTest(unittest.TestCase):
         self.assertTrue(st.local_gate(text, ["被动句偏多"])["exempt"])
 
 
+#: GB/T 7714 标准条目：标识前面是右括号，不是点。旧正则要求「.J.」，
+#: 对这种最常见的格式一次都没命中过（真实语料 #4 实测漏豁免 21/50 轮）。
+REF_GB_STANDARD = (
+    "84\n Sample A, Sample B , Sample C ,et al. Who Becomes a Sample?[J]."
+    "Journal of Sample Economics, 2017, 132(4).\n"
+    "85\n 示例丁. 示例方法导论[M]. 示例出版社, 2021: 112-140."
+)
+
+
+class ReferenceMarkerTest(unittest.TestCase):
+    """文献类型标识分支：修的是「认不出标准格式」，不是放宽豁免范围。"""
+
+    def test_standard_markers_are_exempt_without_model_call(self):
+        for mark in ("J", "M", "D", "C", "N", "P"):
+            text = f"示例甲. 示例题名[{mark}]. 示例刊名, 2023, 40(3): 45-58."
+            gate = st.local_gate(text, ["被动句偏多", "空泛套话"])
+            self.assertTrue(gate["exempt"], mark)
+            self.assertEqual(gate["category"], "参考文献条目")
+            calls = []
+            r = st.triage_passage(["空泛套话"], text,
+                                  lambda p, s: calls.append(1) or "{}")
+            self.assertEqual(r["verdict"], "假", mark)
+            self.assertFalse(r["model_called"], mark)
+            self.assertEqual(calls, [], mark)
+
+    def test_measured_shape_with_bare_number_and_question_mark(self):
+        """实测漏豁免的那一条的结构复刻：裸序号 + et al. + 问号后接 [J]."""
+        self.assertTrue(st._REF_ENTRY_RE.search(REF_GB_STANDARD))
+        gate = st.local_gate(REF_GB_STANDARD, ["被动句偏多", "空泛套话"])
+        self.assertTrue(gate["exempt"])
+        self.assertEqual(gate["category"], "参考文献条目")
+
+    def test_full_width_period_and_spaces_inside_marker(self):
+        for text in ("示例甲. 示例题名[J]．示例刊名, 2023.",
+                     "示例甲. 示例题名[ J ]. 示例刊名, 2023."):
+            self.assertTrue(st.local_gate(text, ["空泛套话"])["exempt"], text)
+
+    def test_in_text_citation_is_author_prose_not_exempt(self):
+        """正文里的「Smith et al. 指出」是作者论述，豁免它等于新开一类漏判。"""
+        for text in ("本研究沿用 Smith et al. 的设定，此外，样本被按城乡分层。",
+                     "正如张三 et al. 指出，该方法具有重要意义，为后续研究提供了有力支撑。"):
+            self.assertFalse(st.local_gate(text, ["空泛套话"])["exempt"], text)
+
+    def test_unquantified_hype_still_vetoes_reference_exemption(self):
+        text = "示例甲. 示例题名[J]. 示例刊名, 2023. 该成果显著提升了整体水平，具有重要意义。"
+        self.assertTrue(st._hype_hits(text))
+        self.assertFalse(st.local_gate(text, ["拔高词没有数字支撑"])["exempt"])
+
+    def test_synthetic_and_holdout_exemptions_unchanged(self):
+        """修正确认只影响真实语料那一条：另两套语料的豁免集合必须逐字不变。
+
+        钉的是「哪些条目被豁免」，不是豁免类别——h-ref-list 的 reasons 只有
+        单项被动，先被方法段分支接走，类别不同但同样零调用判假。
+        """
+        import style_eval_corpus as syn
+        import style_eval_holdout as hold
+        for mod, expect in (
+            (syn, {"cover-english", "cover-fields", "method-passive-only", "ref-entries"}),
+            (hold, {"h-cover-statement", "h-method-passive-single", "h-ref-list"}),
+        ):
+            got = {it["case"] for it in mod.items()
+                   if st.local_gate(it["excerpt"], it["reasons"])["exempt"]}
+            self.assertEqual(got, expect, mod.__name__)
+
+
 class DisciplinaryDimensionTest(unittest.TestCase):
     def test_passive_alone_never_survives_in_any_section(self):
         for section in ("方法", "结果", "讨论", "结论", "其他"):
@@ -252,6 +317,231 @@ class SoftSignalGuardTest(unittest.TestCase):
 
     def test_hard_fact_set_excludes_only_tone(self):
         self.assertEqual(set(st.AUTHOR_CONTROLLED) - st.HARD_FACT_DIMENSIONS, {"空泛套话"})
+
+
+class TruncationDetectorTest(unittest.TestCase):
+    """截断判定不能只认「…」：200 字窗口切在句中时往往**没有省略号标记**。
+
+    构造语料 10 条截断例里 6 条无标记；只认省略号会把它们当成完整摘录，
+    进而允许「看不全的段落」被定性为没问题或有问题。
+    """
+
+    def test_unmarked_mid_sentence_cut_is_truncated(self):
+        for text in ("综上所述，表 4 给出的结果支持了前文的判断。进一步地，",
+                     "由此可见，这一处理方式的合理性还需要更多证据。相比之下，另一种设定下的表现",
+                     "可以看出，各组之间的差异需要结合效应量一并解读。值得注意的是，",
+                     "替换权重设定后系数方向保持一致，具体数值见下表"):
+            self.assertTrue(st._is_truncated(text), text[:24])
+            self.assertNotIn("…", text)
+
+    def test_complete_sentences_are_not_truncated(self):
+        for text in ("全部数据以表格形式呈现。", "结论成立吗？成立！", "效果显著.",
+                     "他说「这很重要」。", "（见表 3）", "结果一致】"):
+            self.assertFalse(st._is_truncated(text), text)
+
+    def test_ellipsis_and_empty_are_truncated(self):
+        for text in ("后续…", "后续...", "", "   ", None):
+            self.assertTrue(st._is_truncated(text), repr(text))
+
+    def test_ellipsis_is_not_a_sentence_end(self):
+        self.assertNotIn("…", st._SENTENCE_END)
+
+
+#: 方法段被动+过渡词+套话，**完整**收尾。模型放行时密度型信号撑不起两说并列。
+METHOD_TONE_COMPLETE = (
+    "此外，样本被按城乡分层。进一步地，每层内的班级被随机抽取。"
+    "与此同时，教师问卷被单独编号。值得注意的是，作答时长被记录用于剔除无效卷。"
+    "由此可见，抽样流程被完整留痕，便于复核。"
+)
+#: 同一段落在「便于」处被切掉，无省略号标记。
+METHOD_TONE_TRUNCATED = METHOD_TONE_COMPLETE[:-3]
+#: 整段空话连发、完整收尾——「空泛套话」维度唯一能定性的正例形态。
+PLATITUDES_COMPLETE = (
+    "综上所述，本研究具有重要意义，具有较高的理论价值与实践价值，"
+    "为后续研究提供了有力支撑，奠定了坚实基础。总体来看，本研究填补了相关领域的空白，"
+    "取得了显著成果。"
+)
+#: 只剩指代、切在过渡词后——套话后面有没有实质内容看不到。
+PLATITUDES_TRUNCATED = "综上所述，表 4 给出的结果支持了前文的判断。进一步地，"
+
+TONE_REASONS = ["被动句偏多", "高频过渡套话密集", "空泛套话"]
+
+
+class SoftSignalClearTest(unittest.TestCase):
+    """模型判对的「假」不该被护栏降级成「存疑」——但只在摘录完整时放行。"""
+
+    def test_complete_method_section_cleared_to_false(self):
+        sig = st.local_signals(METHOD_TONE_COMPLETE)
+        self.assertFalse(sig["truncated"])
+        self.assertEqual(sig["present"], ["空泛套话"])
+        r = st.reconcile(opinion(section="方法", visible=["空泛套话"], needs="否",
+                                 basis="被动与过渡词属学科惯例"),
+                         TONE_REASONS, METHOD_TONE_COMPLETE)
+        self.assertEqual(r["verdict"], "假")
+        self.assertEqual(r["source"], "soft_signal_cleared")
+
+    def test_truncated_method_section_is_never_cleared(self):
+        """同一文本只差收尾三个字：看不全就不许把「未判定」换成「没问题」。"""
+        self.assertTrue(st.local_signals(METHOD_TONE_TRUNCATED)["truncated"])
+        r = st.reconcile(opinion(section="方法", visible=["空泛套话"], needs="否",
+                                 basis="被动与过渡词属学科惯例"),
+                         TONE_REASONS, METHOD_TONE_TRUNCATED)
+        self.assertEqual(r["verdict"], "存疑")
+        self.assertEqual(r["source"], "disagreement")
+
+    def test_hard_fact_is_never_cleared_by_model(self):
+        text = "本实验设计显著提升了被试的反应时表现，样本被随机分配到两组。"
+        r = st.reconcile(opinion(section="方法", visible=["拔高词没有数字支撑"], needs="否"),
+                         ["拔高词没有数字支撑"], text)
+        self.assertEqual(r["verdict"], "存疑")
+        self.assertEqual(r["source"], "disagreement")
+
+    def test_non_method_section_keeps_both_sides(self):
+        r = st.reconcile(opinion(section="讨论", visible=["空泛套话"], needs="否"),
+                         ["空泛套话"], PLATITUDES_COMPLETE)
+        self.assertEqual(r["verdict"], "存疑")
+        self.assertEqual(r["source"], "disagreement")
+
+    def test_model_saying_yes_does_not_enter_clear_branch(self):
+        r = st.reconcile(opinion(section="方法", visible=["空泛套话"], needs="是"),
+                         TONE_REASONS, METHOD_TONE_COMPLETE)
+        self.assertEqual(r["verdict"], "存疑")
+        self.assertEqual(r["source"], "soft_signal_only")
+
+
+class TruncatedSoftSignalTest(unittest.TestCase):
+    """密度型信号 + 截断摘录 → 存疑；完整摘录的空话连发仍判真。
+
+    实测分离是完美的：构造语料里 64 条「存疑标签被判真」全部是截断摘录，
+    40 条「真标签靠密度型定性」全部是完整摘录（platitudes-chain）。
+    """
+
+    def test_truncated_tone_only_stays_uncertain(self):
+        for section in ("讨论", "结论", "其他"):
+            r = st.reconcile(opinion(section=section, visible=["空泛套话"], needs="是"),
+                             ["空泛套话"], PLATITUDES_TRUNCATED)
+            self.assertEqual(r["verdict"], "存疑", section)
+            self.assertEqual(r["source"], "soft_signal_truncated")
+            self.assertIn("截断摘录仅有密度型信号", r["guards"])
+
+    def test_complete_platitude_chain_is_still_true(self):
+        """一刀切禁掉密度型定性会毁掉「空泛套话」维度唯一的正例。"""
+        self.assertFalse(st.local_signals(PLATITUDES_COMPLETE)["truncated"])
+        for section in ("结论", "讨论"):
+            r = st.reconcile(opinion(section=section, visible=["空泛套话"], needs="是"),
+                             ["空泛套话"], PLATITUDES_COMPLETE)
+            self.assertEqual(r["verdict"], "真", section)
+            self.assertEqual(r["source"], "local_plus_model")
+
+    def test_truncated_hard_fact_is_still_true(self):
+        """real28 唯一人工「真」就是截断摘录 + 拔高无量化，绝不能被这条误伤。"""
+        sig = st.local_signals(DISCUSSION_TRUE)
+        self.assertTrue(sig["truncated"])
+        self.assertIn("拔高词没有数字支撑", sig["present"])
+        r = st.reconcile(opinion(section="讨论", visible=["拔高词没有数字支撑"], needs="是"),
+                         ["高频过渡套话密集", "拔高词没有数字支撑", "被动句偏多", "空泛套话"],
+                         DISCUSSION_TRUE)
+        self.assertEqual(r["verdict"], "真")
+
+    def test_truncated_tone_with_model_no_is_not_true(self):
+        r = st.reconcile(opinion(section="讨论", visible=["空泛套话"], needs="否"),
+                         ["空泛套话"], PLATITUDES_TRUNCATED)
+        self.assertNotEqual(r["verdict"], "真")
+
+
+#: 引号开了没关 + 切在句中：分不清被标记文字属受访者原话还是作者转述。
+#: 结构复刻留出集 h-cut-quote-unclosed / 推导集 truncated-quote-start（均为合成）。
+QUOTE_UNCLOSED = "访谈中一位教师提到：「我们这边的情况比较复杂，说实话"
+QUOTE_CLOSED = (
+    "访谈中，一位受访教师谈道：「说实话这个政策具有重要意义，为后续工作提供了有力支撑，"
+    "我们这边总体来说还是欢迎的。」另有两位受访者表达了相近看法，此处不再逐条引述。"
+)
+#: 真实语料 #2 的**结构**复刻：无引号的第三人称访谈转述，同样被截断，人工判「假」。
+#: 它是「截断就降级」宽规则的反例——宽规则会把 37 个正确「假」改成存疑。
+#: 内容全部合成：只复刻「句首被切断 + 无引号 + 结尾省略号」这三个结构特征，
+#: 话题与措辞另行编写，不含任何真实语料原文或受访者姓名。
+PARAPHRASE_TRUNCATED = (
+    "能。受访同学说正是这个随时可查的座位预约功能，让他不用再提前到馆排队，\n"
+    "在宿舍就能确认有没有空位。不过他也提到平台的提醒做得不够细，经常推送\n"
+    "一些他并不需要的通知。在功能效用这一项上，他认为限时练习模块最好用，\n"
+    "尤其是模拟计时那部分，能让他反复复盘做错的题目。另一位受访者则补充说\n"
+    "高峰期仍然抢不到位置，希望…"
+)
+
+
+class QuoteBoundaryTest(unittest.TestCase):
+    """引语豁免的边界：引号未闭合时，「这是引语」这个识别本身不可靠。
+
+    实测缺陷：留出集 h-cut-quote-unclosed 在 8 模型 × 5 重复的 39 个有效单元里
+    39/39 被 section_gate 判假（人工「存疑」），占护栏臂全部错判的 63%。
+    """
+
+    def test_unclosed_quote_blocks_exempt_false(self):
+        r = st.reconcile(opinion(section="引语或访谈", needs="否"),
+                         ["空泛套话"], QUOTE_UNCLOSED)
+        self.assertEqual(r["verdict"], "存疑")
+        self.assertEqual(r["source"], "quote_boundary")
+        self.assertIn("直接引号未闭合，引语边界不可判定", r["guards"])
+
+    def test_closed_quote_still_exempt(self):
+        r = st.reconcile(opinion(section="引语或访谈", needs="否"),
+                         ["空泛套话"], QUOTE_CLOSED)
+        self.assertEqual(r["verdict"], "假")
+        self.assertEqual(r["source"], "section_gate")
+
+    def test_truncated_paraphrase_without_quotes_still_exempt(self):
+        """宽规则（截断就降级）的反例：本条必须继续判假，否则真实语料假族覆盖 −9.64pt。"""
+        self.assertTrue(st._is_truncated(PARAPHRASE_TRUNCATED))
+        self.assertFalse(st._unclosed_quote(PARAPHRASE_TRUNCATED))
+        r = st.reconcile(opinion(section="引语或访谈", needs="否"),
+                         ["对话式 AI 输出残留", "空泛套话"], PARAPHRASE_TRUNCATED)
+        self.assertEqual(r["verdict"], "假")
+        self.assertEqual(r["source"], "section_gate")
+
+    def test_curly_and_nested_quotes_covered(self):
+        for text in ("访谈中他提到：“我们这边的情况比较复杂，说实话",
+                     "访谈中他提到：「外层『内层还没关",
+                     "访谈中他提到：『单层还没关"):
+            self.assertTrue(st._unclosed_quote(text), text)
+            r = st.reconcile(opinion(section="引语或访谈", needs="否"), ["空泛套话"], text)
+            self.assertEqual(r["verdict"], "存疑", text)
+        closed = "他提到：「外层『内层关好了』外层也关好了。」"
+        self.assertFalse(st._unclosed_quote(closed))
+
+    def test_balanced_quotes_not_flagged(self):
+        self.assertFalse(st._unclosed_quote(QUOTE_CLOSED))
+        self.assertFalse(st._unclosed_quote("正文里的「术语」与「另一个术语」都用引号标出。"))
+        self.assertFalse(st._unclosed_quote(""))
+
+    def test_scope_limited_to_quote_section(self):
+        """封面/参考文献的豁免另有本地硬证据，不受引号守卫影响（反事实变体 C 的作用域）。"""
+        for sec in ("封面", "参考文献"):
+            r = st.reconcile(opinion(section=sec, needs="否"), ["空泛套话"], QUOTE_UNCLOSED)
+            self.assertEqual(r["verdict"], "假", sec)
+            self.assertEqual(r["source"], "section_gate", sec)
+
+    def test_local_gate_precedes_quote_guard(self):
+        r = st.reconcile(opinion(section="引语或访谈", needs="否"),
+                         ["空泛套话"], COVER_C45 + "\n「未闭合")
+        self.assertEqual(r["verdict"], "假")
+        self.assertEqual(r["source"], "local_gate")
+
+    def test_unclosed_quote_never_yields_true(self):
+        for needs in ("是", "否", "无法判断"):
+            for visible in ([], ["空泛套话"]):
+                r = st.reconcile(opinion(section="引语或访谈", visible=visible, needs=needs),
+                                 ["空泛套话"], QUOTE_UNCLOSED)
+                self.assertEqual(r["verdict"], "存疑", (needs, visible))
+
+    def test_ascii_double_quote_is_out_of_scope(self):
+        """如实声明作用域：ASCII 双引号开闭同形，数不出配对，本守卫不覆盖。"""
+        text = '访谈中他提到："我们这边的情况比较复杂，说实话'
+        self.assertFalse(st._unclosed_quote(text))
+
+    def test_gate_version_stamped_v3(self):
+        self.assertEqual(st.GATE_VERSION, "v3")
+        r = st.reconcile(opinion(section="引语或访谈", needs="否"), ["空泛套话"], QUOTE_UNCLOSED)
+        self.assertEqual(r["gate_version"], "v3")
 
 
 class RobustnessTest(unittest.TestCase):

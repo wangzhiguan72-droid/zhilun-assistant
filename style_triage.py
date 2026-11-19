@@ -40,7 +40,10 @@ from ai_audit import (
     _tone_find,
 )
 
-GATE_VERSION = "v1"
+#: v2：参考文献标识分支修正（标准「题名[J]. 刊名」原先认不出）。
+#: v3：引语豁免加「直接引号未闭合 → 存疑」守卫（原先把边界不可判定塌缩成假）。
+#: 判定逻辑变了就必须换戳，否则审计者分不清报告出自哪一版门。
+GATE_VERSION = "v3"
 TRIAGE_PROMPT_VERSION = "v1"
 
 #: 作者可控维度：命中才可能构成「需要作者修改」的风格问题。
@@ -84,8 +87,18 @@ _COVER_FAMILIES = (
 )
 _COVER_MIN_FAMILIES = 3
 
-#: 参考文献条目特征：行首 [n] / 作者. 题名[J]. 刊名, 年, 卷(期): 页.
-_REF_ENTRY_RE = re.compile(r"^\s*\[\d+\]\s*\S|\.\s*[JMCDNP]\s*[\.．]\s*|etal\.", re.M)
+#: 参考文献条目特征：行首 [n] / GB/T 7714 文献类型标识「题名[J]. 刊名」/ etal.
+#:
+#: 标识分支原先写成 `\.\s*[JMCDNP]\s*[\.．]`，要求标识**前面**有个点；
+#: 而标准格式里标识前面是右括号（`Politician?[J].Quarterly…`），
+#: 于是这一分支对最常见的参考文献格式**一次都没命中过**。
+#: 实测代价：真实语料 #4 是一整条英文期刊文献，本地门没认出它，
+#: 模型又把它误识别成「方法」段，最终落到「本地无证据 → 存疑」，
+#: 在 50 轮里丢了 21 次本该零调用判假的机会。
+#:
+#: 只认带点的标识，不认裸 `et al.`：正文里的「Smith et al. 指出」是作者论述，
+#: 不是文献条目，放宽到它会新开一类误豁免。
+_REF_ENTRY_RE = re.compile(r"^\s*\[\d+\]\s*\S|\[\s*[JMCDNP]\s*\]\s*[\.．]|etal\.", re.M)
 
 
 def cover_evidence(text: str) -> list[str]:
@@ -132,6 +145,48 @@ def local_gate(text: str, reasons: list[str] | tuple[str, ...]) -> dict[str, Any
     return {"exempt": False, "category": "", "reason": "", "evidence": []}
 
 
+#: 句末标点。摘录以这些结尾才算「看全了一句话」。
+#: 只认省略号会漏掉绝大多数截断：200 字窗口切在句中时**并没有「…」标记**
+#: （实测构造语料 8 条截断例里 6 条无标记，真实语料 28 条则全部带标记）。
+#: 注意「…」是截断标记，**不在**本集合里。
+_SENTENCE_END = "。！？.!?"
+#: 收尾括号/引号：跟在句末标点后面，同样算完整。
+_CLOSERS = "」』”）)】"
+
+
+def _is_truncated(text: str) -> bool:
+    """摘录是否被截断（看不到完整句子）。空摘录同样算——无证据即不可定性。"""
+    s = (text or "").rstrip()
+    if not s:
+        return True
+    if s.endswith(("…", "...")):
+        return True
+    return s[-1] not in _SENTENCE_END and s[-1] not in _CLOSERS
+
+
+#: 直接引号的开闭配对。只有成对标记才数得出来「开了没关」；
+#: ASCII 双引号 " 开闭同形，无法配对，不在本守卫作用域内（如实声明，不假装覆盖）。
+_QUOTE_PAIRS = (("「", "」"), ("『", "』"), ("“", "”"))
+
+
+def _unclosed_quote(text: str) -> bool:
+    """窗口内是否有开了没关的直接引号。
+
+    为什么这不是「截断就降级」：真实语料 #2 是一整段**无引号的第三人称访谈转述**，
+    摘录同样被截断，人工判「假」，模型识别为引语/访谈也判对了——
+    截断本身并不动摇「这不是作者论述」这个事实。
+    真正动摇它的是引号没闭合：被标记的文字到底在受访者原话里还是作者转述里，
+    窗口内看不出来。此时豁免成「假」就是把不确定塌缩成否定，违反本模块红线。
+
+    实测（零成本反事实，三语料全部缓存单元）：
+      「截断就降级」宽规则 → 真实语料 37 个正确「假」被改存疑，假族覆盖 −9.64pt；
+      本规则（未闭合引号）→ 真实语料**零改判**，构造语料 +3.33pt、留出集 +4.17pt，
+      方向/特异度/假族覆盖/漏真FN 全部不动。
+    """
+    t = text or ""
+    return any(t.count(o) > t.count(c) for o, c in _QUOTE_PAIRS)
+
+
 def local_signals(text: str) -> dict[str, Any]:
     """本地作者可控证据。全部复用 ai_audit 既有检测器，口径与全文自查一致。"""
     t = text or ""
@@ -145,7 +200,7 @@ def local_signals(text: str) -> dict[str, Any]:
             "高风险模型未说明适配性": redlist}
     return {"hits": hits,
             "present": [k for k, v in hits.items() if v],
-            "truncated": t.rstrip().endswith(("…", "..."))}
+            "truncated": _is_truncated(t)}
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +305,11 @@ def reconcile(parsed: dict[str, Any] | None, reasons: list[str] | tuple[str, ...
 
     section = (opinion or {}).get("section_type", "")
     if section in _EXEMPT_SECTIONS:
+        if section == "引语或访谈" and _unclosed_quote(text):
+            guards.append("直接引号未闭合，引语边界不可判定")
+            return out("存疑", "quote_boundary",
+                       "摘录里的直接引号开了没关，分不清被标记的文字属受访者原话"
+                       "还是作者转述，不足以豁免，保留未判定")
         guards.append("模型识别为豁免段落类型")
         return out("假", "section_gate", f"摘录属{section}，不是作者论述文风")
 
@@ -289,6 +349,17 @@ def reconcile(parsed: dict[str, Any] | None, reasons: list[str] | tuple[str, ...
                    "本地未检出作者可控证据，且摘录不足以判定，保留未判定")
 
     if needs == "否" and sufficient == "是":
+        # 方法/结果段的「空泛套话」是密度型信号，会把术语表述（「起到中介作用」）
+        # 与学科惯例（被动+过渡词）误当空话。模型明确放行且摘录完整时，
+        # 这类信号撑不起「两说并列」——否则等于把模型判对的答案降级成存疑。
+        # 与下面 soft_signal_only 同源，只是方向相反。
+        # **截断摘录例外**：看不全就不许把「未判定」换成「没问题」。
+        if (any(k in section for k in _METHOD_SECTIONS)
+                and not set(corroborated) & HARD_FACT_DIMENSIONS
+                and not sig["truncated"]):
+            return out("假", "soft_signal_cleared",
+                       "本地仅检出" + "、".join(corroborated)
+                       + "（密度型信号），摘录属方法/结果段且完整，模型确认无需修改")
         guards.append("本地有证据但模型认为无需修改")
         return out("存疑", "disagreement",
                    "本地检出" + "、".join(corroborated) + "，模型认为无需修改，两说并列交用户核对")
@@ -308,6 +379,16 @@ def reconcile(parsed: dict[str, Any] | None, reasons: list[str] | tuple[str, ...
         return out("存疑", "soft_signal_only",
                    "本地仅检出" + "、".join(corroborated)
                    + "（密度型信号），摘录属方法/结果段，不足以定性，保留未判定")
+
+    # 密度型信号靠整段语域判定，200 字窗口本就测不准密度；摘录被截断时，
+    # 更看不到套话后面有没有实质内容。此时它是唯一证据就撑不起「真」。
+    # **完整摘录不受此限**：整段空话连发（删掉后读者对结论的判断不变）仍要判真，
+    # 否则「空泛套话」这一维度就再也没有能定性的正例了。
+    if sig["truncated"] and not set(corroborated) & HARD_FACT_DIMENSIONS:
+        guards.append("截断摘录仅有密度型信号")
+        return out("存疑", "soft_signal_truncated",
+                   "本地仅检出" + "、".join(corroborated)
+                   + "（密度型信号），摘录被截断看不到后续实质内容，不足以定性，保留未判定")
 
     return out("真", "local_plus_model",
                "本地检出" + "、".join(corroborated) + "，模型确认现象可见且不属豁免段落")

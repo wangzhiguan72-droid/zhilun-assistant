@@ -183,9 +183,9 @@ def test_live_parity():
             except urllib.error.HTTPError as e:
                 check(f"GET {path} -> 200", False, f"got {e.code}")
 
-        # 造数据 → 上传 → 分析
-        csv_bytes = ("gender,score\n" + "".join(
-            f"{'男' if i % 2 else '女'},{60 + (i % 20)}\n" for i in range(40)
+        # 造数据 → 上传 → 分析（hours 只为下面的 SSE 回归提供一个数值自变量）
+        csv_bytes = ("gender,score,hours\n" + "".join(
+            f"{'男' if i % 2 else '女'},{60 + (i % 20)},{1 + (i % 7)}\n" for i in range(40)
         )).encode("utf-8-sig")
 
         bnd = "----h5parity"
@@ -243,6 +243,27 @@ def test_live_parity():
             if cs.get("p") is not None:
                 print(f"        p={cs['p']}  t={cs.get('t')}  df={cs.get('df')}")
 
+        # SSE 必须也能在生产服务器下跑通。
+        # 【为什么要专门测】Flask 自带服务器容忍应用设置逐跳头（Connection），
+        # waitress 按 PEP 3333 直接 AssertionError → 整条流 500。
+        # 于是「本机 python app.py 一切正常，上线就崩」——单元测试和上面的
+        # JSON 对比都发现不了，只有真起 waitress 走一次流才看得见。
+        pay_sse = json.dumps({"file_id": up["file_id"], "method": "linear_regression",
+                              "value_col": "score", "x_cols": ["hours"], "stream": 1}).encode()
+        try:
+            with urllib.request.urlopen(urllib.request.Request(
+                    base + "/api/analyze", data=pay_sse,
+                    headers={"Content-Type": "application/json"}), timeout=60) as resp:
+                check("SSE 在生产服务器下返回 200", resp.status == 200, f"got {resp.status}")
+                raw = resp.read().decode("utf-8", "replace")
+            events = [ln[7:].strip() for ln in raw.split("\n") if ln.startswith("event: ")]
+            check("SSE 收到 done 事件（流没被服务器掐断）", "done" in events, str(events))
+            check("SSE 收到 markdown 事件", "markdown" in events, str(events))
+        except urllib.error.HTTPError as e:
+            check("SSE 在生产服务器下返回 200", False, f"got {e.code}")
+        except Exception as e:
+            check("SSE 在生产服务器下返回 200", False, repr(e)[:160])
+
     finally:
         proc.terminate()
         try:
@@ -266,6 +287,26 @@ def test_deploy_doc():
           "不能纯静态" in txt or "不能" in txt and "静态" in txt)
 
 
+def test_sse_no_hop_by_hop_headers():
+    """应用不许自己设逐跳头（PEP 3333）。
+
+    真实事故：SSE 响应带了 `Connection: keep-alive`，Flask 自带服务器容忍，
+    waitress 直接 AssertionError → 整条流 500。本机跑得好、上线就崩。
+
+    这里查**源码**而不是查响应头：waitress 自己也会发 `Connection: close`，
+    从客户端根本分不清是谁设的，查响应头必然误报。
+    """
+    print("\n[7] SSE 响应头不含逐跳头")
+    src = (BASE / "app.py").read_text(encoding="utf-8")
+    i = src.find('mimetype="text/event-stream"')
+    check("app.py 有 SSE 响应", i > 0)
+    if i < 0:
+        return
+    block = src[i:i + 400]
+    for h in ("Connection", "Keep-Alive", "Transfer-Encoding", "Upgrade", "TE", "Trailer"):
+        check(f"SSE 未设逐跳头 {h}", f'"{h}"' not in block, block[:160])
+
+
 def main():
     print("=" * 64)
     print("生产/H5 部署入口契约测试")
@@ -276,6 +317,7 @@ def main():
     test_requirements_marker()
     test_live_parity()
     test_deploy_doc()
+    test_sse_no_hop_by_hop_headers()
 
     print("\n" + "=" * 64)
     print(f"总计: {PASS} PASS / {FAIL} FAIL")
